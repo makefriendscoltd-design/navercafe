@@ -476,6 +476,17 @@ def _download_audio_ytdlp(video_id, browser='chrome'):
     url = f"https://www.youtube.com/watch?v={video_id}"
     out_base = os.path.join(SCRIPT_DIR, f"temp_audio_{video_id}")
 
+    # 영상 정보 먼저 확인 (라이브 진행 중인 경우 차단)
+    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True,
+                           'cookiesfrombrowser': (browser, None, None, None)}) as ydl:
+        try:
+            info_only = ydl.extract_info(url, download=False)
+        except Exception:
+            info_only = None
+
+    if info_only and info_only.get('is_live'):
+        raise ValueError("현재 진행 중인 라이브 방송입니다. 방송 종료 후 다시 시도해주세요.")
+
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'outtmpl': out_base + '.%(ext)s',
