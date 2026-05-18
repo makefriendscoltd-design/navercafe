@@ -93,6 +93,7 @@ from selenium.common.exceptions import (
 )
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
 
 # ===================================================================
 # 4. 경로 및 설정 관리
@@ -975,15 +976,19 @@ def extract_highlight_keywords(text):
     return cleaned, keywords
 
 
-def paste_with_formatting(text, formatting_config):
-    """[BOLD] 마커가 있으면 Ctrl+B 토글로 볼드 적용하며 붙여넣습니다."""
+def _js_insert_text(driver, text):
+    """포커스된 contenteditable에 OS 포커스 없이 텍스트를 삽입합니다."""
+    driver.execute_script("document.execCommand('insertText', false, arguments[0]);", text)
+    time.sleep(0.1)
+
+
+def paste_with_formatting(driver, text, formatting_config):
+    """[BOLD] 마커가 있으면 execCommand bold로 적용하며 JS로 삽입합니다."""
     bold_enabled = formatting_config.get('bold_enabled', False)
 
     if not bold_enabled or '[BOLD]' not in text:
         clean = re.sub(r'\[BOLD\](.*?)\[/BOLD\]', r'\1', text)
-        pyperclip.copy(clean)
-        pyautogui.hotkey('ctrl', 'v')
-        time.sleep(0.3)
+        _js_insert_text(driver, clean)
         return
 
     parts = re.split(r'(\[BOLD\].*?\[/BOLD\])', text)
@@ -993,17 +998,13 @@ def paste_with_formatting(text, formatting_config):
         bold_match = re.match(r'\[BOLD\](.*?)\[/BOLD\]', part)
         if bold_match:
             clean = bold_match.group(1)
-            pyautogui.hotkey('ctrl', 'b')
-            time.sleep(0.15)
-            pyperclip.copy(clean)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.2)
-            pyautogui.hotkey('ctrl', 'b')
-            time.sleep(0.15)
+            driver.execute_script("document.execCommand('bold', false, null);")
+            time.sleep(0.1)
+            _js_insert_text(driver, clean)
+            driver.execute_script("document.execCommand('bold', false, null);")
+            time.sleep(0.1)
         else:
-            pyperclip.copy(part)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.2)
+            _js_insert_text(driver, part)
 
 
 def _is_cursor_inside_blockquote(driver):
@@ -1091,24 +1092,23 @@ def _move_cursor_to_end(driver):
             s3.addRange(r3);
         """)
     except Exception:
-        pyautogui.hotkey('ctrl', 'End')
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
     time.sleep(0.3)
 
-    # JS 탈출 후에도 인용구 안이면 키보드로 강제 탈출
+    # JS 탈출 후에도 인용구 안이면 ActionChains로 강제 탈출
     if _is_cursor_inside_blockquote(driver):
-        pyautogui.hotkey('ctrl', 'End')
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
         time.sleep(0.2)
-        pyautogui.press('down', presses=5, interval=0.1)
+        ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
         time.sleep(0.2)
-        pyautogui.press('enter')
+        ActionChains(driver).send_keys(Keys.RETURN).perform()
         time.sleep(0.2)
-        pyautogui.press('enter')
+        ActionChains(driver).send_keys(Keys.RETURN).perform()
         time.sleep(0.3)
-        # 최종 확인
         if _is_cursor_inside_blockquote(driver):
-            pyautogui.hotkey('ctrl', 'End')
+            ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
             time.sleep(0.2)
-            pyautogui.press('enter')
+            ActionChains(driver).send_keys(Keys.RETURN).perform()
             time.sleep(0.3)
 
 
@@ -1173,45 +1173,44 @@ def insert_blockquote(driver, heading_text):
     except Exception:
         pass
 
-    # (6) 소제목 붙여넣기
-    pyperclip.copy(heading_text)
-    pyautogui.hotkey('ctrl', 'v')
-    time.sleep(1)
+    # (6) 소제목 삽입 (OS 포커스 불필요)
+    _js_insert_text(driver, heading_text)
+    time.sleep(0.8)
 
-    # (7) 인용구 탈출 — 3단 전략으로 확실하게 탈출
-    time.sleep(0.3)
+    # (7) 인용구 탈출 — 3단 전략
+    time.sleep(0.2)
 
-    # 전략 A: 인용구 바로 다음 요소를 JS로 직접 클릭
-    escaped = driver.execute_script(f"""
-        var quotes = document.querySelectorAll('.se-section-quotation');
-        if (quotes.length <= {quote_count_before}) return 'no_new_quote';
-        var lastQ = quotes[quotes.length - 1];
-        var next = lastQ.nextElementSibling;
-        if (next) {{
-            var para = next.querySelector('.se-text-paragraph');
-            if (para) {{ para.click(); return 'clicked_next_para'; }}
-            next.click();
-            return 'clicked_next';
-        }}
-        return 'no_next';
-    """)
+    # 전략 A: 인용구 다음 섹션을 ActionChains로 클릭
+    try:
+        quotes = driver.find_elements(By.CSS_SELECTOR, '.se-section-quotation')
+        if len(quotes) > quote_count_before:
+            last_q = quotes[-1]
+            next_sec = driver.execute_script("return arguments[0].nextElementSibling;", last_q)
+            if next_sec:
+                ActionChains(driver).move_to_element(next_sec).click().perform()
+            else:
+                # 다음 섹션이 없으면 인용구 아래 50px 위치 클릭
+                ActionChains(driver).move_to_element_with_offset(
+                    last_q, 10, last_q.size['height'] // 2 + 30).click().perform()
+    except Exception:
+        pass
     time.sleep(0.4)
 
-    # 전략 B: 아직 인용구 안이면 키보드로 탈출
+    # 전략 B: 아직 인용구 안이면 ActionChains 방향키로 탈출
     if _is_cursor_inside_blockquote(driver):
-        pyautogui.press('end')
+        ActionChains(driver).send_keys(Keys.END).perform()
         time.sleep(0.1)
-        pyautogui.press('down', presses=5, interval=0.1)
+        ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
         time.sleep(0.3)
 
-    # 전략 C: 그래도 안 되면 JS로 새 섹션 생성 후 커서 이동
+    # 전략 C: JS로 새 섹션 생성 후 커서 이동
     if _is_cursor_inside_blockquote(driver):
         _move_cursor_to_end(driver)
         time.sleep(0.3)
 
-    # 최후 수단: Enter로 새 줄 생성 후 이동
+    # 최후 수단: Enter 두 번
     if _is_cursor_inside_blockquote(driver):
-        pyautogui.press('enter', presses=2, interval=0.15)
+        ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
         time.sleep(0.3)
 
     print(f"  -> 인용구 삽입 완료: '{heading_text}'")
@@ -1242,42 +1241,39 @@ def paste_chunk_with_blockquotes(driver, chunk_text, formatting_config):
             except Exception as e:
                 print(f"  -> 인용구 삽입 실패: {e}, 일반 텍스트로 대체")
                 _move_cursor_to_end(driver)
-                pyperclip.copy(f"■ {heading_text}")
-                pyautogui.hotkey('ctrl', 'v')
-                time.sleep(0.5)
-                pyautogui.press('enter')
+                _js_insert_text(driver, f"■ {heading_text}")
+                ActionChains(driver).send_keys(Keys.RETURN).perform()
                 time.sleep(0.3)
 
             # 인용구 탈출 확인 후 잔여 본문 삽입
             if extra_body:
                 _move_cursor_to_end(driver)
-                # 인용구 밖인지 재확인
                 if _is_cursor_inside_blockquote(driver):
                     print("  -> [경고] 인용구 내부 감지, 강제 탈출 시도")
-                    pyautogui.press('escape')
+                    ActionChains(driver).send_keys(Keys.ESCAPE).perform()
                     time.sleep(0.1)
-                    pyautogui.press('down', presses=5, interval=0.05)
+                    ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
                     time.sleep(0.1)
-                    pyautogui.press('enter', presses=2, interval=0.1)
+                    ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
                     time.sleep(0.3)
-                paste_with_formatting(extra_body, formatting_config)
+                paste_with_formatting(driver, extra_body, formatting_config)
                 time.sleep(0.5)
-                pyautogui.press('enter', presses=2, interval=0.2)
+                ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
                 time.sleep(0.5)
         else:
             # 일반 텍스트: 인용구 밖 확인 후 삽입
             _move_cursor_to_end(driver)
             if _is_cursor_inside_blockquote(driver):
                 print("  -> [경고] 일반텍스트 삽입 전 인용구 내부 감지, 강제 탈출")
-                pyautogui.press('escape')
+                ActionChains(driver).send_keys(Keys.ESCAPE).perform()
                 time.sleep(0.1)
-                pyautogui.press('down', presses=5, interval=0.05)
+                ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
                 time.sleep(0.1)
-                pyautogui.press('enter', presses=2, interval=0.1)
+                ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
                 time.sleep(0.3)
-            paste_with_formatting(part, formatting_config)
+            paste_with_formatting(driver, part, formatting_config)
             time.sleep(0.5)
-            pyautogui.press('enter', presses=2, interval=0.2)
+            ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
             time.sleep(0.5)
 
 
@@ -1335,7 +1331,7 @@ def apply_highlight_js(driver, keywords, color):
 # ===================================================================
 
 def post_to_naver_cafe(title, body, image_paths, optional_config):
-    """Selenium + pyautogui로 네이버 카페에 글을 자동 등록합니다."""
+    """Selenium으로 네이버 카페에 글을 자동 등록합니다 (OS 포커스 불필요)."""
     print("[4/4] 네이버 카페 포스팅 시작...")
 
     # 본문에서 하이라이트 키워드 추출 (마커 제거)
@@ -1345,7 +1341,11 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
         if highlight_keywords:
             print(f"  -> 하이라이트 대상 키워드: {highlight_keywords}")
 
-    driver = webdriver.Chrome()
+    # Chrome을 우측 하단에 작게 띄워 다른 작업 방해 최소화
+    options = webdriver.ChromeOptions()
+    options.add_argument("--window-size=900,700")
+    options.add_argument("--window-position=9999,0")   # 오른쪽 화면 밖
+    driver = webdriver.Chrome(options=options)
 
     try:
         # ── 1단계: 네이버 로그인 ──
@@ -1598,34 +1598,49 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
 
             # 이미지 업로드
             if i < len(image_paths):
-                # 이미지 삽입 전 문서 끝으로 이동
                 _move_cursor_to_end(driver)
+                if _is_cursor_inside_blockquote(driver):
+                    ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
+                    time.sleep(0.3)
 
+                img_abs = os.path.abspath(image_paths[i])
+                upload_ok = False
+
+                # 숨겨진 file input 직접 사용 (OS 다이얼로그 우회)
                 try:
-                    driver.switch_to.window(driver.current_window_handle)
-                except Exception:
-                    pass
-                time.sleep(0.5)
+                    file_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                    if file_inputs:
+                        fi = file_inputs[0]
+                        driver.execute_script(
+                            "arguments[0].style.cssText='display:block!important;"
+                            "opacity:0.01!important;position:fixed;top:0;left:0;"
+                            "width:1px;height:1px;';", fi)
+                        fi.send_keys(img_abs)
+                        upload_ok = True
+                        print(f"  -> 이미지 직접 업로드: {os.path.basename(img_abs)}")
+                        time.sleep(5)
+                        driver.execute_script("arguments[0].style.cssText='';", fi)
+                except Exception as e:
+                    print(f"  -> 직접 파일 입력 실패: {e}")
 
-                try:
-                    driver.find_element(By.CSS_SELECTOR, ".se-image-toolbar-button").click()
-                except Exception:
-                    driver.find_element(
-                        By.XPATH,
-                        "//button[contains(@class, 'image') or .//span[contains(text(), '사진')]]"
-                    ).click()
+                if not upload_ok:
+                    # Fallback: 툴바 버튼 → OS 파일 다이얼로그
+                    try:
+                        driver.find_element(By.CSS_SELECTOR, ".se-image-toolbar-button").click()
+                    except Exception:
+                        driver.find_element(
+                            By.XPATH,
+                            "//button[contains(@class, 'image') or .//span[contains(text(), '사진')]]"
+                        ).click()
+                    time.sleep(3)
+                    pyperclip.copy(img_abs)
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(1)
+                    pyautogui.press('enter')
+                    time.sleep(5)
 
-                time.sleep(3)
-                pyperclip.copy(image_paths[i])
-                time.sleep(0.5)
-                pyautogui.hotkey('ctrl', 'v')
-                time.sleep(1)
-                pyautogui.press('enter')
-                time.sleep(5)
-
-                # 이미지 업로드 후 문서 끝으로 이동
                 _move_cursor_to_end(driver)
-                pyautogui.press('enter')
+                ActionChains(driver).send_keys(Keys.RETURN).perform()
                 time.sleep(0.5)
 
         # ── 5단계: CTA 삽입 ──
@@ -1636,28 +1651,20 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
 
             if cta_text or cta_link_text:
                 print("  -> CTA 문구 삽입 중...")
-                pyautogui.hotkey('ctrl', 'End')
-                time.sleep(0.5)
-                pyautogui.press('enter', presses=3, interval=0.2)
+                _move_cursor_to_end(driver)
+                ActionChains(driver).send_keys(Keys.RETURN * 3).perform()
                 time.sleep(0.5)
 
-                # 안내 문구
                 if cta_text:
-                    pyperclip.copy(cta_text)
-                    pyautogui.hotkey('ctrl', 'v')
-                    time.sleep(0.5)
-                    pyautogui.press('enter', presses=2, interval=0.2)
+                    _js_insert_text(driver, cta_text)
+                    ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
                     time.sleep(0.3)
 
-                # 링크 텍스트 (URL 포함)
                 if cta_link_text and cta_link_url:
-                    link_line = f"{cta_link_text}\n{cta_link_url}"
-                    pyperclip.copy(link_line)
-                    pyautogui.hotkey('ctrl', 'v')
+                    _js_insert_text(driver, f"{cta_link_text}\n{cta_link_url}")
                     time.sleep(0.5)
                 elif cta_link_url:
-                    pyperclip.copy(cta_link_url)
-                    pyautogui.hotkey('ctrl', 'v')
+                    _js_insert_text(driver, cta_link_url)
                     time.sleep(0.5)
 
                 time.sleep(1)
