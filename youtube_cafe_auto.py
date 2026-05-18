@@ -36,6 +36,7 @@ import re
 import sys
 import time
 import glob
+import base64
 import configparser
 import urllib.parse
 import urllib.request
@@ -468,6 +469,91 @@ def detect_source_type(user_input):
     return 'article', user_input
 
 
+def _download_audio_ytdlp(video_id, browser='chrome'):
+    """yt-dlp + 브라우저 쿠키로 오디오 파일을 다운로드합니다."""
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    out_base = os.path.join(SCRIPT_DIR, f"temp_audio_{video_id}")
+
+    ydl_opts = {
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        'outtmpl': out_base + '.%(ext)s',
+        'cookiesfrombrowser': (browser, None, None, None),
+        'quiet': True,
+        'no_warnings': True,
+        'noprogress': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        if info:
+            ext = info.get('ext', 'mp4')
+            p = f"{out_base}.{ext}"
+            if os.path.exists(p):
+                return p
+
+    # ext를 모를 때 glob으로 탐색
+    candidates = [f for f in glob.glob(f"{out_base}.*")
+                  if not f.endswith(('.vtt', '.json', '.py'))]
+    return candidates[0] if candidates else None
+
+
+def _transcribe_with_gemini_audio(audio_path):
+    """Gemini API로 오디오 파일을 한국어 텍스트로 변환합니다.
+    18MB 이하: inline bytes / 초과: File API 사용.
+    """
+    from google.genai import types as gtypes
+
+    ext = os.path.splitext(audio_path)[1].lower()
+    mime_map = {
+        '.m4a': 'audio/mp4',  '.mp4': 'audio/mp4',  '.aac': 'audio/aac',
+        '.webm': 'audio/webm', '.mp3': 'audio/mpeg',
+        '.opus': 'audio/ogg',  '.ogg': 'audio/ogg',  '.wav': 'audio/wav',
+    }
+    mime_type = mime_map.get(ext, 'audio/mp4')
+    file_size = os.path.getsize(audio_path)
+    mb = file_size // (1024 * 1024)
+    print(f"  -> 오디오 크기: {mb}MB, Gemini 음성 변환 시작...")
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    prompt = ('이 오디오를 한국어로 전사해주세요. '
+              '발화 내용을 그대로 텍스트로 변환하고, '
+              '타임스탬프·화자 구분 없이 순수 텍스트만 출력하세요.')
+
+    if file_size <= 18 * 1024 * 1024:
+        with open(audio_path, 'rb') as f:
+            encoded = base64.b64encode(f.read()).decode('utf-8')
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[{
+                'parts': [
+                    {'inline_data': {'mime_type': mime_type, 'data': encoded}},
+                    {'text': prompt},
+                ]
+            }]
+        )
+    else:
+        print(f"  -> File API 업로드 중 ({mb}MB)...")
+        uploaded = client.files.upload(
+            path=audio_path,
+            config=gtypes.UploadFileConfig(mime_type=mime_type),
+        )
+        for _ in range(30):
+            fi = client.files.get(name=uploaded.name)
+            if fi.state.name == 'ACTIVE':
+                break
+            time.sleep(2)
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[uploaded, prompt],
+        )
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception:
+            pass
+
+    return response.text.strip() if response.text else ''
+
+
 def _parse_vtt(vtt_path):
     """VTT 자막 파일을 평문 텍스트로 변환합니다."""
     text_parts = []
@@ -543,6 +629,31 @@ def get_transcript(video_id):
             os.remove(f)
         except Exception:
             pass
+
+    # 3차: yt-dlp 오디오 다운로드 + Gemini 음성 변환
+    # (회원전용·일부공개 영상처럼 캡션 파일이 없는 경우)
+    print("  -> 오디오 다운로드 + Gemini 음성 변환 시도...")
+    for browser in ['chrome', 'edge', 'firefox']:
+        audio_path = None
+        try:
+            print(f"  -> [{browser}] 오디오 다운로드 중...")
+            audio_path = _download_audio_ytdlp(video_id, browser)
+            if not audio_path or not os.path.exists(audio_path):
+                print(f"  -> [{browser}] 오디오 파일 없음, 다음 브라우저 시도")
+                continue
+            text = _transcribe_with_gemini_audio(audio_path)
+            if text and len(text) > 50:
+                print(f"  -> Gemini 음성 변환 완료 ({len(text)}자)")
+                return text
+            print(f"  -> [{browser}] 변환 결과 너무 짧음, 다음 시도")
+        except Exception as e:
+            print(f"  -> [{browser}] 오디오 변환 실패: {e}")
+        finally:
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                except Exception:
+                    pass
 
     print("  -> 모든 방법으로 자막 추출 실패")
     return None
