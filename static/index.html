@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>네이버 카페 자동 포스팅</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --border: #e2e8f0;
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --success: #16a34a;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --text: #1e293b;
+  --muted: #64748b;
+  --log-bg: #0f172a;
+  --log-text: #94a3b8;
+}
+
+body { font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', system-ui, sans-serif;
+       background: var(--bg); color: var(--text); font-size: 14px; }
+
+/* ── Layout ── */
+.header { background: var(--accent); color: #fff; padding: 14px 24px;
+          display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 18px; font-weight: 700; }
+.header .badge { background: rgba(255,255,255,.2); padding: 2px 10px;
+                 border-radius: 99px; font-size: 12px; }
+
+.container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+
+/* ── Tabs ── */
+.tabs { display: flex; gap: 2px; border-bottom: 2px solid var(--border);
+        margin-bottom: 20px; }
+.tab-btn { padding: 10px 20px; border: none; background: none; cursor: pointer;
+           font-size: 14px; color: var(--muted); font-weight: 500;
+           border-bottom: 2px solid transparent; margin-bottom: -2px;
+           transition: color .15s, border-color .15s; }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-btn:hover:not(.active) { color: var(--text); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Cards ── */
+.card { background: var(--card); border: 1px solid var(--border);
+        border-radius: 10px; padding: 18px; margin-bottom: 16px; }
+.card-title { font-weight: 600; font-size: 13px; color: var(--muted);
+              text-transform: uppercase; letter-spacing: .05em;
+              margin-bottom: 12px; }
+
+/* ── Form ── */
+label { display: block; font-size: 13px; font-weight: 500; color: var(--muted);
+        margin-bottom: 4px; }
+input[type=text], input[type=password], input[type=number],
+input[type=color], select, textarea {
+  width: 100%; padding: 8px 12px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 14px; color: var(--text);
+  background: var(--card); transition: border-color .15s; }
+input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; }
+.form-row { display: grid; gap: 12px; margin-bottom: 12px; }
+.form-row.col2 { grid-template-columns: 1fr 1fr; }
+.form-row.col3 { grid-template-columns: 1fr 1fr 1fr; }
+.toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.toggle-row label { margin: 0; }
+input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
+
+/* ── Buttons ── */
+.btn { padding: 9px 20px; border: none; border-radius: 7px; cursor: pointer;
+       font-size: 14px; font-weight: 600; transition: filter .15s; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn:not(:disabled):hover { filter: brightness(.93); }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-success { background: var(--success); color: #fff; }
+.btn-danger  { background: var(--danger);  color: #fff; }
+.btn-ghost   { background: var(--border);  color: var(--text); }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; }
+
+/* ── Source input ── */
+#source { height: 100px; font-size: 14px; }
+
+/* ── Image drop zone ── */
+.drop-zone { border: 2px dashed var(--border); border-radius: 8px;
+             padding: 18px; text-align: center; cursor: pointer;
+             color: var(--muted); transition: border-color .15s, background .15s; }
+.drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent);
+                                          background: #eff6ff; }
+.drop-zone input { display: none; }
+#img-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.img-tag { background: #eff6ff; border: 1px solid #bfdbfe;
+           color: var(--accent); border-radius: 5px;
+           padding: 3px 8px; font-size: 12px;
+           display: flex; align-items: center; gap: 4px; }
+.img-tag button { border: none; background: none; cursor: pointer;
+                  color: var(--muted); font-size: 14px; line-height: 1; padding: 0; }
+
+/* ── Log area ── */
+.log-wrap { position: relative; }
+#log { background: var(--log-bg); color: var(--log-text);
+       font-family: 'Consolas', 'Courier New', monospace; font-size: 12.5px;
+       padding: 14px; border-radius: 8px; height: 220px;
+       overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.log-err  { color: #f87171; }
+.log-done { color: #4ade80; }
+.log-warn { color: #fbbf24; }
+
+/* ── Status pill ── */
+.status-pill { display: inline-flex; align-items: center; gap: 6px;
+               padding: 3px 12px; border-radius: 99px; font-size: 12px;
+               font-weight: 600; margin-left: 10px; }
+.pill-idle     { background: #f1f5f9; color: var(--muted); }
+.pill-running  { background: #eff6ff; color: var(--accent); }
+.pill-preview  { background: #fefce8; color: #92400e; }
+.pill-posting  { background: #f0fdf4; color: var(--success); }
+.pill-done     { background: #f0fdf4; color: var(--success); }
+.pill-error    { background: #fef2f2; color: var(--danger); }
+.pill-cancelled{ background: #f1f5f9; color: var(--muted); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Preview panel ── */
+#preview-panel { display: none; }
+#preview-panel.show { display: block; }
+.preview-card { border: 2px solid var(--warn); border-radius: 10px;
+                padding: 18px; background: var(--card); }
+.preview-card .card-title { color: var(--warn); }
+.preview-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border);
+                margin-bottom: 12px; }
+.ptab-btn { padding: 7px 14px; border: none; background: none; cursor: pointer;
+            font-size: 13px; color: var(--muted); border-bottom: 2px solid transparent;
+            margin-bottom: -1px; }
+.ptab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+.ptab-panel { display: none; }
+.ptab-panel.active { display: block; }
+#preview-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+#preview-body, #preview-threads { height: 240px; font-size: 13px; }
+#preview-threads { background: #f8fafc; color: var(--muted); }
+
+/* ── Settings ── */
+.settings-section { margin-bottom: 20px; }
+.settings-section .section-head { font-weight: 700; font-size: 14px;
+                                   margin-bottom: 12px; padding-bottom: 8px;
+                                   border-bottom: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>네이버 카페 자동 포스팅</h1>
+  <span class="badge">로컬 서버</span>
+</div>
+
+<div class="container">
+  <div class="tabs">
+    <button class="tab-btn active" data-tab="run">실행</button>
+    <button class="tab-btn" data-tab="settings">설정</button>
+  </div>
+
+  <!-- ── 실행 탭 ── -->
+  <div id="tab-run" class="tab-panel active">
+
+    <div class="card">
+      <div class="card-title">소스 입력</div>
+      <textarea id="source" placeholder="유튜브 URL / 뉴스 URL / 직접 텍스트 입력"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="card-title">이미지 (선택)</div>
+      <div class="drop-zone" id="drop-zone" onclick="document.getElementById('img-input').click()">
+        <input type="file" id="img-input" multiple accept="image/*">
+        클릭하거나 파일을 여기에 끌어다 놓으세요 (JPG, PNG, GIF)
+      </div>
+      <div id="img-list"></div>
+    </div>
+
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+      <button class="btn btn-primary" id="run-btn" onclick="startRun()">▶ 실행</button>
+      <span id="status-pill" class="status-pill pill-idle"><span class="dot"></span>대기 중</span>
+    </div>
+
+    <div class="card log-wrap">
+      <div class="card-title">실행 로그</div>
+      <div id="log"></div>
+    </div>
+
+    <!-- 미리보기 패널 -->
+    <div id="preview-panel">
+      <div class="preview-card">
+        <div class="card-title">미리보기 — 내용 확인 후 게시하세요</div>
+        <div class="form-row" style="margin-bottom:10px;">
+          <div>
+            <label>제목</label>
+            <input type="text" id="preview-title">
+          </div>
+        </div>
+        <div class="preview-tabs">
+          <button class="ptab-btn active" data-ptab="cafe">카페 본문</button>
+          <button class="ptab-btn" data-ptab="threads">스레드 포스트</button>
+        </div>
+        <div id="ptab-cafe" class="ptab-panel active">
+          <textarea id="preview-body"></textarea>
+        </div>
+        <div id="ptab-threads" class="ptab-panel">
+          <p style="font-size:12px;color:var(--muted);margin-bottom:6px;">
+            아래 내용을 복사해서 Threads에 직접 올리세요. (자동 게시 안됨)
+          </p>
+          <textarea id="preview-threads" readonly></textarea>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-success" onclick="confirmPost(true)">카페에 게시 ▶</button>
+          <button class="btn btn-ghost"   onclick="confirmPost(false)">취소</button>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end tab-run -->
+
+  <!-- ── 설정 탭 ── -->
+  <div id="tab-settings" class="tab-panel">
+
+    <div class="settings-section">
+      <div class="section-head">네이버 계정</div>
+      <div class="form-row col2">
+        <div><label>아이디</label><input type="text" id="naver_id"></div>
+        <div><label>비밀번호</label><input type="password" id="naver_pw"></div>
+      </div>
+      <div class="form-row">
+        <div><label>카페 게시판 URL</label><input type="text" id="naver_cafe_url"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head">Gemini API</div>
+      <div class="form-row">
+        <div><label>API 키</label><input type="password" id="gemini_api_key"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head">CTA (Call to Action)</div>
+      <div class="toggle-row">
+        <input type="checkbox" id="cta_enabled">
+        <label for="cta_enabled">CTA 사용</label>
+      </div>
+      <div class="form-row col2">
+        <div><label>링크 텍스트</label><input type="text" id="cta_link_text"></div>
+        <div><label>링크 URL</label><input type="text" id="cta_link_url"></div>
+      </div>
+      <div class="form-row">
+        <div><label>CTA 안내 문구</label><input type="text" id="cta_text"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head">서식</div>
+      <div class="toggle-row">
+        <input type="checkbox" id="formatting_bold_enabled">
+        <label for="formatting_bold_enabled">볼드 자동 적용</label>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="formatting_highlight_enabled">
+        <label for="formatting_highlight_enabled">하이라이트 자동 적용</label>
+      </div>
+      <div class="form-row col3" style="margin-top:8px;">
+        <div><label>하이라이트 색상</label>
+          <input type="color" id="formatting_highlight_color" style="height:38px;padding:2px 4px;">
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head">콘텐츠 설정</div>
+      <div class="form-row col3">
+        <div><label>최소 글자 수</label><input type="number" id="content_min_length"></div>
+        <div><label>최대 글자 수</label><input type="number" id="content_max_length"></div>
+        <div><label>최대 섹션 수</label><input type="number" id="content_max_paragraphs"></div>
+      </div>
+      <div class="form-row col3">
+        <div><label>이미지 수</label><input type="number" id="content_image_count"></div>
+      </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="section-head">커스텀 프롬프트 (비워두면 기본 프롬프트 사용)</div>
+      <textarea id="prompt_custom_instructions" style="height:200px;font-size:13px;"></textarea>
+    </div>
+
+    <button class="btn btn-primary" onclick="saveSettings()">설정 저장</button>
+    <span id="save-msg" style="margin-left:10px;color:var(--success);font-size:13px;display:none;">저장됨!</span>
+
+  </div><!-- end tab-settings -->
+</div><!-- container -->
+
+<script>
+// ── 상태 ──────────────────────────────────────────────────────────────
+let currentTaskId = null;
+let selectedFiles = [];
+let sse = null;
+
+// ── 탭 전환 ───────────────────────────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+document.querySelectorAll('.ptab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.ptab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.ptab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('ptab-' + btn.dataset.ptab).classList.add('active');
+  });
+});
+
+// ── 이미지 선택 ───────────────────────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+const imgInput = document.getElementById('img-input');
+const imgList  = document.getElementById('img-list');
+
+imgInput.addEventListener('change', e => addFiles(e.target.files));
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  addFiles(e.dataTransfer.files);
+});
+
+function addFiles(files) {
+  for (const f of files) selectedFiles.push(f);
+  renderImgList();
+}
+
+function removeFile(idx) {
+  selectedFiles.splice(idx, 1);
+  renderImgList();
+}
+
+function renderImgList() {
+  imgList.innerHTML = selectedFiles.map((f, i) =>
+    `<span class="img-tag">${f.name}<button onclick="removeFile(${i})">✕</button></span>`
+  ).join('');
+}
+
+// ── 설정 로드 ─────────────────────────────────────────────────────────
+async function loadSettings() {
+  const res = await fetch('/api/config');
+  const cfg = await res.json();
+  const fields = [
+    'naver_id', 'naver_pw', 'naver_cafe_url', 'gemini_api_key',
+    'cta_enabled', 'cta_text', 'cta_link_url', 'cta_link_text',
+    'formatting_bold_enabled', 'formatting_highlight_enabled', 'formatting_highlight_color',
+    'prompt_custom_instructions',
+    'content_min_length', 'content_max_length', 'content_max_paragraphs', 'content_image_count'
+  ];
+  for (const id of fields) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const val = cfg[id];
+    if (val === undefined) continue;
+    if (el.type === 'checkbox') el.checked = (val === 'true');
+    else el.value = val;
+  }
+}
+
+async function saveSettings() {
+  const fields = {
+    naver_id: 'naver_id', naver_pw: 'naver_pw', naver_cafe_url: 'naver_cafe_url',
+    gemini_api_key: 'gemini_api_key',
+    cta_enabled: 'cta_enabled', cta_text: 'cta_text',
+    cta_link_url: 'cta_link_url', cta_link_text: 'cta_link_text',
+    formatting_bold_enabled: 'formatting_bold_enabled',
+    formatting_highlight_enabled: 'formatting_highlight_enabled',
+    formatting_highlight_color: 'formatting_highlight_color',
+    prompt_custom_instructions: 'prompt_custom_instructions',
+    content_min_length: 'content_min_length', content_max_length: 'content_max_length',
+    content_max_paragraphs: 'content_max_paragraphs', content_image_count: 'content_image_count',
+  };
+  const data = {};
+  for (const [key, id] of Object.entries(fields)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    data[key] = el.type === 'checkbox' ? String(el.checked) : el.value;
+  }
+  await fetch('/api/config', { method: 'POST',
+    headers: {'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  const msg = document.getElementById('save-msg');
+  msg.style.display = 'inline';
+  setTimeout(() => msg.style.display = 'none', 2000);
+}
+
+// ── 실행 ──────────────────────────────────────────────────────────────
+async function startRun() {
+  const source = document.getElementById('source').value.trim();
+  if (!source) { alert('소스를 입력하세요.'); return; }
+
+  clearLog();
+  hidePreview();
+  setStatus('running');
+  document.getElementById('run-btn').disabled = true;
+
+  const fd = new FormData();
+  fd.append('source', source);
+
+  // 설정에서 값 읽기
+  const cfg_fields = {
+    naver_id: 'naver_id', naver_pw: 'naver_pw', cafe_url: 'naver_cafe_url',
+    gemini_key: 'gemini_api_key',
+    cta_enabled: 'cta_enabled', cta_text: 'cta_text',
+    cta_link_url: 'cta_link_url', cta_link_text: 'cta_link_text',
+    bold_enabled: 'formatting_bold_enabled', highlight_enabled: 'formatting_highlight_enabled',
+    highlight_color: 'formatting_highlight_color',
+    custom_instructions: 'prompt_custom_instructions',
+    min_length: 'content_min_length', max_length: 'content_max_length',
+    max_paragraphs: 'content_max_paragraphs', image_count: 'content_image_count',
+  };
+  for (const [key, id] of Object.entries(cfg_fields)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    fd.append(key, el.type === 'checkbox' ? String(el.checked) : el.value);
+  }
+
+  // 이미지 첨부
+  for (const f of selectedFiles) fd.append('images', f);
+
+  const res = await fetch('/api/run', { method: 'POST', body: fd });
+  const { task_id } = await res.json();
+  currentTaskId = task_id;
+
+  // SSE 로그 수신
+  if (sse) sse.close();
+  sse = new EventSource(`/api/logs/${task_id}`);
+  sse.onmessage = e => {
+    const item = JSON.parse(e.data);
+    if (!item.msg) return;
+
+    if (item.type === 'preview_ready') {
+      addLog(item.msg, 'done');
+      loadPreview(task_id);
+      setStatus('preview');
+    } else if (item.type === 'error') {
+      addLog(item.msg, 'err');
+    } else if (item.type === 'done') {
+      if (item.msg) addLog(item.msg, 'done');
+      sse.close();
+      document.getElementById('run-btn').disabled = false;
+      const st = item.msg ? 'done' : currentStatus();
+      setStatus(st === 'preview' ? 'cancelled' : st);
+    } else {
+      addLog(item.msg);
+    }
+  };
+  sse.onerror = () => sse.close();
+}
+
+// ── 미리보기 ──────────────────────────────────────────────────────────
+async function loadPreview(taskId) {
+  const res = await fetch(`/api/preview/${taskId}`);
+  const data = await res.json();
+  document.getElementById('preview-title').value   = data.title || '';
+  document.getElementById('preview-body').value    = data.body  || '';
+  document.getElementById('preview-threads').value = data.threads_post || '';
+  showPreview();
+}
+
+async function confirmPost(proceed) {
+  if (!currentTaskId) return;
+  hidePreview();
+  if (proceed) {
+    setStatus('posting');
+    addLog('[시작] 카페 게시를 시작합니다...');
+  }
+  await fetch(`/api/confirm/${currentTaskId}`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      proceed,
+      title: document.getElementById('preview-title').value,
+      body:  document.getElementById('preview-body').value,
+    })
+  });
+}
+
+// ── 헬퍼 ──────────────────────────────────────────────────────────────
+function addLog(msg, cls='') {
+  const log = document.getElementById('log');
+  const line = document.createElement('div');
+  if (cls) line.className = 'log-' + cls;
+  line.textContent = msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+function clearLog() { document.getElementById('log').innerHTML = ''; }
+function showPreview() { document.getElementById('preview-panel').classList.add('show'); }
+function hidePreview() { document.getElementById('preview-panel').classList.remove('show'); }
+
+let _status = 'idle';
+function currentStatus() { return _status; }
+function setStatus(st) {
+  _status = st;
+  const labels = {
+    idle: '대기 중', running: '생성 중', preview: '미리보기',
+    posting: '게시 중', done: '완료', error: '오류', cancelled: '취소됨'
+  };
+  const pill = document.getElementById('status-pill');
+  pill.className = `status-pill pill-${st}`;
+  pill.innerHTML = `<span class="dot ${['running','posting'].includes(st)?'spin':''}"></span>${labels[st]||st}`;
+  if (st === 'done') document.getElementById('run-btn').disabled = false;
+}
+
+// ── 초기화 ────────────────────────────────────────────────────────────
+loadSettings();
+</script>
+</body>
+</html>
