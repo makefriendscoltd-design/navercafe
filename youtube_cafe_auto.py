@@ -100,6 +100,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 # ===================================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
+COOKIES_FILE = os.path.join(SCRIPT_DIR, "cookies.txt")
 
 # 전역 설정 변수
 NAVER_ID = ""
@@ -471,14 +472,23 @@ def detect_source_type(user_input):
     return 'article', user_input
 
 
-def _download_audio_ytdlp(video_id, browser='chrome'):
-    """yt-dlp + 브라우저 쿠키로 오디오 파일을 다운로드합니다."""
+def _cookie_configs():
+    """쿠키 설정 후보 목록 반환. cookies.txt 파일이 있으면 최우선."""
+    configs = []
+    if os.path.exists(COOKIES_FILE):
+        configs.append(('file', {'cookiefile': COOKIES_FILE}))
+    for browser in ['chrome', 'edge', 'firefox']:
+        configs.append((browser, {'cookiesfrombrowser': (browser, None, None, None)}))
+    return configs
+
+
+def _download_audio_ytdlp(video_id, cookie_opts):
+    """yt-dlp + 지정된 쿠키 설정으로 오디오 파일을 다운로드합니다."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     out_base = os.path.join(SCRIPT_DIR, f"temp_audio_{video_id}")
 
-    # 영상 정보 먼저 확인 (라이브 진행 중인 경우 차단)
-    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True,
-                           'cookiesfrombrowser': (browser, None, None, None)}) as ydl:
+    # 라이브 진행 중 여부 확인
+    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, **cookie_opts}) as ydl:
         try:
             info_only = ydl.extract_info(url, download=False)
         except Exception:
@@ -490,10 +500,10 @@ def _download_audio_ytdlp(video_id, browser='chrome'):
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'outtmpl': out_base + '.%(ext)s',
-        'cookiesfrombrowser': (browser, None, None, None),
         'quiet': True,
         'no_warnings': True,
         'noprogress': True,
+        **cookie_opts,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
@@ -503,7 +513,6 @@ def _download_audio_ytdlp(video_id, browser='chrome'):
             if os.path.exists(p):
                 return p
 
-    # ext를 모를 때 glob으로 탐색
     candidates = [f for f in glob.glob(f"{out_base}.*")
                   if not f.endswith(('.vtt', '.json', '.py'))]
     return candidates[0] if candidates else None
@@ -601,12 +610,12 @@ def get_transcript(video_id):
     except Exception as e:
         print(f"  -> 표준 API 실패: {e}")
 
-    # 2차: yt-dlp + 브라우저 쿠키 (회원전용/로그인 필요 영상)
-    print("  -> yt-dlp로 재시도 (브라우저 쿠키 사용)...")
+    # 2차: yt-dlp + 쿠키 (cookies.txt 우선 → 브라우저 순)
+    print("  -> yt-dlp로 재시도 (쿠키 사용)...")
     url = f"https://www.youtube.com/watch?v={video_id}"
     sub_base = os.path.join(SCRIPT_DIR, f"temp_sub_{video_id}")
 
-    for browser in ['chrome', 'edge', 'firefox']:
+    for label, cookie_opts in _cookie_configs():
         try:
             ydl_opts = {
                 'writesubtitles': True,
@@ -615,8 +624,8 @@ def get_transcript(video_id):
                 'skip_download': True,
                 'quiet': True,
                 'no_warnings': True,
-                'cookiesfrombrowser': (browser, None, None, None),
                 'outtmpl': sub_base,
+                **cookie_opts,
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
@@ -630,37 +639,35 @@ def get_transcript(video_id):
                     except Exception:
                         pass
                     if text:
-                        print(f"  -> yt-dlp({browser}) 자막 추출 완료 ({len(text)}자)")
+                        print(f"  -> yt-dlp({label}) 자막 추출 완료 ({len(text)}자)")
                         return text
         except Exception as e:
-            print(f"  -> yt-dlp({browser}) 실패: {e}")
+            print(f"  -> yt-dlp({label}) 실패: {e}")
             continue
 
-    # 임시 자막 파일 정리
     for f in glob.glob(f"{sub_base}*.vtt"):
         try:
             os.remove(f)
         except Exception:
             pass
 
-    # 3차: yt-dlp 오디오 다운로드 + Gemini 음성 변환
-    # (회원전용·일부공개 영상처럼 캡션 파일이 없는 경우)
+    # 3차: 오디오 다운로드 + Gemini 음성 변환
     print("  -> 오디오 다운로드 + Gemini 음성 변환 시도...")
-    for browser in ['chrome', 'edge', 'firefox']:
+    for label, cookie_opts in _cookie_configs():
         audio_path = None
         try:
-            print(f"  -> [{browser}] 오디오 다운로드 중...")
-            audio_path = _download_audio_ytdlp(video_id, browser)
+            print(f"  -> [{label}] 오디오 다운로드 중...")
+            audio_path = _download_audio_ytdlp(video_id, cookie_opts)
             if not audio_path or not os.path.exists(audio_path):
-                print(f"  -> [{browser}] 오디오 파일 없음, 다음 브라우저 시도")
+                print(f"  -> [{label}] 오디오 파일 없음, 다음 시도")
                 continue
             text = _transcribe_with_gemini_audio(audio_path)
             if text and len(text) > 50:
                 print(f"  -> Gemini 음성 변환 완료 ({len(text)}자)")
                 return text
-            print(f"  -> [{browser}] 변환 결과 너무 짧음, 다음 시도")
+            print(f"  -> [{label}] 변환 결과 너무 짧음, 다음 시도")
         except Exception as e:
-            print(f"  -> [{browser}] 오디오 변환 실패: {e}")
+            print(f"  -> [{label}] 오디오 변환 실패: {e}")
         finally:
             if audio_path and os.path.exists(audio_path):
                 try:
