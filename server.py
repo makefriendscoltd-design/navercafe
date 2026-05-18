@@ -57,7 +57,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 # ── 자동화 실행 스레드 ────────────────────────────────────────────────
 
-def _run(task_id: str, source: str, optional_config: dict, image_paths: list):
+def _run(task_id: str, source: str, optional_config: dict, image_paths: list,
+         subtitle_path: str = ""):
     state = TASKS[task_id]
 
     class _LogWriter:
@@ -93,7 +94,19 @@ def _run(task_id: str, source: str, optional_config: dict, image_paths: list):
                 state.log_queue.put({"type": "error", "msg": "[오류] 유효한 유튜브 URL이 아닙니다."})
                 state.status = "error"
                 return
-            source_text = auto.get_transcript(vid)
+
+            # 자막 파일이 업로드된 경우 바로 사용
+            if subtitle_path and os.path.exists(subtitle_path):
+                source_text = auto.parse_subtitle_file(subtitle_path)
+                state.log_queue.put({"type": "log",
+                    "msg": f"[자막] 업로드 파일 사용 ({len(source_text)}자)"})
+                try:
+                    os.remove(subtitle_path)
+                except Exception:
+                    pass
+            else:
+                source_text = auto.get_transcript(vid)
+
             if not source_text:
                 state.log_queue.put({"type": "error", "msg": "[오류] 자막을 추출할 수 없습니다."})
                 state.status = "error"
@@ -241,7 +254,8 @@ async def run_task(
     max_length:          int  = Form(2500),
     max_paragraphs:      int  = Form(6),
     image_count:         int  = Form(6),
-    images: Optional[list[UploadFile]] = File(None),
+    images:   Optional[list[UploadFile]] = File(None),
+    subtitle: Optional[UploadFile]       = File(None),
 ):
     task_id = str(uuid.uuid4())
     state = TaskState()
@@ -256,6 +270,14 @@ async def run_task(
                 with open(dest, "wb") as f:
                     shutil.copyfileobj(img.file, f)
                 saved_paths.append(dest)
+
+    # 자막 파일 저장
+    saved_subtitle = ""
+    if subtitle and subtitle.filename:
+        dest = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}_{subtitle.filename}")
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(subtitle.file, f)
+        saved_subtitle = dest
 
     optional_config = {
         'naver_id':          naver_id,
@@ -277,7 +299,7 @@ async def run_task(
     }
 
     threading.Thread(target=_run,
-                     args=(task_id, source, optional_config, saved_paths),
+                     args=(task_id, source, optional_config, saved_paths, saved_subtitle),
                      daemon=True).start()
 
     return {"task_id": task_id}

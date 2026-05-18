@@ -586,12 +586,51 @@ def _parse_vtt(vtt_path):
             line = line.strip()
             if not line or line.startswith('WEBVTT') or '-->' in line or re.match(r'^\d+$', line):
                 continue
-            line = re.sub(r'<[^>]+>', '', line)  # HTML 태그 제거
+            line = re.sub(r'<[^>]+>', '', line)
             if line:
                 text_parts.append(line)
     except Exception:
         pass
     return ' '.join(text_parts)
+
+
+def _parse_srt(srt_path):
+    """SRT 자막 파일을 평문 텍스트로 변환합니다."""
+    text_parts = []
+    try:
+        with open(srt_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        # 번호 줄, 타임코드 줄 제거
+        blocks = re.split(r'\n\s*\n', content)
+        for block in blocks:
+            lines = block.strip().splitlines()
+            for line in lines:
+                line = line.strip()
+                if re.match(r'^\d+$', line):
+                    continue
+                if re.match(r'\d{2}:\d{2}:\d{2}[,\.]\d{3}\s*-->', line):
+                    continue
+                line = re.sub(r'<[^>]+>', '', line)
+                if line:
+                    text_parts.append(line)
+    except Exception:
+        pass
+    return ' '.join(text_parts)
+
+
+def parse_subtitle_file(path):
+    """업로드된 자막 파일(.vtt/.srt/.txt)을 텍스트로 변환합니다."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.vtt':
+        return _parse_vtt(path)
+    elif ext == '.srt':
+        return _parse_srt(path)
+    else:
+        try:
+            with open(path, 'r', encoding='utf-8', errors='replace') as f:
+                return f.read()
+        except Exception:
+            return ''
 
 
 def get_transcript(video_id):

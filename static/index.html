@@ -91,6 +91,15 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
 .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent);
                                           background: #eff6ff; }
 .drop-zone input { display: none; }
+
+/* ── Subtitle upload ── */
+.subtitle-zone { border: 1px dashed var(--border); border-radius: 8px;
+                 padding: 10px 14px; cursor: pointer; color: var(--muted);
+                 font-size: 13px; display: flex; align-items: center; gap: 8px;
+                 transition: border-color .15s, background .15s; }
+.subtitle-zone:hover { border-color: var(--accent); background: #eff6ff; }
+.subtitle-zone input { display: none; }
+.subtitle-zone .sub-name { color: var(--accent); font-weight: 600; }
 #img-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .img-tag { background: #eff6ff; border: 1px solid #bfdbfe;
            color: var(--accent); border-radius: 5px;
@@ -168,6 +177,15 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
     <div class="card">
       <div class="card-title">소스 입력</div>
       <textarea id="source" placeholder="유튜브 URL / 뉴스 URL / 직접 텍스트 입력"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="card-title">자막 파일 (선택 — 회원/비공개 영상)</div>
+      <div class="subtitle-zone" id="subtitle-zone" onclick="document.getElementById('sub-input').click()">
+        <input type="file" id="sub-input" accept=".vtt,.srt,.txt">
+        <span>📄</span>
+        <span id="sub-label">YouTube Studio에서 내보낸 .vtt / .srt 파일을 여기에 업로드</span>
+      </div>
     </div>
 
     <div class="card">
@@ -301,6 +319,7 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
 // ── 상태 ──────────────────────────────────────────────────────────────
 let currentTaskId = null;
 let selectedFiles = [];
+let selectedSubtitle = null;
 let sse = null;
 
 // ── 탭 전환 ───────────────────────────────────────────────────────────
@@ -320,6 +339,15 @@ document.querySelectorAll('.ptab-btn').forEach(btn => {
     btn.classList.add('active');
     document.getElementById('ptab-' + btn.dataset.ptab).classList.add('active');
   });
+});
+
+// ── 자막 파일 선택 ────────────────────────────────────────────────────
+document.getElementById('sub-input').addEventListener('change', e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  selectedSubtitle = f;
+  document.getElementById('sub-label').innerHTML =
+    `<span class="sub-name">✔ ${f.name}</span> <small style="color:var(--muted)">(클릭해서 변경)</small>`;
 });
 
 // ── 이미지 선택 ───────────────────────────────────────────────────────
@@ -428,6 +456,9 @@ async function startRun() {
     if (!el) continue;
     fd.append(key, el.type === 'checkbox' ? String(el.checked) : el.value);
   }
+
+  // 자막 파일 첨부
+  if (selectedSubtitle) fd.append('subtitle', selectedSubtitle);
 
   // 이미지 첨부
   for (const f of selectedFiles) fd.append('images', f);
