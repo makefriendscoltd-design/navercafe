@@ -324,129 +324,77 @@ def load_optional_config(config):
 # 5. 메타프롬프트 (동적 생성)
 # ===================================================================
 
-DEFAULT_WRITING_STYLE = r"""# 유튜브 영상 → 네이버 카페 칼럼 변환 메타프롬프트 v2
+DEFAULT_WRITING_STYLE = r"""# 유튜브 영상 → 칼럼 변환 메타프롬프트
 
 ## 역할
-당신은 매거진 B, 롱블랙, 퍼블리 스타일의 한국어 비즈니스 칼럼니스트입니다.
-독자는 30~45세 창업자·마케터·직장인. 이들은 바쁩니다. 첫 문장에서 안 끌리면 닫습니다.
-정보를 '전달'하지 말고, 이야기를 '펼쳐'내십시오.
+당신은 비즈니스 및 AI 분야의 전문 콘텐츠 작가입니다. 유튜브 영상의 내용을 분석하여 독자에게 가치 있고 실용적인 인사이트를 제공하는 한국어 칼럼으로 재구성하는 것이 당신의 임무입니다.
 
----
+## 출력 형식
 
-## ❶ 제목 — 카피라이팅 원칙
+### 1. 제목
+- 명확하고 구체적인 제목 작성
+- 핵심 가치 제안이나 숫자를 포함
+- 예: "AI로 리스크 없이 수익화 하는 법", "직원 없이 AI로 100만 달러를 벌 수 있는 5가지 비즈니스 모델"
 
-제목은 '정보 요약'이 아니라 '클릭 욕구'를 만드는 것입니다.
+### 2. 도입부
+- 2-3 문단으로 구성
+- 영상의 핵심 내용과 가치를 요약
+- 독자의 관심을 끄는 문제 제기 또는 통계 제시
+- 왜 이 내용이 중요한지 설명
 
-**반드시 아래 4가지 중 하나의 긴장 구조를 사용하십시오:**
+### 3. 본문 구조
 
-A) 역설형: 상식을 뒤집는 대립 구도
-   예) "마케터 출신 창업자가 '초기에 마케팅하지 말라'고 말한 이유"
-   예) "설탕을 팔아야 살아남는 소다 시장에서 설탕을 뺀 회사의 결말"
+**섹션 번호 체계:**
+- 대주제: 1, 2, 3, 4... (숫자만)
+- 소주제: 2.1, 2.2, 2.3... (필요시)
 
-B) 결과 선공개형: 숫자로 충격을 주고, 이유로 끌어당김
-   예) "18개월 만에 월매출 100억. 그들이 버린 건 광고가 아니라 '설명'이었다"
-   예) "월마트 입점 제안을 거절했다. 6개월 뒤 그들은 월마트에 입점했다"
+**각 섹션 구성:**
+- 명확한 제목: 핵심 메시지를 담은 설명적 제목
+- 본문: 2-5 문단으로 구성
+- 구체적 예시: 실제 사례, 도구명, 회사명, 수치 등
+- 실용적 조언: 독자가 실행할 수 있는 구체적인 방법
 
-C) 불편한 질문형: 독자 자신의 상황을 건드림
-   예) "당신 제품, 설명 없이도 팔리나요?"
-   예) "투자자 10명이 전부 거절한 아이디어가 2조 원이 된 과정"
+**표 활용 (필요시):**
+- 비교 정보는 표로 정리
+- 예: 비즈니스 모델 비교, 비용/노력/수익 분석, 단계별 프로세스
 
-D) 내부자 폭로형: '비밀' 또는 '뒤에서 일어난 일'의 뉘앙스
-   예) "소다 업계 1위들이 올리팝을 처음 봤을 때 무시한 이유, 그리고 5년 후"
+### 4. 결론
+- 핵심 메시지 재강조
+- 행동 촉구 (Action Call)
+- 독자에게 다음 단계 제시
 
-부제는 본제의 긴장을 '해소'하지 말고 '심화'시키십시오.
-나쁜 예) "소다 시장을 뒤흔든 단 하나의 전략" (너무 평범)
-좋은 예) "규칙을 하나만 깼다. 나머지는 철저히 지켰다" (역설이 남음)
+### 5. CTA (Call-to-Action)
+- 자연스럽게 추가 자료나 커뮤니티 안내
+- 과도하지 않게, 간결하게
 
----
+## 작성 원칙
 
-## ❷ 도입부 — 독자를 낚는 3단 구조
+### 스타일
+1. 전문적이면서도 접근 가능한 톤: 지나치게 학술적이거나 딱딱하지 않게
+2. 명확하고 간결한 문장: 불필요한 수식어 최소화
+3. 구체적인 정보 우선: 추상적인 표현보다 구체적인 예시와 수치
+4. 실용성 강조: 독자가 바로 적용할 수 있는 정보 제공
 
-**[1문장] 장면 또는 역설로 시작**
-뉴스 헤드라인도, 정의도 아닙니다. 독자가 머릿속에 그림을 그리게 하십시오.
-나쁜 예) "전 세계 소다 시장은 거대하지만 건강에 해롭다는 약점이 있습니다."
-좋은 예) "콜라 한 캔에 설탕이 39g 들어 있다는 걸 알면서도, 사람들은 오늘도 콜라를 삽니다."
+### 피해야 할 것
+- 과도한 볼드체 사용 금지
+- 이모티콘 사용 금지
+- 과장된 표현이나 클릭베이트성 문구 금지
+- bullet point나 리스트 과다 사용 금지 (표와 번호 섹션으로 대체)
+- 영상 내용을 그대로 나열하기 금지
 
-**[2~3문장] 긴장 고조**
-주인공이 등장하기 직전, '왜 이게 말이 안 되는지'를 보여주십시오.
-숫자를 쓸 때는 맥락과 함께. "18.5억 달러"보다 "코카콜라가 100년 넘게 지킨 시장에, 5년 된 신생 브랜드가 18.5억 달러 가치로 들어왔다"가 훨씬 강합니다.
+### 반드시 포함할 것
+- 번호가 매겨진 명확한 구조
+- 각 섹션의 설명적 제목
+- 구체적인 도구명, 회사명, 수치
+- 실제 사례와 예시
+- 독자가 실행할 수 있는 단계별 가이드
+- 적절한 표를 활용한 정보 정리
 
-**[1문장] 이 글이 줄 것**
-"이 칼럼에서는 ~을 분석합니다" 금지.
-대신: "어떻게 가능했는지, 지금부터 뜯어봅니다." / "그 답이 생각보다 단순해서 오히려 불편합니다."
-
----
-
-## ❸ 본문 — 나열이 아닌 서사
-
-섹션은 3~5개. 각 섹션은 독립된 '미니 이야기'입니다.
-
-**섹션 제목 규칙**
-번역투 금지: "전략적 피벗", "제품-시장 적합성 확보", "단계적 확장 전략" (금지)
-말하듯 쓰기: "두 번째 도전에서 달라진 딱 한 가지", "잘 팔릴 때까지 버티는 법", "돈 쓰기 전에 먼저 할 일" (권장)
-
-**섹션 내부 구조 (매 섹션마다)**
-
-① 훅 문장: 이 섹션에서 가장 반직관적이거나 흥미로운 사실 한 줄
-② 배경·맥락: 왜 이게 중요한지 (2~3문장, 독자의 언어로)
-③ 핵심 장면 또는 발화: 영상 속 구체적 일화나 발언을 재구성
-   - 직접 인용은 따옴표 없이 "그는 이렇게 말했습니다" 형식으로
-   - 장면 묘사: "투자자 앞에서 그가 꺼낸 것은 PPT가 아니라 캔 하나였습니다"
-④ 적용 또는 반전: 독자가 '나한테도 해당되네' 느끼는 한 문장
-
-**표는 서사가 끊길 때만 사용**
-표 앞에 반드시 맥락 문장을 쓰십시오. 표를 그냥 툭 던지지 마십시오.
-
----
-
-## ❹ 문체 — 번역투 교정 사전
-
-아래 왼쪽 표현은 절대 쓰지 마십시오. 오른쪽으로 바꾸십시오.
-
-| 번역투 (금지) | 자연스러운 한국어 (사용) |
-|---|---|
-| 핵심 발화자 | 이 영상의 주인공 / 그 |
-| 전략적 목표 | 노린 것 / 바라던 것 |
-| 보편적 교훈 | 누구에게나 통하는 이유 |
-| 제품-시장 적합성 | 시장이 원하는 제품인지 확인 (첫 등장 시에만 PMF 병기) |
-| 해당 분야 | 이 시장 / 이 업계 |
-| ~라는 점에서 주목할 만합니다 | ~이래서 흥미롭습니다 / ~가 포인트입니다 |
-| 본 칼럼에서는 | 지금부터 |
-| ~함으로써 | ~해서 |
-| 명확히 인지하고 | 알고 |
-| 도출할 수 있습니다 | 나옵니다 / 알 수 있습니다 |
-
-**추가 문체 원칙:**
-- 문장은 짧게. 한 문장에 하나의 생각.
-- "~했습니다. ~입니다." 단조로운 연속 금지 → 짧은 문장과 긴 문장을 교차.
-- 숫자 앞에는 항상 맥락: "5년" 아니라 "코카콜라가 100년 걸린 일을 5년 만에".
-- 섹션 끝에 다음 섹션을 살짝 예고하는 연결 문장 권장.
-
----
-
-## ❺ 결론과 CTA
-
-**결론 (3~4문장)**
-요약 금지. 독자가 읽고 나서 느껴야 할 감정을 설계하십시오.
-"결국 올리팝의 성공은 ~의 균형에서 탄생했습니다" → 이런 총정리 문장 금지.
-대신: 가장 핵심적인 역설 하나를 다시 꺼내, 독자 자신에게 돌려주십시오.
-예) "가장 무서운 경쟁자는 코카콜라가 아니었습니다. 너무 많은 걸 바꾸려는 자기 자신이었습니다."
-
-**CTA (1~2문장)**
-링크나 서비스 홍보 전에, 독자의 현재 상황을 찌르는 질문 하나.
-나쁜 예) "올리팝의 전략을 당신의 비즈니스에 대입해 보십시오."
-좋은 예) "지금 당신 제품에서, 딱 하나만 바꾼다면 무엇입니까?"
-
----
-
-## ❻ 최종 출력 전 자가 검토
-
-- 제목을 읽었을 때 '왜?' 또는 '어떻게?'가 궁금해지는가?
-- 도입부 첫 문장이 장면 또는 역설로 시작하는가?
-- 각 섹션에 번역투 표현이 하나도 없는가?
-- 정보를 나열한 섹션이 있는가? 있다면 일화나 장면으로 교체하라.
-- 결론이 요약인가? 그렇다면 다시 쓰라.
-- 소리 내어 읽었을 때 어색한 부분이 없는가?
+### 톤 & 보이스
+- 권위 있지만 친근함
+- 교육적이지만 지루하지 않음
+- 긍정적이지만 현실적
+- 독자를 존중하며 대화하듯
 """
 
 
@@ -520,16 +468,84 @@ def detect_source_type(user_input):
     return 'article', user_input
 
 
+def _parse_vtt(vtt_path):
+    """VTT 자막 파일을 평문 텍스트로 변환합니다."""
+    text_parts = []
+    try:
+        with open(vtt_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('WEBVTT') or '-->' in line or re.match(r'^\d+$', line):
+                continue
+            line = re.sub(r'<[^>]+>', '', line)  # HTML 태그 제거
+            if line:
+                text_parts.append(line)
+    except Exception:
+        pass
+    return ' '.join(text_parts)
+
+
 def get_transcript(video_id):
-    """유튜브 영상의 자막을 텍스트로 추출합니다."""
+    """유튜브 영상의 자막을 텍스트로 추출합니다.
+    공개/일부공개: YouTubeTranscriptApi 사용.
+    회원전용 등 실패 시: yt-dlp + 브라우저 쿠키로 재시도.
+    """
     print("[1/4] 유튜브 자막 추출 중...")
+
+    # 1차: 표준 API (공개·일부공개 영상)
     try:
         transcript = YouTubeTranscriptApi().fetch(video_id, languages=['ko', 'en'])
         text = " ".join([t.text for t in transcript])
+        print(f"  -> 자막 추출 완료 ({len(text)}자)")
         return text
     except Exception as e:
-        print(f"  -> 자막 추출 실패: {e}")
-        return None
+        print(f"  -> 표준 API 실패: {e}")
+
+    # 2차: yt-dlp + 브라우저 쿠키 (회원전용/로그인 필요 영상)
+    print("  -> yt-dlp로 재시도 (브라우저 쿠키 사용)...")
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    sub_base = os.path.join(SCRIPT_DIR, f"temp_sub_{video_id}")
+
+    for browser in ['chrome', 'edge', 'firefox']:
+        try:
+            ydl_opts = {
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': ['ko', 'en'],
+                'skip_download': True,
+                'quiet': True,
+                'no_warnings': True,
+                'cookiesfrombrowser': (browser, None, None, None),
+                'outtmpl': sub_base,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([url])
+
+            for lang in ['ko', 'en', 'ko-orig']:
+                sub_file = f"{sub_base}.{lang}.vtt"
+                if os.path.exists(sub_file):
+                    text = _parse_vtt(sub_file)
+                    try:
+                        os.remove(sub_file)
+                    except Exception:
+                        pass
+                    if text:
+                        print(f"  -> yt-dlp({browser}) 자막 추출 완료 ({len(text)}자)")
+                        return text
+        except Exception as e:
+            print(f"  -> yt-dlp({browser}) 실패: {e}")
+            continue
+
+    # 임시 자막 파일 정리
+    for f in glob.glob(f"{sub_base}*.vtt"):
+        try:
+            os.remove(f)
+        except Exception:
+            pass
+
+    print("  -> 모든 방법으로 자막 추출 실패")
+    return None
 
 
 def scrape_article(url):
@@ -726,6 +742,42 @@ def generate_blog_post(source_text, source_type='youtube', has_images=True,
     return title, body
 
 
+def generate_threads_post(source_text):
+    """소스 텍스트로 스레드(Threads)용 연속 포스트를 생성합니다."""
+    print("  -> 스레드용 글 생성 중...")
+    client = genai.Client(api_key=GEMINI_API_KEY)
+
+    prompt = f"""당신은 비즈니스/AI 분야 Threads 콘텐츠 작성자입니다.
+아래 내용을 바탕으로 Threads에 올릴 연속 포스트(스레드)를 한국어로 작성하세요.
+
+규칙:
+- 3~5개의 연속 포스트로 구성
+- 각 포스트는 500자 이내
+- 첫 포스트: 독자의 시선을 잡는 핵심 질문 또는 충격적 사실로 시작
+- 중간 포스트: 핵심 인사이트를 하나씩 전개 (번호 없이, 자연스럽게)
+- 마지막 포스트: 독자가 바로 적용할 수 있는 한 가지 행동 제안
+- 이모티콘 사용 금지
+- 해시태그 금지
+- 각 포스트는 "---" 구분선으로 분리
+
+원본 내용:
+{source_text[:3000]}
+
+위 내용을 바탕으로 Threads 스레드를 작성하세요.
+반드시 <THREADS>스레드 내용</THREADS> 태그로 감싸주세요."""
+
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        match = re.search(r'<THREADS>(.*?)</THREADS>', response.text, re.DOTALL)
+        return match.group(1).strip() if match else response.text.strip()
+    except Exception as e:
+        print(f"  -> 스레드 글 생성 실패: {e}")
+        return ""
+
+
 # ===================================================================
 # 8. 영상 프레임 추출
 # ===================================================================
@@ -866,74 +918,66 @@ def _is_cursor_inside_blockquote(driver):
 
 
 def _move_cursor_to_end(driver):
-    """에디터 커서를 문서 최하단 + 인용구 밖으로 이동합니다 (JS Range API)."""
+    """에디터 커서를 문서 최하단 + 인용구 밖으로 이동합니다."""
     try:
-        result = driver.execute_script("""
-            var editor = document.querySelector('[contenteditable="true"]');
-            if (!editor) return 'no_editor';
+        driver.execute_script("""
+            // 가장 바깥쪽 contenteditable(메인 에디터)을 찾는다
+            var allEditable = document.querySelectorAll('[contenteditable="true"]');
+            var editor = allEditable[0];
+            for (var i = 1; i < allEditable.length; i++) {
+                if (allEditable[i].contains(editor)) editor = allEditable[i];
+            }
+            if (!editor) return;
 
-            // 스크롤 맨 아래
             editor.scrollTop = editor.scrollHeight;
 
-            // 마지막 섹션이 인용구인지 확인
-            var lastChild = editor.lastElementChild;
-            var isLastQuote = lastChild && lastChild.classList &&
-                lastChild.classList.contains('se-section-quotation');
-
-            if (isLastQuote) {
-                // 인용구가 마지막이면 바로 뒤에 빈 텍스트 섹션을 삽입
+            // 마지막 섹션이 인용구면 그 다음에 빈 섹션 추가
+            var sections = editor.querySelectorAll('.se-section');
+            var lastSection = sections[sections.length - 1];
+            if (lastSection && lastSection.classList.contains('se-section-quotation')) {
                 var newSection = document.createElement('div');
                 newSection.className = 'se-section se-section-text se-l-default';
-                newSection.setAttribute('contenteditable', 'true');
                 newSection.innerHTML =
                     '<div class="se-module se-module-text">' +
                     '<p class="se-text-paragraph se-text-paragraph-align-">' +
-                    '<span class="se-ff-system se-fs15">\\u200B</span></p></div>';
+                    '<span class="se-ff-system se-fs15">​</span></p></div>';
                 editor.appendChild(newSection);
-
-                // 새 문단에 커서 배치
-                var newSpan = newSection.querySelector('span');
-                if (newSpan) {
-                    var range = document.createRange();
-                    range.setStart(newSpan, 1);
-                    range.collapse(true);
-                    var sel = window.getSelection();
-                    sel.removeAllRanges();
-                    sel.addRange(range);
+                var span = newSection.querySelector('span');
+                if (span) {
+                    var r = document.createRange();
+                    r.setStart(span, 0);
+                    r.collapse(true);
+                    var s = window.getSelection();
+                    s.removeAllRanges();
+                    s.addRange(r);
                 }
-                return 'created_section_after_quote';
+                return;
             }
 
-            // 일반 경우: 에디터 끝으로 커서 이동
-            var sel = window.getSelection();
-            var range = document.createRange();
-            range.selectNodeContents(editor);
-            range.collapse(false);
-            sel.removeAllRanges();
-            sel.addRange(range);
-
-            // 커서가 인용구 안에 있는지 확인
-            var node = sel.anchorNode;
-            var quotationSection = null;
-            while (node && node !== editor) {
-                if (node.nodeType === 1 &&
-                    node.classList.contains('se-section-quotation')) {
-                    quotationSection = node;
-                    break;
+            // 마지막 인용구 다음 요소에 커서 배치
+            var quotes = editor.querySelectorAll('.se-section-quotation');
+            if (quotes.length > 0) {
+                var lastQ = quotes[quotes.length - 1];
+                var nextEl = lastQ.nextElementSibling;
+                if (nextEl) {
+                    var para = nextEl.querySelector('.se-text-paragraph') || nextEl;
+                    var r2 = document.createRange();
+                    r2.selectNodeContents(para);
+                    r2.collapse(false);
+                    var s2 = window.getSelection();
+                    s2.removeAllRanges();
+                    s2.addRange(r2);
+                    return;
                 }
-                node = node.parentNode;
             }
 
-            if (quotationSection) {
-                // 인용구 바로 뒤에 커서 배치
-                range = document.createRange();
-                range.setStartAfter(quotationSection);
-                range.collapse(true);
-                sel.removeAllRanges();
-                sel.addRange(range);
-                return 'escaped_quotation';
-            }
-            return 'ok';
+            // 에디터 끝으로 커서 이동
+            var r3 = document.createRange();
+            r3.selectNodeContents(editor);
+            r3.collapse(false);
+            var s3 = window.getSelection();
+            s3.removeAllRanges();
+            s3.addRange(r3);
         """)
     except Exception:
         pyautogui.hotkey('ctrl', 'End')
@@ -941,7 +985,7 @@ def _move_cursor_to_end(driver):
 
     # JS 탈출 후에도 인용구 안이면 키보드로 강제 탈출
     if _is_cursor_inside_blockquote(driver):
-        pyautogui.press('escape')
+        pyautogui.hotkey('ctrl', 'End')
         time.sleep(0.2)
         pyautogui.press('down', presses=5, interval=0.1)
         time.sleep(0.2)
@@ -1023,8 +1067,42 @@ def insert_blockquote(driver, heading_text):
     pyautogui.hotkey('ctrl', 'v')
     time.sleep(1)
 
-    # (7) 인용구 탈출: 문서 끝으로 이동
-    _move_cursor_to_end(driver)
+    # (7) 인용구 탈출 — 3단 전략으로 확실하게 탈출
+    time.sleep(0.3)
+
+    # 전략 A: 인용구 바로 다음 요소를 JS로 직접 클릭
+    escaped = driver.execute_script(f"""
+        var quotes = document.querySelectorAll('.se-section-quotation');
+        if (quotes.length <= {quote_count_before}) return 'no_new_quote';
+        var lastQ = quotes[quotes.length - 1];
+        var next = lastQ.nextElementSibling;
+        if (next) {{
+            var para = next.querySelector('.se-text-paragraph');
+            if (para) {{ para.click(); return 'clicked_next_para'; }}
+            next.click();
+            return 'clicked_next';
+        }}
+        return 'no_next';
+    """)
+    time.sleep(0.4)
+
+    # 전략 B: 아직 인용구 안이면 키보드로 탈출
+    if _is_cursor_inside_blockquote(driver):
+        pyautogui.press('end')
+        time.sleep(0.1)
+        pyautogui.press('down', presses=5, interval=0.1)
+        time.sleep(0.3)
+
+    # 전략 C: 그래도 안 되면 JS로 새 섹션 생성 후 커서 이동
+    if _is_cursor_inside_blockquote(driver):
+        _move_cursor_to_end(driver)
+        time.sleep(0.3)
+
+    # 최후 수단: Enter로 새 줄 생성 후 이동
+    if _is_cursor_inside_blockquote(driver):
+        pyautogui.press('enter', presses=2, interval=0.15)
+        time.sleep(0.3)
+
     print(f"  -> 인용구 삽입 완료: '{heading_text}'")
 
 

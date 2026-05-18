@@ -24,6 +24,79 @@ except ImportError:
     DEFAULT_WRITING_STYLE = ""
 
 # ===================================================================
+# 미리보기 다이얼로그
+# ===================================================================
+
+class PreviewDialog:
+    """AI 생성 글을 미리 보고 카페 게시 여부를 결정하는 다이얼로그."""
+
+    def __init__(self, parent, title, body, threads_post=""):
+        self.proceed = False
+
+        self.win = tk.Toplevel(parent)
+        self.win.title("미리보기 — 게시 전 확인")
+        self.win.geometry("900x700")
+        self.win.minsize(700, 500)
+        self.win.grab_set()
+        self.win.focus_set()
+
+        # 제목 영역
+        title_frame = ttk.LabelFrame(self.win, text="제목")
+        title_frame.pack(fill='x', padx=10, pady=(10, 4))
+        self.title_var = tk.StringVar(value=title)
+        ttk.Entry(title_frame, textvariable=self.title_var,
+                  font=('맑은 고딕', 12, 'bold')).pack(fill='x', padx=8, pady=6)
+
+        # 탭: 카페 본문 / 스레드
+        nb = ttk.Notebook(self.win)
+        nb.pack(fill='both', expand=True, padx=10, pady=4)
+
+        # -- 카페 본문 탭
+        tab_cafe = ttk.Frame(nb)
+        nb.add(tab_cafe, text="  카페 본문  ")
+        self.body_text = scrolledtext.ScrolledText(
+            tab_cafe, wrap='word', font=('맑은 고딕', 10))
+        self.body_text.pack(fill='both', expand=True, padx=4, pady=4)
+        self.body_text.insert('1.0', body)
+
+        # -- 스레드 탭
+        tab_threads = ttk.Frame(nb)
+        nb.add(tab_threads, text="  스레드 포스트  ")
+        threads_info = ttk.Label(
+            tab_threads,
+            text="아래 내용을 복사해서 Threads에 올리세요. (자동 게시 안됨)",
+            foreground="gray")
+        threads_info.pack(anchor='w', padx=8, pady=(6, 2))
+        self.threads_text = scrolledtext.ScrolledText(
+            tab_threads, wrap='word', font=('맑은 고딕', 10))
+        self.threads_text.pack(fill='both', expand=True, padx=4, pady=4)
+        self.threads_text.insert('1.0', threads_post if threads_post else "(스레드 글 없음)")
+
+        # 하단 버튼
+        btn_frame = ttk.Frame(self.win)
+        btn_frame.pack(fill='x', padx=10, pady=(4, 10))
+        ttk.Label(btn_frame, text="내용을 수정하거나 확인 후 카페에 게시하세요.",
+                  foreground="gray").pack(side='left')
+        ttk.Button(btn_frame, text="취소", command=self._cancel,
+                   width=10).pack(side='right', padx=(4, 0))
+        ttk.Button(btn_frame, text="카페에 게시 ▶", command=self._confirm,
+                   width=14).pack(side='right')
+
+        # 창 닫기 버튼도 취소로 처리
+        self.win.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    def _confirm(self):
+        self.proceed = True
+        self.edited_title = self.title_var.get().strip()
+        self.edited_body = self.body_text.get('1.0', 'end-1c')
+        self.win.destroy()
+
+    def _cancel(self):
+        self.proceed = False
+        self.win.destroy()
+
+
+# ===================================================================
 # GUI 앱
 # ===================================================================
 
@@ -478,7 +551,7 @@ class CafeAutoApp:
             elif source_type == 'text':
                 source_text = normalized_input
 
-            # (3) AI 글 생성
+            # (3) AI 글 생성 (카페 본문 + 스레드)
             has_images = len(image_paths) > 0
             actual_image_count = len(image_paths)
             title, body = auto.generate_blog_post(
@@ -487,6 +560,33 @@ class CafeAutoApp:
 
             if has_images and "[IMAGE_HERE]" not in body:
                 self._log("[경고] Gemini가 [IMAGE_HERE] 마커를 생성하지 않았습니다.")
+
+            threads_post = auto.generate_threads_post(source_text)
+            self._log("[완료] 글 생성 완료. 미리보기를 확인하세요.")
+
+            # (3.5) 미리보기 — 메인 스레드에서 다이얼로그 표시 후 사용자 확인 대기
+            proceed_event = threading.Event()
+            preview_result = {'proceed': False, 'title': title, 'body': body}
+
+            def _show_preview():
+                dlg = PreviewDialog(self.root, title, body, threads_post)
+                self.root.wait_window(dlg.win)
+                if dlg.proceed:
+                    preview_result['proceed'] = True
+                    preview_result['title'] = dlg.edited_title
+                    preview_result['body'] = dlg.edited_body
+                proceed_event.set()
+
+            self.root.after(0, _show_preview)
+            proceed_event.wait()
+
+            if not preview_result['proceed']:
+                self._log("[취소] 사용자가 게시를 취소했습니다.")
+                return
+
+            title = preview_result['title']
+            body = preview_result['body']
+            self._log("[시작] 네이버 카페 게시를 시작합니다...")
 
             # (4) 네이버 카페 포스팅
             auto.post_to_naver_cafe(title, body, image_paths, optional_config)
