@@ -462,6 +462,7 @@ def detect_source_type(user_input):
     youtube_patterns = [
         r'youtube\.com/watch', r'youtu\.be/',
         r'youtube\.com/shorts/', r'youtube\.com/embed/',
+        r'youtube\.com/live/',
     ]
     for pattern in youtube_patterns:
         if re.search(pattern, user_input, re.IGNORECASE):
