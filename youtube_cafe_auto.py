@@ -1399,10 +1399,8 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
         if highlight_keywords:
             print(f"  -> 하이라이트 대상 키워드: {highlight_keywords}")
 
-    # Chrome을 우측 하단에 작게 띄워 다른 작업 방해 최소화
     options = webdriver.ChromeOptions()
-    options.add_argument("--window-size=900,700")
-    options.add_argument("--window-position=9999,0")   # 오른쪽 화면 밖
+    options.add_argument("--window-size=1000,750")
     driver = webdriver.Chrome(options=options)
 
     try:
@@ -1433,7 +1431,7 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
             time.sleep(1)
 
         if not login_ok:
-            print("  -> ⚠ 로그인 페이지에서 벗어나지 못했습니다. 캡챠/보안인증을 직접 완료해주세요.")
+            print("  -> [주의] 로그인 페이지에서 벗어나지 못했습니다. 캡챠/보안인증을 직접 완료해주세요.")
             # 추가 60초 대기
             for _ in range(60):
                 current = driver.current_url
