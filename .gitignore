@@ -1,6 +1,16 @@
 # Credentials & local config
 config.ini
 
+# Comment bot state & dedicated Chrome profile (cookies/session)
+comment_bot_seen.json
+chrome_profile_commentbot/
+
+# Sensitive: exported browser cookies
+cookies.txt
+
+# Diagnostic screenshots
+comment_*.png
+
 # Python
 __pycache__/
 *.py[cod]
