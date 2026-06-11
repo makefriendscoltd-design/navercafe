@@ -6,6 +6,12 @@ comment_bot_seen.json
 chrome_profile_commentbot/
 comment_bot.log
 
+# Member extractor: session profile, exported personal data, diagnostic logs
+chrome_profile_extractor/
+members.csv
+extract_*.log
+backfill_*.log
+
 # Sensitive: exported browser cookies
 cookies.txt
 

@@ -652,7 +652,35 @@ def is_notice_article(driver):
         return False
 
 
-def write_comment(driver, clubid, article_id, text, board_url, delay_range, dry_run=False):
+def _comment_signatures(comment_texts):
+    """봇이 다는 댓글에서 '이미 단 댓글'을 식별할 고유 문자열(주로 CTA URL)을 추출한다."""
+    sigs = set()
+    for t in comment_texts:
+        for u in re.findall(r"https?://[^\s]+", t):
+            sigs.add(u.strip().rstrip(").,"))
+    return [s for s in sigs if len(s) >= 8]
+
+
+def _already_commented(driver, signatures):
+    """현재 글(이미 cafe_main iframe 진입 상태)의 댓글 영역에 봇 시그니처가 있으면 True.
+
+    backfill 을 seen 무시 모드로 돌릴 때, 이미 내 댓글이 달린 글에 중복으로 다는 것을 막는다.
+    """
+    if not signatures:
+        return False
+    txt = driver.execute_script("""
+        var sel = '.comment_text_view, .comment_text_box, .comment_list_area,'
+                + ' li[class*=CommentItem], [class*=comment]';
+        var els = document.querySelectorAll(sel);
+        var s = '';
+        for (var i = 0; i < els.length; i++) { s += (els[i].innerText || '') + '\\n'; }
+        return s;
+    """) or ""
+    return any(sig in txt for sig in signatures)
+
+
+def write_comment(driver, clubid, article_id, text, board_url, delay_range, dry_run=False,
+                  skip_if_commented=False, signatures=None):
     """글 상세 페이지로 이동해 댓글을 작성한다. 성공 시 True.
 
     네이버 신버전 카페는 글 본문/댓글이 cafe_main iframe 안에 있으므로 iframe 으로 전환한다.
@@ -680,6 +708,11 @@ def write_comment(driver, clubid, article_id, text, board_url, delay_range, dry_
         # 댓글 영역이 로드되도록 하단까지 스크롤
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1.5)
+
+        # (backfill seen-무시 모드) 이미 내 댓글이 있으면 중복 작성 방지
+        if skip_if_commented and _already_commented(driver, signatures):
+            print(f"  [건너뜀] 글 {article_id}: 이미 내 댓글이 있어 다시 달지 않습니다.")
+            return True
 
         # 댓글 입력창 탐색
         try:
@@ -744,17 +777,21 @@ def write_comment(driver, clubid, article_id, text, board_url, delay_range, dry_
 # 6-B. 백필 모드 — 특정 날짜 이후 기존 글에 소급 댓글
 # ===================================================================
 def _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
-                  delay_range, cutoff_date, do_post):
+                  delay_range, cutoff_date, do_post, ignore_seen=False):
     """cutoff_date(포함) 이후의 기존 가입인사 글에 하나씩 댓글을 단다.
 
     do_post=False 이면 대상만 출력하는 미리보기. True 이면 실제 작성.
-    이미 comment_bot_seen.json 에 있는 글은 건너뛴다.
+    기본적으로 comment_bot_seen.json 에 있는 글은 건너뛴다.
+    ignore_seen=True 이면 seen 을 무시하고 다시 훑되, 글마다 '이미 내 댓글이 있는지'
+    확인해서 중복 작성을 막는다. (재시작 시 잘못 seen 처리된 밀린 글 복구용)
     """
     today = datetime.date.today()
+    signatures = _comment_signatures(comment_texts)
     print("=" * 60)
     print(f"  [BACKFILL] {cutoff_date} 이후 글에 소급 댓글 "
           f"({'실제 작성' if do_post else '미리보기 — 작성 안 함'})")
-    print(f"  (오늘={today}, 글당 딜레이={delay_range[0]:.0f}~{delay_range[1]:.0f}초)")
+    print(f"  (오늘={today}, 글당 딜레이={delay_range[0]:.0f}~{delay_range[1]:.0f}초"
+          f"{', seen 무시+중복방지' if ignore_seen else ''})")
     print("=" * 60)
 
     driver = make_driver()
@@ -793,7 +830,7 @@ def _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
                 mark = "(날짜 파싱 실패)"
             elif d < cutoff_date:
                 mark = "(범위 밖)"
-            elif a["id"] in seen:
+            elif a["id"] in seen and not ignore_seen:
                 mark = "(이미 처리됨)"
             else:
                 mark = ">> 대상"
@@ -813,7 +850,8 @@ def _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
             text = random.choice(comment_texts)
             try:
                 ok = write_comment(driver, clubid, a["id"], text,
-                                   board_url, delay_range, dry_run=False)
+                                   board_url, delay_range, dry_run=False,
+                                   skip_if_commented=ignore_seen, signatures=signatures)
             except Exception as e:
                 print(f"  [오류] 글 {a['id']} 작성 중 예외: {e}")
                 ok = False
@@ -947,6 +985,26 @@ def _run_oneoff(naver_id, naver_pw, clubid, board_url, comment_texts,
 # ===================================================================
 # 7. 메인 루프
 # ===================================================================
+def _is_session_dead(exc):
+    """브라우저 창이 닫히거나 드라이버 연결이 끊겨 더 이상 복구 불가능한
+    Selenium 오류인지 판별한다. 이 경우 봇을 종료시켜 .bat 런처가
+    새 브라우저로 재시작하도록 한다 (좀비 상태로 무한 에러 방지)."""
+    msg = str(exc).lower()
+    signatures = (
+        "invalid session id",
+        "session deleted",
+        "browser has closed",
+        "not connected to devtools",
+        "disconnected",
+        "no such window",
+        "web view not found",
+        "chrome not reachable",
+        "unable to connect to renderer",
+        "target window already closed",
+    )
+    return any(s in msg for s in signatures)
+
+
 def main():
     config = load_config()
     naver_id = config["NAVER"]["id"]
@@ -989,21 +1047,24 @@ def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "watch"
     if mode == "backfill":
         if len(sys.argv) < 3:
-            print("[사용법] python comment_bot.py backfill YYYY-MM-DD [go]")
-            print("  예: python comment_bot.py backfill 2026-06-08      (미리보기)")
-            print("      python comment_bot.py backfill 2026-06-08 go   (실제 작성)")
+            print("[사용법] python comment_bot.py backfill YYYY-MM-DD [go] [ignoreseen]")
+            print("  예: python comment_bot.py backfill 2026-06-08              (미리보기)")
+            print("      python comment_bot.py backfill 2026-06-08 go           (실제 작성, seen 건너뜀)")
+            print("      python comment_bot.py backfill 2026-06-08 go ignoreseen(밀린 글 복구: seen 무시+중복방지)")
             sys.exit(1)
         try:
             cutoff = datetime.date.fromisoformat(sys.argv[2])
         except ValueError:
             print(f"[오류] 날짜 형식이 잘못됐습니다: {sys.argv[2]} (예: 2026-06-08)")
             sys.exit(1)
-        do_post = (len(sys.argv) > 3 and sys.argv[3] == "go")
+        rest = sys.argv[3:]
+        do_post = "go" in rest
+        ignore_seen = any(a in ("ignoreseen", "force", "--ignore-seen") for a in rest)
         # 백필은 다량 작성이라 스팸 감지 회피용으로 더 긴 딜레이 사용
         bf_min = config.getfloat("COMMENT_BOT", "backfill_min_delay", fallback=15.0)
         bf_max = config.getfloat("COMMENT_BOT", "backfill_max_delay", fallback=40.0)
         _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
-                      (bf_min, bf_max), cutoff, do_post)
+                      (bf_min, bf_max), cutoff, do_post, ignore_seen=ignore_seen)
         return
     if mode == "report":
         # 어제 통계를 지금 즉시 텔레그램으로 1회 발송 (수동)
@@ -1059,6 +1120,12 @@ def main():
             try:
                 articles = fetch_article_ids(driver, board_url)
             except Exception as e:
+                if _is_session_dead(e):
+                    # 브라우저가 닫힘/연결 끊김 → 복구 불가. 봇을 종료해
+                    # .bat 런처가 새 브라우저로 재시작하게 한다.
+                    print(f"[복구] 브라우저 세션이 끊겼습니다: {e}")
+                    print("[복구] 봇을 종료합니다. 런처(run_comment_bot.bat)가 곧 재시작합니다.")
+                    raise
                 print(f"[경고] 글 목록 조회 실패: {e}. {poll_interval}초 후 재시도.")
                 time.sleep(poll_interval)
                 continue
