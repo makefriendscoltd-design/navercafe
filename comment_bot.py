@@ -27,6 +27,7 @@ import re
 import sys
 import time
 import urllib.parse
+import urllib.request
 
 # Windows cp949 콘솔에서 em-dash/이모지 등 출력 시 크래시 방지 → stdout/stderr 를 utf-8 로
 for _stream in (sys.stdout, sys.stderr):
@@ -202,6 +203,40 @@ def make_driver():
     except Exception:
         pass
     return driver
+
+
+def send_telegram(token, chat_id, text, thread_id=None):
+    """텔레그램 봇으로 메시지를 전송한다. 성공 시 True."""
+    if not token or not chat_id:
+        return False
+    try:
+        payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": "true"}
+        if thread_id:
+            payload["message_thread_id"] = thread_id
+        data = urllib.parse.urlencode(payload).encode()
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage", data=data)
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status == 200
+    except Exception as e:
+        print(f"  [텔레그램] 전송 실패: {e}")
+        return False
+
+
+def _format_daily_report(events, period_date):
+    """일일 보고 메시지를 만든다. events=[(시각, aid, title, 성공여부), ...]"""
+    ok = [e for e in events if e[3]]
+    fail = [e for e in events if not e[3]]
+    lines = [f"📋 카페 댓글봇 일일 보고 ({period_date})",
+             f"가입인사 새 글 {len(events)}건 / 댓글 성공 {len(ok)} · 실패 {len(fail)}"]
+    if events:
+        lines.append("")
+        for t, aid, title, success in events:
+            mark = "✅" if success else "❌"
+            lines.append(f"{mark} {t} | {title[:24]} (#{aid})")
+    else:
+        lines.append("(새 가입인사 글 없음 — 정상 작동 중)")
+    return "\n".join(lines)
 
 
 def is_logged_in(driver):
@@ -826,6 +861,14 @@ def main():
     max_delay = config.getfloat("COMMENT_BOT", "max_action_delay", fallback=8.0)
     delay_range = (min_delay, max_delay)
 
+    # 텔레그램 일일 보고 설정
+    tg = {
+        "enabled": config.getboolean("COMMENT_BOT", "telegram_enabled", fallback=False),
+        "token": config.get("COMMENT_BOT", "telegram_token", fallback="").strip(),
+        "chat_id": config.get("COMMENT_BOT", "telegram_chat_id", fallback="").strip(),
+        "report_hour": config.getint("COMMENT_BOT", "telegram_report_hour", fallback=9),
+    }
+
     if not board_url:
         print("=" * 60)
         print("[설정 필요] config.ini 의 [COMMENT_BOT] board_url 이 비어 있습니다.")
@@ -876,12 +919,21 @@ def main():
     print(f"  - 댓글 문구: {len(comment_texts)}개 (랜덤)")
     print(f"  - 감시 주기: {poll_interval}초")
     print("  - 대상: 봇 시작 이후 새로 올라온 글만")
+    print(f"  - 텔레그램 보고: {'켜짐 (매일 ' + str(tg['report_hour']) + '시)' if tg['enabled'] else '꺼짐'}")
     print("  - 중지: Ctrl+C")
     print("=" * 60)
 
     driver = make_driver()
 
     seen = load_seen()
+    # 텔레그램 일일 보고용 누적 기록
+    pending = []                      # [(시각문자열, aid, title, 성공여부), ...]
+    last_report_date = datetime.date.today()
+    fail_count = 0
+
+    def _tg(text):
+        if tg["enabled"]:
+            send_telegram(tg["token"], tg["chat_id"], text)
 
     try:
         naver_login(driver, naver_id, naver_pw)
@@ -897,6 +949,8 @@ def main():
         save_seen(seen)
         print(f"[기준선] 글 {len(baseline)}개 확인, {new_baseline}개를 기준선에 추가. "
               "이후 새 글부터 댓글을 작성합니다.\n")
+
+        # 텔레그램은 매일 보고 시각에만 발송 (시작/중지/오류 알림은 보내지 않음)
 
         # ── 감시 루프 ──
         while True:
@@ -924,9 +978,20 @@ def main():
                     # 성공/실패 모두 seen 에 기록해 무한 재시도 방지
                     seen.add(aid)
                     save_seen(seen)
+                    pending.append((time.strftime("%m-%d %H:%M"), aid, title, ok))
+                    if not ok:
+                        fail_count += 1
             else:
                 ts = time.strftime("%H:%M:%S")
                 print(f"[{ts}] 새 글 없음. {poll_interval}초 후 재확인.")
+
+            # ── 일일 보고: 날짜가 바뀌고 보고 시각이 지나면 전송 ──
+            now = datetime.datetime.now()
+            if now.date() > last_report_date and now.hour >= tg["report_hour"]:
+                _tg(_format_daily_report(pending, last_report_date))
+                pending = []
+                fail_count = 0
+                last_report_date = now.date()
 
             time.sleep(poll_interval)
 
