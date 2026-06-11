@@ -239,6 +239,69 @@ def _format_daily_report(events, period_date):
     return "\n".join(lines)
 
 
+# ===================================================================
+# 카페 통계 스크래핑 (cafe.stat.naver.com)
+# ===================================================================
+def _stat_daily_value(driver, url, date_str, wait=8):
+    """통계 일별 표(방문자 조회수 목록)에서 date_str 행의 첫 숫자를 반환. 실패 시 None.
+
+    표는 'YYYY.MM.DD.(요일)\\t숫자\\t...' 형태의 행으로 렌더된다.
+    """
+    driver.get(url)
+    time.sleep(wait)
+    txt = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+    for line in txt.splitlines():
+        line = line.strip()
+        if line.startswith(date_str):
+            nums = re.findall(r"[\d,]+", line[len(date_str):])
+            if nums:
+                try:
+                    return int(nums[0].replace(",", ""))
+                except ValueError:
+                    return None
+    return None
+
+
+def _stat_top_posts(driver, clubid, n=3, wait=9):
+    """게시글 순위(/rank/article, 어제 기본)에서 조회수 TOP n = [(순위, 제목, 게시판, 조회수)]."""
+    driver.get(f"https://cafe.stat.naver.com/cafe/{clubid}/rank/article")
+    time.sleep(wait)
+    txt = driver.execute_script("return document.body ? document.body.innerText : '';") or ""
+    posts = []
+    for line in txt.splitlines():
+        parts = [p.strip() for p in line.split("\t")]
+        if len(parts) >= 6 and parts[0].isdigit():
+            views = re.sub(r"[^\d]", "", parts[-1])
+            posts.append((int(parts[0]), parts[1], parts[2], int(views) if views else 0))
+            if len(posts) >= n:
+                break
+    return posts
+
+
+def fetch_cafe_stats(driver, clubid, target_date):
+    """어제(target_date) 카페 전체 통계: 방문자수 / 전체 조회수 / 조회수 TOP3."""
+    ds = target_date.strftime("%Y.%m.%d.")  # 예: '2026.06.10.'
+    base = f"https://cafe.stat.naver.com/cafe/{clubid}"
+    visitors = _stat_daily_value(driver, f"{base}/visit/uv", ds)        # 순방문자수
+    views = _stat_daily_value(driver, f"{base}/visit/cv", ds)            # 전체 조회수
+    top = _stat_top_posts(driver, clubid, n=3)
+    return {"date": ds, "visitors": visitors, "views": views, "top": top}
+
+
+def _format_stats(stats):
+    """통계를 텔레그램 보고용 텍스트로."""
+    mmdd = stats["date"][5:].rstrip(".")  # 'MM.DD'
+    lines = ["", f"📊 카페 통계 (어제 {mmdd})"]
+    v, w = stats.get("visitors"), stats.get("views")
+    lines.append(f"👥 방문자 {v:,}명" if v is not None else "👥 방문자 (집계 실패)")
+    lines.append(f"👁 조회수 {w:,}회" if w is not None else "👁 조회수 (집계 실패)")
+    if stats.get("top"):
+        lines.append("🔥 조회수 TOP3")
+        for rank, title, board, vw in stats["top"]:
+            lines.append(f" {rank}. {title[:24]} ({vw:,}회·{board})")
+    return "\n".join(lines)
+
+
 def is_logged_in(driver):
     """저장된 세션으로 이미 로그인되어 있는지 확인한다."""
     try:
@@ -770,6 +833,41 @@ def _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
 
 
 # ===================================================================
+# 6-C. 보고 모드 — 어제 통계를 지금 즉시 텔레그램 발송
+# ===================================================================
+def _run_report_now(naver_id, naver_pw, clubid, tg):
+    today = datetime.date.today()
+    yday = today - datetime.timedelta(days=1)
+    print("=" * 60)
+    print(f"  [REPORT] 어제({yday}) 카페 통계를 즉시 발송")
+    print("=" * 60)
+    driver = make_driver()
+    try:
+        naver_login(driver, naver_id, naver_pw)
+        try:
+            stats = fetch_cafe_stats(driver, clubid, yday)
+        except Exception as e:
+            print(f"[오류] 통계 수집 실패: {e}")
+            return
+        msg = (f"📋 카페 일일 보고 ({yday})  *수동 발송*\n"
+               + _format_stats(stats))
+        print("\n--- 전송할 내용 ---")
+        print(msg)
+        print("-------------------")
+        if tg["enabled"]:
+            ok = send_telegram(tg["token"], tg["chat_id"], msg)
+            print(f"[텔레그램] 전송 {'성공' if ok else '실패'}")
+        else:
+            print("[텔레그램] 비활성(telegram_enabled=false) — 발송 안 함")
+        time.sleep(2)
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
+
+
+# ===================================================================
 # 6. 일회성 모드 (inspect / test) — 셀렉터 검증용
 # ===================================================================
 def _run_oneoff(naver_id, naver_pw, clubid, board_url, comment_texts,
@@ -907,6 +1005,10 @@ def main():
         _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
                       (bf_min, bf_max), cutoff, do_post)
         return
+    if mode == "report":
+        # 어제 통계를 지금 즉시 텔레그램으로 1회 발송 (수동)
+        _run_report_now(naver_id, naver_pw, clubid, tg)
+        return
     if mode in ("inspect", "test", "probe"):
         target_id = sys.argv[2] if len(sys.argv) > 2 else None
         _run_oneoff(naver_id, naver_pw, clubid, board_url, comment_texts,
@@ -988,7 +1090,13 @@ def main():
             # ── 일일 보고: 날짜가 바뀌고 보고 시각이 지나면 전송 ──
             now = datetime.datetime.now()
             if now.date() > last_report_date and now.hour >= tg["report_hour"]:
-                _tg(_format_daily_report(pending, last_report_date))
+                report = _format_daily_report(pending, last_report_date)
+                try:
+                    stats = fetch_cafe_stats(driver, clubid, last_report_date)
+                    report += "\n" + _format_stats(stats)
+                except Exception as e:
+                    report += f"\n📊 통계 수집 실패: {e}"
+                _tg(report)
                 pending = []
                 fail_count = 0
                 last_report_date = now.date()
