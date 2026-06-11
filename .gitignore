@@ -4,6 +4,7 @@ config.ini
 # Comment bot state & dedicated Chrome profile (cookies/session)
 comment_bot_seen.json
 chrome_profile_commentbot/
+comment_bot.log
 
 # Sensitive: exported browser cookies
 cookies.txt
