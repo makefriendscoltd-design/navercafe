@@ -51,8 +51,47 @@ except ImportError as e:
 
 CONFIG_PATH = "config.ini"
 SEEN_PATH = "comment_bot_seen.json"
+WEEKLY_STATE_PATH = "comment_bot_weekly.json"  # 마지막으로 주간 회원증가 보고한 ISO 주차
 # 쿠키/세션을 저장할 전용 크롬 프로필 폴더 (첫 로그인 후 재사용 → 캡차/재로그인 방지)
 PROFILE_DIR = os.path.abspath("chrome_profile_commentbot")
+LOCK_PATH = os.path.abspath("comment_bot_watch.lock")  # watch 모드 단일 인스턴스 락
+
+# 락 파일 핸들은 프로세스 수명 동안 열어둬야 잠금이 유지됨 (GC 방지용 전역 보관)
+_LOCK_FH = None
+
+
+def acquire_watch_lock():
+    """watch(상시 감시) 모드 중복 실행을 막는다.
+
+    같은 크롬 프로필(chrome_profile_commentbot)·seen.json 을 여러 봇이 동시에
+    건드리면 프로필 잠금 충돌로 서로 죽는 악순환이 생긴다. Windows msvcrt 파일락은
+    프로세스가 죽으면 OS 가 자동으로 잠금을 해제하므로 stale lock 걱정이 없다.
+
+    이미 살아있는 watch 인스턴스가 있으면 False 를 반환한다(잠금 실패).
+    """
+    global _LOCK_FH
+    try:
+        import msvcrt
+        _LOCK_FH = open(LOCK_PATH, "w")
+        msvcrt.locking(_LOCK_FH.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            _LOCK_FH.write(str(os.getpid()))
+            _LOCK_FH.flush()
+        except Exception:
+            pass
+        return True
+    except OSError:
+        # 다른 인스턴스가 이미 잠금 보유 중
+        try:
+            if _LOCK_FH:
+                _LOCK_FH.close()
+        except Exception:
+            pass
+        _LOCK_FH = None
+        return False
+    except Exception:
+        # msvcrt 부재 등 예외 상황에서는 봇 동작을 막지 않는다
+        return True
 
 # 기본 댓글 문구 (config 에 없을 때 생성되는 샘플)
 DEFAULT_COMMENT_TEXTS = [
@@ -179,15 +218,64 @@ def save_seen(seen):
         print(f"  [경고] 상태 저장 실패: {e}")
 
 
+def load_last_weekly():
+    """마지막으로 주간 회원증가 보고한 (연도, ISO주차). 없으면 None."""
+    if os.path.exists(WEEKLY_STATE_PATH):
+        try:
+            with open(WEEKLY_STATE_PATH, "r", encoding="utf-8") as f:
+                w = json.load(f).get("last_week")
+            return tuple(w) if w else None
+        except Exception:
+            return None
+    return None
+
+
+def save_last_weekly(week_tuple):
+    try:
+        with open(WEEKLY_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"last_week": list(week_tuple)}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"  [경고] 주간보고 상태 저장 실패: {e}")
+
+
 # ===================================================================
 # 3. 드라이버 생성 / 로그인
 # ===================================================================
+def _kill_orphan_profile_chrome():
+    """commentbot 프로필을 점유 중인 고아 크롬을 종료한다 (자가치유).
+
+    봇이 비정상 종료되면 자기가 띄운 크롬이 살아남아 PROFILE_DIR 을 잠그고,
+    다음 실행 때 "Chrome instance exited" 로 봇이 죽는 무한 사망 루프의 원인이 된다.
+    드라이버 생성 직전 이 좀비를 제거해 어떤 경로(watchdog/수동)로 떠도 자가복구되게 한다.
+    ※ 사용자의 일반 크롬은 건드리지 않는다 — commentbot 프로필을 쓰는 프로세스만 종료.
+    """
+    if os.name != "nt":
+        return
+    import subprocess
+    profile_name = os.path.basename(PROFILE_DIR)  # chrome_profile_commentbot
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*" + profile_name + "*' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+    )
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            timeout=20, capture_output=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as e:
+        print(f"  [경고] 좀비 크롬 정리 실패(무시하고 진행): {e}")
+
+
 def make_driver():
     """전용 프로필을 사용하는 Chrome 드라이버를 생성한다.
 
     프로필 폴더에 쿠키/세션이 저장되므로, 첫 로그인 이후에는 재로그인/캡차가 거의 없다.
     또한 자동화 탐지 우회 플래그로 캡차 발생 확률을 낮춘다.
     """
+    # 이전 실행이 남긴 고아 크롬이 프로필을 잠그면 드라이버 생성이 실패하므로 먼저 정리한다.
+    _kill_orphan_profile_chrome()
     options = webdriver.ChromeOptions()
     options.add_argument("--window-size=1000,800")
     options.add_argument(f"--user-data-dir={PROFILE_DIR}")
@@ -299,6 +387,89 @@ def _format_stats(stats):
         lines.append("🔥 조회수 TOP3")
         for rank, title, board, vw in stats["top"]:
             lines.append(f" {rank}. {title[:24]} ({vw:,}회·{board})")
+    return "\n".join(lines)
+
+
+# ===================================================================
+# 주간 회원증가 집계 (전체 멤버 관리 = ManageWholeMember, 가입일 내림차순)
+# ===================================================================
+_MEMBER_DATE_RE = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})\.")
+
+
+def _member_join_rows(driver):
+    """현재 페이지의 멤버 행에서 가입일(행의 첫 날짜)만 추출 → [date, ...].
+
+    각 행: `별명 (아이디) 등급 가입일 최종방문일 ...` → 첫 YYYY.MM.DD. 가 가입일.
+    """
+    texts = driver.execute_script(
+        "var o=[];var t=document.querySelectorAll('table tr');"
+        "for(var i=0;i<t.length;i++){var x=(t[i].innerText||'').replace(/\\s+/g,' ').trim();"
+        "if(x)o.push(x);}return o;") or []
+    out = []
+    for x in texts:
+        if not re.match(r"^.+?\([A-Za-z0-9_\-]{2,40}\)", x):
+            continue  # 멤버 행(별명(아이디)) 아니면 스킵
+        m = _MEMBER_DATE_RE.search(x)
+        if m:
+            out.append(datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    return out
+
+
+def _member_next_page(driver, cur_page):
+    """#paginate 에서 cur_page+1 로 이동(없으면 '다음 10개'). 성공 True."""
+    target = str(cur_page + 1)
+    clicked = driver.execute_script(
+        "var t=arguments[0],box=document.querySelector('#paginate');"
+        "if(!box)return 'nobox';var as=box.querySelectorAll('a');"
+        "for(var i=0;i<as.length;i++){if((as[i].textContent||'').trim()===t){as[i].click();return 'num';}}"
+        "var nx=box.querySelector('a.next');if(nx){nx.click();return 'next';}return 'end';", target)
+    if clicked in ("end", "nobox"):
+        return False
+    deadline = time.time() + 8
+    while time.time() < deadline:
+        on = driver.execute_script(
+            "var o=document.querySelector('#paginate a.on');return o?o.textContent.trim():'';") or ""
+        if on == target:
+            time.sleep(0.6)
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def count_member_joins(driver, clubid, start_date, end_date):
+    """전체 멤버 관리(가입일 desc)를 순회하며 start~end 가입 회원수를 센다.
+
+    가입일이 start_date 이전으로 내려가면 즉시 중단(정렬이 내림차순이므로).
+    반환: (총합, {date: count}).
+    """
+    driver.get(f"https://cafe.naver.com/ManageWholeMember.nhn?clubid={clubid}")
+    time.sleep(4)
+    per_day = {}
+    page = 1
+    while page < 400:
+        rows = _member_join_rows(driver)
+        if not rows:
+            break
+        for joined in rows:
+            if start_date <= joined <= end_date:
+                per_day[joined] = per_day.get(joined, 0) + 1
+        if min(rows) < start_date:
+            break
+        if not _member_next_page(driver, page):
+            break
+        page += 1
+    return sum(per_day.values()), per_day
+
+
+def _format_weekly_growth(total, per_day, start_date, end_date):
+    """주간 회원증가를 텔레그램 보고 텍스트로."""
+    wd = ["월", "화", "수", "목", "금", "토", "일"]
+    head = f"{start_date.strftime('%m.%d')}~{end_date.strftime('%m.%d')}"
+    lines = ["", f"🧑‍🤝‍🧑 주간 회원 증가 ({head})", f"▶ 신규 가입 {total:,}명"]
+    d = start_date
+    while d <= end_date:
+        lines.append(f"  {d.strftime('%m.%d')}({wd[d.weekday()]}) {per_day.get(d, 0)}명")
+        d += datetime.timedelta(days=1)
     return "\n".join(lines)
 
 
@@ -1023,6 +1194,9 @@ def main():
         "token": config.get("COMMENT_BOT", "telegram_token", fallback="").strip(),
         "chat_id": config.get("COMMENT_BOT", "telegram_chat_id", fallback="").strip(),
         "report_hour": config.getint("COMMENT_BOT", "telegram_report_hour", fallback=9),
+        # 주간 회원증가 보고 (기본: 매주 월요일=0, 보고시각은 위 report_hour 재사용)
+        "weekly_enabled": config.getboolean("COMMENT_BOT", "telegram_weekly_enabled", fallback=True),
+        "weekly_day": config.getint("COMMENT_BOT", "telegram_weekly_report_day", fallback=0),
     }
 
     if not board_url:
@@ -1076,6 +1250,12 @@ def main():
                     delay_range, mode, target_id)
         return
 
+    # ── watch(상시 감시) 모드: 단일 인스턴스 보장 ──
+    if not acquire_watch_lock():
+        print("[중복 차단] 이미 다른 댓글봇(watch) 인스턴스가 실행 중입니다. 이 프로세스는 종료합니다.")
+        print("           (감시봇은 하나만 떠 있어야 크롬 프로필 충돌이 없습니다.)")
+        sys.exit(0)
+
     print("=" * 60)
     print("  네이버 카페 자동 댓글 봇")
     print(f"  - 게시판: clubid={clubid}, menuid={menuid}")
@@ -1083,6 +1263,9 @@ def main():
     print(f"  - 감시 주기: {poll_interval}초")
     print("  - 대상: 봇 시작 이후 새로 올라온 글만")
     print(f"  - 텔레그램 보고: {'켜짐 (매일 ' + str(tg['report_hour']) + '시)' if tg['enabled'] else '꺼짐'}")
+    if tg["enabled"] and tg["weekly_enabled"]:
+        _wd = ["월", "화", "수", "목", "금", "토", "일"][tg["weekly_day"] % 7]
+        print(f"  - 주간 회원증가 보고: 켜짐 (매주 {_wd}요일 {tg['report_hour']}시, 지난 한 주)")
     print("  - 중지: Ctrl+C")
     print("=" * 60)
 
@@ -1092,6 +1275,7 @@ def main():
     # 텔레그램 일일 보고용 누적 기록
     pending = []                      # [(시각문자열, aid, title, 성공여부), ...]
     last_report_date = datetime.date.today()
+    last_weekly_week = load_last_weekly()   # (연도, ISO주차) — 주간 회원증가 보고 중복 방지
     fail_count = 0
 
     def _tg(text):
@@ -1167,6 +1351,26 @@ def main():
                 pending = []
                 fail_count = 0
                 last_report_date = now.date()
+
+            # ── 주간 회원증가 보고: 설정 요일(기본 월)·보고시각 이후 주 1회 ──
+            if tg["enabled"] and tg["weekly_enabled"]:
+                iso = now.isocalendar()
+                this_week = (iso[0], iso[1])
+                if (this_week != last_weekly_week
+                        and now.weekday() >= tg["weekly_day"]
+                        and now.hour >= tg["report_hour"]):
+                    # 직전에 완료된 한 주(월~일)를 집계
+                    last_sun = now.date() - datetime.timedelta(days=now.date().weekday() + 1)
+                    last_mon = last_sun - datetime.timedelta(days=6)
+                    try:
+                        total, per_day = count_member_joins(driver, clubid, last_mon, last_sun)
+                        _tg(_format_weekly_growth(total, per_day, last_mon, last_sun))
+                    except Exception as e:
+                        if _is_session_dead(e):
+                            raise  # 세션 끊김 → 런처 재시작에 맡김
+                        _tg(f"🧑‍🤝‍🧑 주간 회원증가 집계 실패: {e}")
+                    last_weekly_week = this_week
+                    save_last_weekly(last_weekly_week)
 
             time.sleep(poll_interval)
 
