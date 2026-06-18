@@ -39,9 +39,13 @@ if ($orphans) {
 
 Add-Content -Path (Join-Path $dir 'comment_bot.log') -Value "[$ts] === watchdog: 봇 미실행 감지 → 기동 ===" -Encoding UTF8
 
+# python 전체 경로 확정 (작업스케줄러/수동 등 어떤 호출 맥락에서도 PATH 의존 없이 동작)
+$py = (Get-Command python -ErrorAction SilentlyContinue).Source
+if (-not $py) { $py = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe' }
+
 # 콘솔 창 없이 python 기동, 로그는 comment_bot.log 로 append.
 # (Selenium 이 띄우는 크롬 창은 봇 감지 회피상 보이게 뜨며, 이 프로세스와 별개)
 Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList '/c', 'python -u comment_bot.py >> comment_bot.log 2>&1' `
+    -ArgumentList '/c', ('"' + $py + '" -u comment_bot.py >> comment_bot.log 2>&1') `
     -WorkingDirectory $dir -WindowStyle Hidden
 exit 0
