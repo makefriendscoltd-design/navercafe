@@ -52,6 +52,7 @@ except ImportError as e:
 CONFIG_PATH = "config.ini"
 SEEN_PATH = "comment_bot_seen.json"
 WEEKLY_STATE_PATH = "comment_bot_weekly.json"  # 마지막으로 주간 회원증가 보고한 ISO 주차
+REPORT_STATE_PATH = "comment_bot_lastreport.json"  # 마지막으로 일일 보고를 발송한 날짜(재시작 후 누락분 자동발송용)
 # 쿠키/세션을 저장할 전용 크롬 프로필 폴더 (첫 로그인 후 재사용 → 캡차/재로그인 방지)
 PROFILE_DIR = os.path.abspath("chrome_profile_commentbot")
 LOCK_PATH = os.path.abspath("comment_bot_watch.lock")  # watch 모드 단일 인스턴스 락
@@ -236,6 +237,27 @@ def save_last_weekly(week_tuple):
             json.dump({"last_week": list(week_tuple)}, f, ensure_ascii=False)
     except Exception as e:
         print(f"  [경고] 주간보고 상태 저장 실패: {e}")
+
+
+def load_last_report_date():
+    """마지막으로 일일 보고를 발송한 날짜. 없으면 오늘(=재시작 직후 과거분 소급발송 안 함)."""
+    if os.path.exists(REPORT_STATE_PATH):
+        try:
+            with open(REPORT_STATE_PATH, "r", encoding="utf-8") as f:
+                d = json.load(f).get("last_report_date")
+            if d:
+                return datetime.date.fromisoformat(d)
+        except Exception:
+            pass
+    return datetime.date.today()
+
+
+def save_last_report_date(d):
+    try:
+        with open(REPORT_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"last_report_date": d.isoformat()}, f, ensure_ascii=False)
+    except Exception as e:
+        print(f"  [경고] 일일보고 상태 저장 실패: {e}")
 
 
 # ===================================================================
@@ -1274,7 +1296,9 @@ def main():
     seen = load_seen()
     # 텔레그램 일일 보고용 누적 기록
     pending = []                      # [(시각문자열, aid, title, 성공여부), ...]
-    last_report_date = datetime.date.today()
+    # 마지막 보고일을 파일에서 복원 → 재시작/절전으로 봇이 죽어 누락된 당일 보고를
+    # 첫 폴링에서 자동 소급발송한다(아래 루프의 'now.date() > last_report_date' 조건).
+    last_report_date = load_last_report_date()
     last_weekly_week = load_last_weekly()   # (연도, ISO주차) — 주간 회원증가 보고 중복 방지
     fail_count = 0
 
@@ -1351,6 +1375,7 @@ def main():
                 pending = []
                 fail_count = 0
                 last_report_date = now.date()
+                save_last_report_date(last_report_date)
 
             # ── 주간 회원증가 보고: 설정 요일(기본 월)·보고시각 이후 주 1회 ──
             if tg["enabled"] and tg["weekly_enabled"]:
