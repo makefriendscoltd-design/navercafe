@@ -10,12 +10,45 @@
 $ErrorActionPreference = 'SilentlyContinue'
 $dir = 'D:\coding\ccidacafe'
 Set-Location $dir
+$logPath = Join-Path $dir 'comment_bot.log'
 
 # 이미 실행 중인 댓글봇 python 이 있으면 종료 (backfill/test/inspect 등 수동 실행 포함 →
 # 같은 크롬 프로필을 공유하므로 무엇이든 떠 있으면 watch 를 새로 띄우지 않는다)
 $running = Get-CimInstance Win32_Process |
     Where-Object { $_.Name -in @('python.exe', 'pythonw.exe') -and $_.CommandLine -match '(^|\s|\\)comment_bot\.py(\s|$)' }
-if ($running) { exit 0 }
+if ($running) {
+    # ── 살아있어도 '헛도는' 봇 감지 (2026-06-23 사고 대응) ──
+    # 프로세스/락이 살아있으면 watchdog 는 정상으로 봤다. 그러나 세션이 조용히 죽어
+    # (fetch 가 예외 없이 빈 목록 반환) 새 글을 못 잡은 채 무한히 '글 없음'만 찍는 경우가 있다.
+    # 봇은 매 폴링마다 comment_bot_heartbeat.txt 를 갱신하므로, 이 파일이 폴링주기의 몇 배
+    # 넘게 멈춰 있으면 헛도는 것으로 보고 종료시킨 뒤(아래로 떨어져) 새 세션으로 재기동한다.
+    $poll = 1800
+    try {
+        $m = Select-String -Path (Join-Path $dir 'config.ini') -Pattern '^\s*poll_interval_sec\s*=\s*(\d+)' -ErrorAction Stop | Select-Object -First 1
+        if ($m) { $poll = [int]$m.Matches[0].Groups[1].Value }
+    } catch {}
+    $thresholdSec = [Math]::Max(3600, $poll * 3)   # 폴링주기의 3배(최소 60분) 넘게 정체면 비정상
+    $hb = Join-Path $dir 'comment_bot_heartbeat.txt'
+    $stale = $false
+    if (Test-Path $hb) {
+        if (((Get-Date) - (Get-Item $hb).LastWriteTime).TotalSeconds -gt $thresholdSec) { $stale = $true }
+    } else {
+        # 하트비트 파일이 없는데 봇이 5분 넘게 떠 있으면(구버전/비정상) 정체로 간주
+        $oldest = $running | Sort-Object CreationDate | Select-Object -First 1
+        if ($oldest -and ((Get-Date) - $oldest.CreationDate).TotalMinutes -gt 5) { $stale = $true }
+    }
+    if (-not $stale) { exit 0 }   # 정상 가동 중 → 아무것도 안 함(멱등)
+
+    $ts0 = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -Path $logPath -Value "[$ts0] === watchdog: 하트비트 정체(${thresholdSec}s 초과) → 헛도는 봇 강제 종료 후 재시작 ===" -Encoding UTF8
+    $running | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    # 봇이 띄운 크롬도 함께 정리(아래 좀비청소와 중복돼도 무방) — 사용자 일반 크롬은 미접촉
+    Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
+        Where-Object { $_.CommandLine -like '*chrome_profile_commentbot*' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Seconds 2
+    # (여기서 멈추지 않고 아래로 떨어져 고아청소 + 재기동을 수행한다)
+}
 
 $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
@@ -28,7 +61,7 @@ $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 # 로 직접 찾아 정리한다. 이 지점은 봇 미실행 확정(위 $running 체크 통과) → comment_bot.log 를
 # 잠근 것은 죽은 봇의 고아(chromedriver/cmd)뿐이라 종료해도 안전하다.
 # (다른 selenium 프로젝트는 각자 다른 로그파일을 잠그지 ccidacafe 의 comment_bot.log 는 안 건드림)
-$logPath = Join-Path $dir 'comment_bot.log'
+# ($logPath 는 파일 상단에서 정의됨)
 $locked = $false
 try { $fs = [System.IO.File]::Open($logPath, 'Append', 'Write', [System.IO.FileShare]::ReadWrite); $fs.Close() }
 catch { $locked = $true }

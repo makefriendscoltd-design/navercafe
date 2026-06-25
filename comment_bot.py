@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 네이버 카페 가입인사 게시판 자동 댓글 봇 (독립 실행 스크립트)
 
@@ -53,12 +53,25 @@ CONFIG_PATH = "config.ini"
 SEEN_PATH = "comment_bot_seen.json"
 WEEKLY_STATE_PATH = "comment_bot_weekly.json"  # 마지막으로 주간 회원증가 보고한 ISO 주차
 REPORT_STATE_PATH = "comment_bot_lastreport.json"  # 마지막으로 일일 보고를 발송한 날짜(재시작 후 누락분 자동발송용)
+EVENTS_PATH = "comment_bot_events.json"  # 댓글 시도 이력(재시작되어도 일일 보고 집계 유지)
 # 쿠키/세션을 저장할 전용 크롬 프로필 폴더 (첫 로그인 후 재사용 → 캡차/재로그인 방지)
 PROFILE_DIR = os.path.abspath("chrome_profile_commentbot")
 LOCK_PATH = os.path.abspath("comment_bot_watch.lock")  # watch 모드 단일 인스턴스 락
+HEARTBEAT_PATH = os.path.abspath("comment_bot_heartbeat.txt")  # 매 폴링마다 갱신 → watchdog 가 '살아서 헛도는' 봇 감지
 
 # 락 파일 핸들은 프로세스 수명 동안 열어둬야 잠금이 유지됨 (GC 방지용 전역 보관)
 _LOCK_FH = None
+
+
+def write_heartbeat():
+    """매 폴링 주기마다 현재 시각을 기록한다.
+    watchdog 는 이 파일의 수정시각이 너무 오래됐으면 '프로세스는 살아있으나 루프가
+    멈춘/헛도는' 상태로 보고 강제 재시작한다."""
+    try:
+        with open(HEARTBEAT_PATH, "w", encoding="utf-8") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        pass
 
 
 def acquire_watch_lock():
@@ -219,6 +232,56 @@ def save_seen(seen):
         print(f"  [경고] 상태 저장 실패: {e}")
 
 
+def load_events():
+    """댓글 시도 이력을 로드한다. 보고 집계가 봇 재시작으로 사라지지 않게 별도 보관."""
+    if os.path.exists(EVENTS_PATH):
+        try:
+            with open(EVENTS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            events = data.get("events", [])
+            return events if isinstance(events, list) else []
+        except Exception:
+            return []
+    return []
+
+
+def save_events(events):
+    """최근 댓글 시도 이력을 저장한다. 파일이 무한히 커지지 않도록 45일치만 유지."""
+    cutoff = datetime.date.today() - datetime.timedelta(days=45)
+    kept = []
+    for ev in events:
+        try:
+            ev_date = datetime.date.fromisoformat(str(ev.get("date", "")))
+        except Exception:
+            continue
+        if ev_date >= cutoff:
+            kept.append(ev)
+    try:
+        with open(EVENTS_PATH, "w", encoding="utf-8") as f:
+            json.dump({"events": kept}, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"  [경고] 댓글 이력 저장 실패: {e}")
+
+
+def record_comment_event(aid, title, ok, mode="watch"):
+    events = load_events()
+    now = datetime.datetime.now()
+    events.append({
+        "date": now.date().isoformat(),
+        "time": now.strftime("%m-%d %H:%M"),
+        "aid": str(aid),
+        "title": title or "",
+        "ok": bool(ok),
+        "mode": mode,
+    })
+    save_events(events)
+
+
+def events_for_date(period_date):
+    ds = period_date.isoformat()
+    return [ev for ev in load_events() if ev.get("date") == ds]
+
+
 def load_last_weekly():
     """마지막으로 주간 회원증가 보고한 (연도, ISO주차). 없으면 None."""
     if os.path.exists(WEEKLY_STATE_PATH):
@@ -334,16 +397,18 @@ def send_telegram(token, chat_id, text, thread_id=None):
 
 
 def _format_daily_report(events, period_date):
-    """일일 보고 메시지를 만든다. events=[(시각, aid, title, 성공여부), ...]"""
-    ok = [e for e in events if e[3]]
-    fail = [e for e in events if not e[3]]
+    """일일 보고 메시지를 만든다. events=[{time, aid, title, ok, mode}, ...]"""
+    ok = [e for e in events if e.get("ok")]
+    fail = [e for e in events if not e.get("ok")]
     lines = [f"📋 카페 댓글봇 일일 보고 ({period_date})",
              f"가입인사 새 글 {len(events)}건 / 댓글 성공 {len(ok)} · 실패 {len(fail)}"]
     if events:
         lines.append("")
-        for t, aid, title, success in events:
-            mark = "✅" if success else "❌"
-            lines.append(f"{mark} {t} | {title[:24]} (#{aid})")
+        for ev in events:
+            mark = "✅" if ev.get("ok") else "❌"
+            mode = ev.get("mode") or "watch"
+            suffix = " · 백필" if mode == "backfill" else ""
+            lines.append(f"{mark} {ev.get('time', '')} | {ev.get('title', '')[:24]} (#{ev.get('aid')}){suffix}")
     else:
         lines.append("(새 가입인사 글 없음 — 정상 작동 중)")
     return "\n".join(lines)
@@ -1048,8 +1113,12 @@ def _run_backfill(naver_id, naver_pw, clubid, board_url, comment_texts,
             except Exception as e:
                 print(f"  [오류] 글 {a['id']} 작성 중 예외: {e}")
                 ok = False
-            seen.add(a["id"])
-            save_seen(seen)
+            record_comment_event(a["id"], a["title"], ok, mode="backfill")
+            if ok:
+                seen.add(a["id"])
+                save_seen(seen)
+            else:
+                print(f"  [재시도 예약] 글 {a['id']}: 백필 실패로 seen 에 기록하지 않습니다.")
         print(f"\n[완료] 백필 종료. 처리 시도 {len(targets)}개.")
         time.sleep(3)
     except Exception as e:
@@ -1080,7 +1149,8 @@ def _run_report_now(naver_id, naver_pw, clubid, tg):
         except Exception as e:
             print(f"[오류] 통계 수집 실패: {e}")
             return
-        msg = (f"📋 카페 일일 보고 ({yday})  *수동 발송*\n"
+        msg = (_format_daily_report(events_for_date(yday), yday)
+               + "\n  *수동 발송*\n"
                + _format_stats(stats))
         print("\n--- 전송할 내용 ---")
         print(msg)
@@ -1209,6 +1279,16 @@ def main():
     min_delay = config.getfloat("COMMENT_BOT", "min_action_delay", fallback=3.0)
     max_delay = config.getfloat("COMMENT_BOT", "max_action_delay", fallback=8.0)
     delay_range = (min_delay, max_delay)
+    # ── 신뢰성: 장시간 가동된 인스턴스가 세션 침묵부패로 '헛도는' 것을 막기 위한 안전장치 ──
+    # 한 프로세스를 max_run_hours 넘게 돌리지 않고 깨끗이 종료 → watchdog 가 새 브라우저로 재기동.
+    # (기준선 버그 수정 이후라 재시작해도 글 누락이 없으므로 안전하다.)
+    max_run_hours = config.getfloat("COMMENT_BOT", "max_run_hours", fallback=6.0)
+    # 가입인사 게시판은 정상이면 글이 0개일 수 없다. 연속 0개 = 세션이 조용히 죽은 신호 →
+    # empty_board_limit 회 연속이면 종료해 watchdog 가 새 세션으로 재기동하게 한다.
+    empty_board_limit = config.getint("COMMENT_BOT", "empty_board_limit", fallback=2)
+    # 댓글 비허용/삭제된 글은 입력창이 없어 영원히 실패한다. 같은 글이 max_comment_attempts 회
+    # 연속 실패하면 '댓글 불가 글'로 보고 포기(seen 처리) → 무한 재시도·보고 도배를 막는다.
+    max_comment_attempts = config.getint("COMMENT_BOT", "max_comment_attempts", fallback=3)
 
     # 텔레그램 일일 보고 설정
     tg = {
@@ -1294,13 +1374,13 @@ def main():
     driver = make_driver()
 
     seen = load_seen()
-    # 텔레그램 일일 보고용 누적 기록
-    pending = []                      # [(시각문자열, aid, title, 성공여부), ...]
+    # 텔레그램 일일 보고는 comment_bot_events.json 의 댓글 시도 이력으로 집계한다.
     # 마지막 보고일을 파일에서 복원 → 재시작/절전으로 봇이 죽어 누락된 당일 보고를
     # 첫 폴링에서 자동 소급발송한다(아래 루프의 'now.date() > last_report_date' 조건).
     last_report_date = load_last_report_date()
     last_weekly_week = load_last_weekly()   # (연도, ISO주차) — 주간 회원증가 보고 중복 방지
     fail_count = 0
+    fail_attempts = {}   # aid -> 연속 실패 횟수 (max_comment_attempts 도달 시 포기)
 
     def _tg(text):
         if tg["enabled"]:
@@ -1309,22 +1389,41 @@ def main():
     try:
         naver_login(driver, naver_id, naver_pw)
 
-        # ── 기준선 설정: 시작 시점의 글들을 '이미 본 것'으로 기록 (댓글 X) ──
-        print("[기준선] 현재 게시판 글 목록을 기준선으로 기록합니다 (댓글 안 닮)...")
-        baseline = fetch_article_ids(driver, board_url)
-        new_baseline = 0
-        for aid, title in baseline:
-            if aid not in seen:
-                seen.add(aid)
-                new_baseline += 1
-        save_seen(seen)
-        print(f"[기준선] 글 {len(baseline)}개 확인, {new_baseline}개를 기준선에 추가. "
-              "이후 새 글부터 댓글을 작성합니다.\n")
+        # ── 최초 실행만 기준선 설정 ──
+        # 재시작 때 현재 글을 seen 처리하면, 봇이 죽어 있던 동안 올라온 글을 놓친다.
+        # 따라서 seen 파일이 비어 있는 첫 실행에서만 기준선을 만들고, 이후 재시작은
+        # seen 에 없는 현재 글을 새 글로 처리한다.
+        if not seen:
+            print("[기준선] seen 이 비어 있어 현재 게시판 글 목록을 기준선으로 기록합니다 (댓글 안 닮)...")
+            baseline = fetch_article_ids(driver, board_url)
+            new_baseline = 0
+            for aid, title in baseline:
+                if aid not in seen:
+                    seen.add(aid)
+                    new_baseline += 1
+            save_seen(seen)
+            print(f"[기준선] 글 {len(baseline)}개 확인, {new_baseline}개를 기준선에 추가. "
+                  "이후 새 글부터 댓글을 작성합니다.\n")
+        else:
+            print(f"[기준선] 기존 seen {len(seen)}개 유지. 재시작 중 올라온 미처리 글은 댓글 대상입니다.\n")
 
         # 텔레그램은 매일 보고 시각에만 발송 (시작/중지/오류 알림은 보내지 않음)
 
         # ── 감시 루프 ──
+        loop_start = time.time()
+        empty_streak = 0          # 게시판이 연속으로 비어 보인 횟수(세션 침묵부패 감지)
+        write_heartbeat()         # 시작 직후 1회(갓 뜬 봇을 watchdog 가 오인 종료하지 않게)
         while True:
+            # ① 하트비트: 이 파일이 멈추면 watchdog 가 '살아서 헛도는' 봇으로 보고 재시작한다.
+            write_heartbeat()
+
+            # ② 주기적 재활용: 너무 오래 돈 인스턴스는 세션 침묵부패 전에 스스로 종료한다.
+            #    (기준선 버그 수정 이후라 재시작해도 글 누락이 없으므로 안전.)
+            if max_run_hours > 0 and (time.time() - loop_start) > max_run_hours * 3600:
+                print(f"[재활용] {max_run_hours}시간 가동 → 세션 정체 방지를 위해 종료합니다. "
+                      "watchdog 가 새 브라우저로 곧 재시작합니다.")
+                break
+
             try:
                 articles = fetch_article_ids(driver, board_url)
             except Exception as e:
@@ -1337,6 +1436,19 @@ def main():
                 print(f"[경고] 글 목록 조회 실패: {e}. {poll_interval}초 후 재시도.")
                 time.sleep(poll_interval)
                 continue
+
+            # ③ 빈 게시판 감지: 정상이면 가입인사판 글이 0개일 수 없다. 연속 0개 =
+            #    로그아웃/페이지 미로딩 등으로 세션이 조용히 죽은 신호 → 종료 후 재기동에 맡긴다.
+            #    (이번 사고의 직접 원인: fetch 가 예외 없이 빈/낡은 목록을 반환해 '새 글 없음' 무한반복)
+            if not articles:
+                empty_streak += 1
+                print(f"[경고] 게시판 글 0개 조회 (연속 {empty_streak}/{empty_board_limit}). 세션 침묵부패 의심.")
+                if empty_streak >= empty_board_limit:
+                    print("[복구] 게시판이 연속으로 비어 보입니다 → 봇을 종료합니다. watchdog 가 새 세션으로 재시작합니다.")
+                    break
+                time.sleep(poll_interval)
+                continue
+            empty_streak = 0
 
             # 새 글 = seen 에 없는 ID (목록은 보통 최신순이므로 오래된 것부터 처리하려 역순)
             new_articles = [(aid, title) for aid, title in articles if aid not in seen]
@@ -1352,10 +1464,26 @@ def main():
                     except Exception as e:
                         print(f"  [오류] 글 {aid} 댓글 작성 중 예외: {e}")
                         ok = False
-                    # 성공/실패 모두 seen 에 기록해 무한 재시도 방지
-                    seen.add(aid)
-                    save_seen(seen)
-                    pending.append((time.strftime("%m-%d %H:%M"), aid, title, ok))
+                    # 성공한 글만 seen 에 기록한다. 실패한 글은 다음 폴링/복구에서 재시도하되,
+                    # 너무 여러 번 실패하면(댓글 비허용/삭제 글) 포기해 무한 재시도를 막는다.
+                    gave_up = False
+                    if ok:
+                        seen.add(aid)
+                        save_seen(seen)
+                        fail_attempts.pop(aid, None)
+                    else:
+                        fail_attempts[aid] = fail_attempts.get(aid, 0) + 1
+                        if fail_attempts[aid] >= max_comment_attempts:
+                            seen.add(aid)   # 포기: 영구 건너뜀 (댓글창이 없는 글로 판단)
+                            save_seen(seen)
+                            gave_up = True
+                            print(f"  [포기] 글 {aid}: {fail_attempts[aid]}회 연속 실패 → 댓글 불가 글(비허용/삭제 추정)로 보고 더 재시도하지 않습니다.")
+                        else:
+                            print(f"  [재시도 예약] 글 {aid}: 실패({fail_attempts[aid]}/{max_comment_attempts}). 다음 폴링에서 재시도.")
+                    # 보고 도배 방지: 중간 재시도 실패는 기록하지 않고 최종 결과만 1회 남긴다.
+                    # (성공=ok / 포기=gave_up). 아직 재시도 대기 중인 실패는 기록 보류.
+                    if ok or gave_up:
+                        record_comment_event(aid, title, ok, mode="watch")
                     if not ok:
                         fail_count += 1
             else:
@@ -1365,14 +1493,13 @@ def main():
             # ── 일일 보고: 날짜가 바뀌고 보고 시각이 지나면 전송 ──
             now = datetime.datetime.now()
             if now.date() > last_report_date and now.hour >= tg["report_hour"]:
-                report = _format_daily_report(pending, last_report_date)
+                report = _format_daily_report(events_for_date(last_report_date), last_report_date)
                 try:
                     stats = fetch_cafe_stats(driver, clubid, last_report_date)
                     report += "\n" + _format_stats(stats)
                 except Exception as e:
                     report += f"\n📊 통계 수집 실패: {e}"
                 _tg(report)
-                pending = []
                 fail_count = 0
                 last_report_date = now.date()
                 save_last_report_date(last_report_date)
