@@ -6,6 +6,14 @@ comment_bot_seen.json
 chrome_profile_commentbot/
 comment_bot.log
 
+# Cafe publisher: dedicated Chrome profile (naver session cookies)
+chrome_profile_publisher/
+
+# Publisher artifacts (generated per run)
+last_manuscript.txt
+last_body_preview.txt
+editor_toolbar_dump_*.html
+
 # Member extractor: session profile, exported personal data, diagnostic logs
 chrome_profile_extractor/
 members.csv
