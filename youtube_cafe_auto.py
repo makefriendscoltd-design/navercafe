@@ -1609,19 +1609,34 @@ def _selectall_editor_body(driver):
             print("  -> [주의] 본문 문단(.se-text-paragraph)을 못 찾음")
             return 0
 
-        # 화면에 보이는 문단을 골라 클릭한다 (가려진 것은 클릭이 가로채인다)
-        target = None
-        for p in reversed(paras):
+        # 문단끼리 겹쳐 있어 클릭이 가로채이는 경우가 있다.
+        # 뒤에서부터 여러 후보를 시도하고, 그래도 안 되면 JS 포커스로 폴백한다.
+        clicked = False
+        for p in list(reversed(paras))[:6]:
             try:
-                if p.is_displayed():
-                    target = p
-                    break
+                if not p.is_displayed():
+                    continue
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", p)
+                time.sleep(0.3)
+                p.click()
+                clicked = True
+                break
             except Exception:
                 continue
-        target = target or paras[-1]
-        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", target)
-        time.sleep(0.3)
-        target.click()             # 실제 클릭으로 에디터에 포커스
+
+        if not clicked:
+            # 클릭이 전부 막히면 JS 로 포커스만 준다.
+            # (선택 자체는 이어지는 실제 Ctrl+A 가 만든다)
+            try:
+                driver.execute_script("""
+                    var ps = document.querySelectorAll('.se-text-paragraph');
+                    if (ps.length) ps[ps.length - 1].focus();
+                """)
+                print("  -> 문단 클릭이 모두 막혀 JS 포커스로 대체")
+            except Exception:
+                pass
+
         time.sleep(0.4)
         ActionChains(driver).key_down(Keys.CONTROL).send_keys('a') \
                             .key_up(Keys.CONTROL).perform()
@@ -1666,45 +1681,55 @@ def apply_editor_font(driver, family, size, select_all=False, tag='start'):
         for kind, want in (('font', family), ('size', size)):
             if not want:
                 continue
-
-            # 서식은 '선택된 범위'에 적용된다. 항목을 고를 때마다 선택이
-            # 풀릴 수 있으므로 글꼴/크기 각각 직전에 다시 전체 선택한다.
-            if select_all:
-                n = _selectall_editor_body(driver)
-                if not n:
-                    print("  -> [주의] 본문 전체 선택 실패")
-                time.sleep(0.3)
-
-            picked = None
-            if _open_toolbar_dropdown(driver, kind):
-                time.sleep(0.6)
-                picked = _pick_dropdown_option(driver, want)
-                time.sleep(0.6)
-
             name = '글꼴' if kind == 'font' else '글자크기'
-            shown = (_current_toolbar_label(driver, kind) or '')
 
-            if not select_all:
-                # 입력 전 단계에서는 본문이 비어 있어 클래스로 검증할 수 없다
-                print(f"  -> {name} 선택: {picked or '실패'} (툴바 '{shown}')")
-                continue
+            # 전체선택이 클릭 가로채기로 실패할 때가 있어 최대 3회 시도한다.
+            attempts = 3 if select_all else 1
+            for n_try in range(1, attempts + 1):
+                # 서식은 '선택된 범위'에 적용된다. 항목을 고를 때마다 선택이
+                # 풀릴 수 있으므로 글꼴/크기 각각 직전에 다시 전체 선택한다.
+                if select_all:
+                    _close_editor_flyouts(driver)
+                    _selectall_editor_body(driver)
+                    time.sleep(0.3)
 
-            # ★ 진짜 검증: 본문 span 의 실제 클래스 분포를 본다
-            stats = _font_class_stats(driver) or {'ff': {}, 'fs': {}}
-            if kind == 'font':
-                buckets, key = stats['ff'], f"se-ff-{picked}" if picked else None
-            else:
-                buckets, key = stats['fs'], f"se-fs{want}"
+                picked = None
+                if _open_toolbar_dropdown(driver, kind):
+                    time.sleep(0.6)
+                    picked = _pick_dropdown_option(driver, want)
+                    time.sleep(0.6)
 
-            total = sum(buckets.values())
-            hit = buckets.get(key, 0) if key else 0
+                shown = (_current_toolbar_label(driver, kind) or '')
 
-            if total and hit == total:
-                print(f"  -> {name} 적용 확인: {want} — 본문 {total}개 span 전부 {key}")
-            elif hit:
-                others = {k: v for k, v in buckets.items() if k != key}
-                print(f"  -> [부분적용] {name} {hit}/{total} 만 {key}. 나머지: {others}")
-            else:
+                if not select_all:
+                    # 입력 전 단계에서는 본문이 비어 있어 클래스로 검증할 수 없다
+                    print(f"  -> {name} 선택: {picked or '실패'} (툴바 '{shown}')")
+                    break
+
+                # ★ 진짜 검증: 본문 span 의 실제 클래스 분포를 본다
+                stats = _font_class_stats(driver) or {'ff': {}, 'fs': {}}
+                if kind == 'font':
+                    buckets = stats['ff']
+                    key = f"se-ff-{picked}" if picked else None
+                else:
+                    buckets = stats['fs']
+                    key = f"se-fs{want}"
+
+                total = sum(buckets.values())
+                hit = buckets.get(key, 0) if key else 0
+
+                if total and hit == total:
+                    print(f"  -> {name} 적용 확인: {want} — 본문 {total}개 span 전부 {key}")
+                    break
+                if hit:
+                    others = {k: v for k, v in buckets.items() if k != key}
+                    print(f"  -> [부분적용] {name} {hit}/{total} 만 {key}. 나머지: {others}")
+                    break   # 인용구가 자체 서체를 고수하는 정상 케이스
+                if n_try < attempts:
+                    print(f"  -> [{n_try}/{attempts}] {name} 적용 안 됨. 다시 시도...")
+                    time.sleep(1.0)
+                    continue
+
                 print(f"  -> [실패] {name} '{want}' 본문에 안 붙음 "
                       f"(클릭={picked!r}, 툴바='{shown}', 실제 분포={buckets})")
                 _dump_toolbar(driver, tag)
