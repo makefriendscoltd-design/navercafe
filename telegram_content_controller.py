@@ -545,6 +545,16 @@ def main() -> int:
             save_state(state)
         except KeyboardInterrupt:
             return 0
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                print(
+                    "[telegram] 409 Conflict: another getUpdates poller is using this bot token. "
+                    "Stop the other bot process or use a separate Telegram bot token.",
+                    file=sys.stderr,
+                )
+                return 3
+            print(f"[telegram] http error: {e}", file=sys.stderr)
+            time.sleep(10)
         except urllib.error.URLError as e:
             print(f"[telegram] network error: {e}", file=sys.stderr)
             time.sleep(10)
