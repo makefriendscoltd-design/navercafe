@@ -4,6 +4,7 @@ config.ini
 # Comment bot state & dedicated Chrome profile (cookies/session)
 comment_bot_seen.json
 chrome_profile_commentbot/
+chrome_profile_youtube/
 comment_bot.log
 
 # Member extractor: session profile, exported personal data, diagnostic logs
@@ -27,6 +28,7 @@ __pycache__/
 frame_*.jpg
 temp_video*.mp4
 *.tmp
+outputs/
 
 # Windows accidents
 nul
