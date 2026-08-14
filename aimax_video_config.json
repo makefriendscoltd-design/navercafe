@@ -1,0 +1,94 @@
+{
+  "layout": "vertical_aimax",
+  "output_width": 2160,
+  "output_height": 3840,
+  "fps": 30,
+  "export": {
+    "video_codec": "libx265",
+    "video_bitrate": "9M",
+    "preset": "veryfast",
+    "audio_bitrate": "192k",
+    "x265_params": "log-level=error"
+  },
+  "silence_db": -35,
+  "silence_min_duration": 0.35,
+  "keep_padding": 0.08,
+  "min_clip_duration": 0.12,
+  "max_segment_duration": 3.0,
+  "whisper_model": "medium",
+  "whisper_language": "ko",
+  "subtitle": {
+    "font_name": "Cafe24 Ohsquare",
+    "font_path": "assets/fonts/Cafe24Ohsquare.ttf",
+    "font_size": 126,
+    "primary_color": "&H00FFFFFF",
+    "outline_color": "&H00000000",
+    "back_color": "&H00000000",
+    "bold": -1,
+    "italic": -1,
+    "outline": 0,
+    "shadow": 9,
+    "margin_v": 0,
+    "alignment": 5,
+    "mode": "word",
+    "replacements": {}
+  },
+  "title": {
+    "auto": true,
+    "text": "auto",
+    "font_name": "BM HANNA 11yrs old",
+    "font_path": "assets/fonts/BMHANNA_11yrs_ttf.ttf",
+    "font_size": 218,
+    "color": "29D6EA",
+    "x": 1080,
+    "y": 880,
+    "line_spacing": 40,
+    "shear": -0.11
+  },
+  "watermark": {
+    "text": "@aimax",
+    "font_name": "BM HANNA 11yrs old",
+    "font_path": "assets/fonts/BMHANNA_11yrs_ttf.ttf",
+    "font_size": 88,
+    "color": "29D6EA",
+    "x": 1080,
+    "y": 3535,
+    "shear": -0.11
+  },
+  "source": {
+    "text": "출처: 원본 영상",
+    "font_name": "Arial",
+    "font_size": 54,
+    "x": 1080,
+    "y": 2540,
+    "duration": 3.0
+  },
+  "presenter": {
+    "x": 650,
+    "y": 2595,
+    "width": 860,
+    "height": 860,
+    "shape": "circle",
+    "crop": "",
+    "color_filter": "eq=brightness=0.025:contrast=1.14:saturation=1.06,colorbalance=bs=0.035:gs=0.01",
+    "left_light": {
+      "color": "00C8FF",
+      "alpha": 0.26,
+      "width": 420
+    }
+  },
+  "screen": {
+    "fit": "cover",
+    "x": 0,
+    "y": 1435,
+    "width": 2160,
+    "height": 1215,
+    "start_at": 0,
+    "speed": 2.0
+  },
+  "audio": {
+    "music_path": "",
+    "music_volume": 0.18,
+    "effects": []
+  }
+}
