@@ -755,6 +755,10 @@ def main(argv=None):
 
     print('[모드] ' + ('임시저장 (확인 후 카페에서 직접 발행)' if inputs['draft']
                      else '바로 발행'))
+    if not image_paths:
+        print('[중단] 카페 이미지가 0장이라 임시저장/발행을 하지 않습니다.')
+        auto.cleanup_temp_files()
+        return
     auto.post_to_naver_cafe(title, body, image_paths, optional_config,
                             source_url=url, draft=inputs['draft'])
 

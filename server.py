@@ -81,6 +81,8 @@ def _run(task_id: str, source: str, optional_config: dict, image_paths: list,
         auto.CAFE_URL      = optional_config.get('cafe_url', '')
         auto.GEMINI_API_KEY = optional_config.get('gemini_key', '')
 
+        auto.cleanup_temp_files()  # 이전 실행의 잔류 frame/temp 파일 제거
+
         source_type, norm = auto.detect_source_type(source)
         labels = {'youtube': '유튜브 영상', 'article': '웹 기사/페이지', 'text': '직접 텍스트'}
         state.log_queue.put({"type": "log", "msg": f"[소스] {labels.get(source_type, source_type)}"})

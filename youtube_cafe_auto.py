@@ -38,6 +38,8 @@ import time
 import glob
 import base64
 import configparser
+import hashlib
+import json
 import urllib.parse
 import urllib.request
 import traceback
@@ -101,6 +103,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
 COOKIES_FILE = os.path.join(SCRIPT_DIR, "cookies.txt")
+PUBLISHED_RECORD_FILE = os.path.join(SCRIPT_DIR, "published_posts.json")
+PUBLISH_LOCK_DIR = os.path.join(SCRIPT_DIR, ".publish_locks")
 
 # 전역 설정 변수
 NAVER_ID = ""
@@ -961,6 +965,129 @@ def generate_threads_post(source_text):
 # 8. 영상 프레임 추출
 # ===================================================================
 
+def _download_youtube_thumbnails(url, image_count=4):
+    """영상 다운로드가 막혔을 때 YouTube 공개 썸네일을 이미지 폴백으로 사용합니다."""
+    video_id = extract_video_id(url)
+    if not video_id:
+        return []
+
+    thumbnail_names = [
+        'maxresdefault.jpg',
+        'sddefault.jpg',
+        'hqdefault.jpg',
+        'mqdefault.jpg',
+        'default.jpg',
+    ]
+    image_paths = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    for name in thumbnail_names:
+        if len(image_paths) >= image_count:
+            break
+        thumb_url = f"https://i.ytimg.com/vi/{video_id}/{name}"
+        path = os.path.join(SCRIPT_DIR, f"frame_{len(image_paths) + 1}.jpg")
+        try:
+            req = urllib.request.Request(thumb_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = response.read()
+            if len(data) < 1024:
+                continue
+            with open(path, 'wb') as f:
+                f.write(data)
+            frame = cv2.imread(path)
+            if frame is None:
+                os.remove(path)
+                continue
+            image_paths.append(os.path.abspath(path))
+        except Exception as e:
+            print(f"     - 썸네일 폴백 실패({name}): {e}")
+
+    if image_paths:
+        print(f"  -> 영상 다운로드 대신 YouTube 썸네일 {len(image_paths)}장을 사용합니다.")
+    return image_paths
+
+
+def _capture_youtube_browser_frames(url, image_count=4):
+    """Capture distinct YouTube player frames when yt-dlp video download is blocked."""
+    if image_count <= 0:
+        return []
+
+    print(f"  -> yt-dlp 대체: 브라우저로 YouTube 장면 {image_count}장 캡처 시도")
+    options = webdriver.ChromeOptions()
+    options.add_argument("--window-size=1280,900")
+    options.add_argument("--mute-audio")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    driver = None
+    image_paths = []
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.get(url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "video"))
+        )
+        time.sleep(3)
+
+        try:
+            driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                var accept = btns.find(function(b) {
+                    return /동의|Accept|I agree/i.test((b.innerText || '').trim());
+                });
+                if (accept) accept.click();
+            """)
+            time.sleep(1)
+        except Exception:
+            pass
+
+        duration = driver.execute_script("""
+            var v = document.querySelector('video');
+            return v && isFinite(v.duration) ? v.duration : 0;
+        """) or 0
+        if duration <= 0:
+            duration = max(60, image_count * 20)
+
+        for i in range(1, image_count + 1):
+            ratio = i / (image_count + 1)
+            second = max(3, min(duration - 3, duration * ratio))
+            try:
+                driver.execute_script("""
+                    var v = document.querySelector('video');
+                    if (!v) return;
+                    v.muted = true;
+                    v.pause();
+                    v.currentTime = arguments[0];
+                """, second)
+                time.sleep(2)
+                video = driver.find_element(By.CSS_SELECTOR, "video")
+                path = os.path.join(SCRIPT_DIR, f"frame_{i}.jpg")
+                video.screenshot(path)
+                frame = cv2.imread(path)
+                if frame is None or frame.size == 0:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    continue
+                image_paths.append(os.path.abspath(path))
+                print(f"     - 브라우저 캡처 {i}/{image_count}: {int(second)}초")
+            except Exception as e:
+                print(f"     - 브라우저 캡처 실패({i}/{image_count}): {e}")
+    except Exception as e:
+        print(f"  -> 브라우저 장면 캡처 실패: {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    if image_paths:
+        print(f"  -> 브라우저 장면 캡처 완료: {len(image_paths)}장")
+    return image_paths
+
+
 def extract_frames(url, image_count=4):
     """유튜브 영상을 다운로드하고 균등 간격 지점에서 이미지를 캡처합니다."""
     print(f"[3/4] 유튜브 영상 다운로드 및 이미지({image_count}장) 캡처 중...")
@@ -972,28 +1099,46 @@ def extract_frames(url, image_count=4):
 
     download_success = False
     downloaded_filename = ""
-    for idx, fmt in enumerate(format_list):
+    errors = []
+    for cookie_label, cookie_opts in _cookie_configs():
         if download_success:
             break
-        print(f"  -> 포맷 '{fmt}' (으)로 다운로드 시도 중...")
-        current_filename = os.path.join(SCRIPT_DIR, f'temp_video_{idx}.mp4')
-        options = {
-            'format': fmt, 'outtmpl': current_filename,
-            'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
-            # quiet만으로는 진행바가 stderr로 계속 찍혀 로그가 도배된다
-            'noprogress': True,
-        }
-        try:
-            with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.download([url])
-            download_success = True
-            downloaded_filename = current_filename
-        except Exception as e:
-            print(f"  -> 해당 포맷 실패: {e}. 다른 포맷으로 재시도합니다.")
+        print(f"  -> 쿠키 설정 '{cookie_label}'로 다운로드 시도")
+        for idx, fmt in enumerate(format_list):
+            if download_success:
+                break
+            print(f"     - 포맷 '{fmt}' 시도")
+            current_filename = os.path.join(SCRIPT_DIR, f'temp_video_{cookie_label}_{idx}.mp4')
+            options = {
+                'format': fmt, 'outtmpl': current_filename,
+                'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
+                # quiet만으로는 진행바가 stderr로 계속 찍혀 로그가 도배된다
+                'noprogress': True,
+                **cookie_opts,
+            }
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    ydl.download([url])
+                if os.path.exists(current_filename) and os.path.getsize(current_filename) > 0:
+                    download_success = True
+                    downloaded_filename = current_filename
+                    print(f"  -> 영상 다운로드 성공: {cookie_label} / {fmt}")
+                else:
+                    errors.append(f"{cookie_label}/{fmt}: output file missing")
+            except Exception as e:
+                errors.append(f"{cookie_label}/{fmt}: {e}")
+                print(f"     - 실패: {e}")
 
     if not download_success:
         print("[오류] 모든 포맷으로 유튜브 영상 다운로드에 실패했습니다.")
-        return []
+        if errors:
+            print("  -> 마지막 실패 원인:")
+            for err in errors[-3:]:
+                print(f"     - {err}")
+        browser_frames = _capture_youtube_browser_frames(url, image_count)
+        if browser_frames:
+            return browser_frames
+        return _download_youtube_thumbnails(url, image_count)
 
     cap = cv2.VideoCapture(downloaded_filename)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -2002,10 +2147,124 @@ def publish_post(driver, wait=20):
         # 글쓰기 화면을 벗어나면 발행된 것
         if 'write' not in now and now != before_url:
             print(f"  -> 발행 확인: {now}")
-            return True
+            return now
 
     print(f"  -> [주의] 발행 여부를 확인하지 못했습니다 (URL 그대로: {driver.current_url})")
     return False
+
+
+def _publish_source_key(source_url):
+    if not source_url:
+        return ""
+    try:
+        video_id = extract_video_id(source_url)
+    except Exception:
+        video_id = None
+    if video_id:
+        return f"youtube:{video_id}"
+    return "url:" + source_url.strip().lower()
+
+
+def _publish_record_id(source_key):
+    return hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:24]
+
+
+def _load_published_records():
+    try:
+        with open(PUBLISHED_RECORD_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"  -> [warning] could not read published record file: {e}")
+        return {}
+
+
+def _save_published_records(records):
+    tmp_path = PUBLISHED_RECORD_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_path, PUBLISHED_RECORD_FILE)
+
+
+def _begin_publish_guard(source_url):
+    source_key = _publish_source_key(source_url)
+    if not source_key:
+        return {"enabled": False}
+
+    record_id = _publish_record_id(source_key)
+    records = _load_published_records()
+    existing = records.get(record_id)
+    if existing:
+        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print(f"  -> 기존 글: {existing.get('article_url', '')}")
+        return None
+
+    os.makedirs(PUBLISH_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(PUBLISH_LOCK_DIR, record_id + ".lock")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > 6 * 60 * 60:
+                os.remove(lock_path)
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            else:
+                print("[중단] 같은 원본 URL의 카페 발행 작업이 이미 진행 중입니다.")
+                print(f"  -> lock: {lock_path}")
+                return None
+        except FileExistsError:
+            print("[중단] 같은 원본 URL의 카페 발행 작업이 이미 진행 중입니다.")
+            return None
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"pid={os.getpid()}\n")
+        f.write(f"time={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"source={source_key}\n")
+
+    records = _load_published_records()
+    existing = records.get(record_id)
+    if existing:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print(f"  -> 기존 글: {existing.get('article_url', '')}")
+        return None
+
+    return {
+        "enabled": True,
+        "record_id": record_id,
+        "source_key": source_key,
+        "source_url": source_url,
+        "lock_path": lock_path,
+    }
+
+
+def _mark_published_source(publish_guard, title, article_url):
+    if not publish_guard or not publish_guard.get("enabled"):
+        return
+    records = _load_published_records()
+    records[publish_guard["record_id"]] = {
+        "source_key": publish_guard["source_key"],
+        "source_url": publish_guard["source_url"],
+        "title": title,
+        "article_url": article_url,
+        "published_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _save_published_records(records)
+
+
+def _release_publish_guard(publish_guard):
+    if not publish_guard or not publish_guard.get("enabled"):
+        return
+    try:
+        os.remove(publish_guard["lock_path"])
+    except OSError:
+        pass
 
 
 def save_as_draft(driver):
@@ -2155,12 +2414,46 @@ def make_publisher_driver():
 
 
 def _naver_session_alive(driver):
-    """NID_AUT / NID_SES 쿠키로 로그인 상태를 판별한다."""
+    """NID cookies first, then visible logged-in Naver UI."""
     try:
         driver.get("https://www.naver.com")
         time.sleep(2)
         cookies = {c["name"] for c in driver.get_cookies()}
-        return "NID_AUT" in cookies or "NID_SES" in cookies
+        if "NID_AUT" in cookies or "NID_SES" in cookies:
+            return True
+        return bool(driver.execute_script("""
+            var text = (document.body && document.body.innerText) || '';
+            if (/로그아웃|내정보/.test(text)) return true;
+            return !!document.querySelector(
+                'a[href*="nid.naver.com/user2/help/myInfo"], ' +
+                'a[href*="nid.naver.com/nidlogin.logout"]'
+            );
+        """))
+    except Exception:
+        return False
+
+
+def _handle_naver_device_confirm(driver):
+    """Continue past Naver's new-device confirmation without registration."""
+    try:
+        return bool(driver.execute_script("""
+            var text = (document.body && document.body.innerText) || '';
+            var onConfirm = location.href.indexOf('deviceConfirm') >= 0
+                || text.indexOf('새로운 기기') >= 0
+                || text.indexOf('자주 사용하는 기기') >= 0;
+            if (!onConfirm) return false;
+
+            var nodes = Array.from(document.querySelectorAll('a, button, input[type="button"], input[type="submit"]'));
+            for (var i = 0; i < nodes.length; i++) {
+                var el = nodes[i];
+                var label = (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, '');
+                if (label === '등록안함' || label === '등록하지않음' || label === '나중에') {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        """))
     except Exception:
         return False
 
@@ -2224,10 +2517,16 @@ def ensure_naver_login(driver, wait_minutes=5):
           "캡챠/2차 인증이 뜨면 창에서 직접 처리해주세요.")
     for i in range(wait_minutes * 60):
         try:
+            if _handle_naver_device_confirm(driver):
+                print("  -> 새 기기 확인 화면에서 '등록안함'을 자동 선택했습니다.")
+                time.sleep(2)
             cookies = {c["name"] for c in driver.get_cookies()}
             if "NID_AUT" in cookies or "NID_SES" in cookies:
                 print("  -> 로그인 성공.")
                 return True   # 새로 로그인함 → 호출자가 세션을 디스크에 저장해야 함
+            if _naver_session_alive(driver):
+                print("  -> 로그인 UI 확인 완료.")
+                return True
         except Exception:
             pass
         if i == 20:
@@ -2245,6 +2544,13 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
                        draft=False):
     """Selenium으로 네이버 카페에 글을 자동 등록합니다 (OS 포커스 불필요)."""
     print("[4/4] 네이버 카페 포스팅 시작...")
+    if not image_paths:
+        print("[중단] 카페 이미지가 0장이라 임시등록/발행을 하지 않습니다.")
+        return False
+
+    publish_guard = _begin_publish_guard(source_url)
+    if publish_guard is None:
+        return False
 
     # 본문에서 하이라이트 키워드 추출 (마커 제거)
     highlight_keywords = []
@@ -2253,9 +2559,9 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
         if highlight_keywords:
             print(f"  -> 하이라이트 대상 키워드: {highlight_keywords}")
 
-    driver = make_publisher_driver()
-
     try:
+        driver = make_publisher_driver()
+
         # ── 1단계: 네이버 로그인 ──
         if ensure_naver_login(driver):
             # 크롬은 '정상 종료'할 때 쿠키를 디스크에 쓴다. 여기서 한 번 깨끗이
@@ -2595,10 +2901,12 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
             return
 
         print("  -> 전체공개/퍼가기 여부는 카페 게시판 기본 설정을 따릅니다.")
-        if not publish_post(driver):
+        article_url = publish_post(driver)
+        if not article_url:
             print("\n  ** [경고] 발행 버튼을 누르지 못했습니다. 글은 에디터에 그대로 있으니")
             print("  ** 창에서 직접 '등록'을 눌러주세요. 브라우저는 열어둡니다.")
             return
+        _mark_published_source(publish_guard, title, article_url)
 
         driver.close()
         driver.switch_to.window(driver.window_handles[0])
@@ -2618,6 +2926,8 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
         )
         root.destroy()
         time.sleep(300)
+    finally:
+        _release_publish_guard(publish_guard)
 
 
 # ===================================================================
