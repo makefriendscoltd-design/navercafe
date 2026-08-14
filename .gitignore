@@ -5,6 +5,7 @@ config.ini
 comment_bot_seen.json
 chrome_profile_commentbot/
 comment_bot.log
+telegram_content_controller_state.json
 
 # Member extractor: session profile, exported personal data, diagnostic logs
 chrome_profile_extractor/
