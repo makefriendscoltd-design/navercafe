@@ -2413,6 +2413,64 @@ def make_publisher_driver():
     return driver
 
 
+NAVER_SESSION_FILE = os.path.join(SCRIPT_DIR, 'naver_session.json')
+
+
+def _save_naver_session(driver):
+    """네이버 로그인 쿠키를 파일로 박제한다.
+
+    '로그인 상태 유지'를 켜지 못하면 NID_AUT/NID_SES 가 만료 없는 세션 쿠키로
+    발급된다. 세션 쿠키는 크롬이 닫히는 순간 사라지므로 프로필에 아무것도
+    남지 않고, 실행할 때마다 사람이 다시 로그인해야 한다.
+    네이버 DOM(체크박스 셀렉터)에 기대지 말고 직접 만료를 붙여 저장한다.
+    """
+    try:
+        cookies = [c for c in driver.get_cookies() if 'naver' in (c.get('domain') or '')]
+        if not any(c.get('name') in ('NID_AUT', 'NID_SES') for c in cookies):
+            return False
+        expiry = int(time.time()) + 60 * 60 * 24 * 30   # 30일
+        for c in cookies:
+            c.pop('sameSite', None)          # add_cookie 가 거부하는 값이 섞여 온다
+            if not c.get('expiry'):
+                c['expiry'] = expiry
+        with open(NAVER_SESSION_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f)
+        print(f"  -> 로그인 세션을 파일로 저장했습니다 ({len(cookies)}개 쿠키, 30일).")
+        return True
+    except Exception as e:
+        print(f"  -> [주의] 세션 파일 저장 실패: {e}")
+        return False
+
+
+def _restore_naver_session(driver):
+    """저장해둔 쿠키를 주입해 로그인 없이 세션을 되살린다."""
+    if not os.path.exists(NAVER_SESSION_FILE):
+        return False
+    try:
+        with open(NAVER_SESSION_FILE, encoding='utf-8') as f:
+            cookies = json.load(f)
+    except Exception:
+        return False
+    try:
+        driver.get("https://www.naver.com")   # 도메인을 맞춰야 add_cookie 가 먹는다
+        time.sleep(1)
+        added = 0
+        for c in cookies:
+            try:
+                driver.add_cookie(c)
+                added += 1
+            except Exception:
+                pass
+        if not added:
+            return False
+        driver.get("https://www.naver.com")
+        time.sleep(2)
+        names = {c["name"] for c in driver.get_cookies()}
+        return bool({"NID_AUT", "NID_SES"} & names) or _logged_in_ui_visible(driver)
+    except Exception:
+        return False
+
+
 def _logged_in_ui_visible(driver):
     """현재 떠 있는 페이지에서 로그인 흔적을 찾는다. 페이지를 이동하지 않는다."""
     try:
@@ -2482,6 +2540,10 @@ def ensure_naver_login(driver, wait_minutes=5):
         print("  -> 저장된 세션으로 이미 로그인됨 (캡챠 불필요).")
         return False
 
+    if _restore_naver_session(driver):
+        print("  -> 저장해둔 쿠키로 세션을 복구했습니다 (재로그인 불필요).")
+        return False
+
     print("  -> 로그인 세션이 없습니다. 로그인 페이지로 이동합니다.")
     driver.get("https://nid.naver.com/nidlogin.login")
     time.sleep(2)
@@ -2542,9 +2604,11 @@ def ensure_naver_login(driver, wait_minutes=5):
             cookies = {c["name"] for c in driver.get_cookies()}
             if "NID_AUT" in cookies or "NID_SES" in cookies:
                 print("  -> 로그인 성공.")
-                return True   # 새로 로그인함 → 호출자가 세션을 디스크에 저장해야 함
+                _save_naver_session(driver)   # quit() 전에 박제해야 살아남는다
+                return True
             if _logged_in_ui_visible(driver):
                 print("  -> 로그인 UI 확인 완료.")
+                _save_naver_session(driver)
                 return True
         except Exception:
             pass
@@ -2587,12 +2651,12 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
             # 크롬은 '정상 종료'할 때 쿠키를 디스크에 쓴다. 여기서 한 번 깨끗이
             # 닫아주지 않으면, 다음 실행 전에 크롬이 강제종료될 경우 방금 만든
             # 로그인 세션이 통째로 날아가 매번 다시 로그인하게 된다.
-            print("  -> 로그인 세션을 디스크에 저장하는 중 (브라우저 재시작)...")
-            driver.quit()
-            time.sleep(2)
-            driver = make_publisher_driver()
-            if _naver_session_alive(driver):
-                print("  -> 세션 저장 확인. 다음 실행부터는 로그인을 건너뜁니다.")
+            # 예전에는 여기서 driver.quit() 으로 쿠키 flush 를 노렸지만,
+            # NID 쿠키가 세션 쿠키라 창을 닫는 순간 사라져 매번 재로그인하게 됐다.
+            # 지금은 ensure_naver_login 이 로그인 직후 파일로 박제하므로
+            # 창을 닫을 필요가 없다. 그대로 이어서 글을 쓴다.
+            if os.path.exists(NAVER_SESSION_FILE):
+                print("  -> 세션 파일 저장 확인. 다음 실행부터는 로그인을 건너뜁니다.")
             else:
                 print("  -> [주의] 세션이 저장되지 않았습니다. 다음 실행에서 "
                       "다시 로그인해야 할 수 있습니다.")

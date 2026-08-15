@@ -55,3 +55,6 @@ nul
 .idea/
 .DS_Store
 Thumbs.db
+
+# 네이버 로그인 쿠키 박제본 (인증정보)
+naver_session.json
