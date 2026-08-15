@@ -549,6 +549,36 @@ def detect_hard_block(text: str) -> str:
     return ""
 
 
+# A generic TLD check is not enough: the column wrap chops
+# "https://www.youtube.com/post/x" down to "https://www.you", which still looks
+# like a hostname. Pin each step to the host it can legitimately publish to.
+EXPECTED_HOSTS = {
+    "cafe": ("cafe.naver.com",),
+    "youtube": ("youtube.com", "youtu.be"),
+    "shorts_publish": ("youtube.com", "youtu.be"),
+}
+
+
+def marker_value_is_complete(key: str, field: str, value: str) -> bool:
+    """Orca wraps long lines into columns, chopping a URL mid-string.
+
+    A truncated 'https://cafe.n' would otherwise be recorded as the published
+    link. Better to keep waiting than to hand back a dead URL.
+    """
+    if not value:
+        return False
+    if field != "url":
+        return True
+    hosts = EXPECTED_HOSTS.get(key)
+    if not hosts:
+        return True
+    try:
+        netloc = urllib.parse.urlparse(value).netloc.lower()
+    except Exception:
+        return False
+    return any(netloc == h or netloc.endswith("." + h) for h in hosts)
+
+
 def infer_result(key: str, text: str) -> dict[str, str] | None:
     # Terminal transcripts contain prompts, examples, old URLs, and exploratory
     # paths. Only an explicit, non-placeholder marker is a completion signal.
@@ -565,7 +595,11 @@ def infer_result(key: str, text: str) -> dict[str, str] | None:
             "shorts": ("ready", "video"),
             "shorts_publish": ("published", "url"),
         }.get(key)
-        if required and status == required[0] and result.get(required[1]):
+        if not required or status != required[0]:
+            return None
+        field = required[1]
+        value = result.get(field, "")
+        if marker_value_is_complete(key, field, value):
             return result
     return None
 
