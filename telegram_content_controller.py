@@ -384,7 +384,40 @@ def pick_terminal(
     return max(ranked, key=rank)
 
 
-def send_prompt(handle: str, prompt: str) -> None:
+def write_task_file(worktree: str, key: str, prompt: str) -> str:
+    try:
+        base = Path(worktree)
+        if not base.is_dir():
+            return ""
+        path = base / f".telegram_task_{key or 'job'}.md"
+        path.write_text(prompt, encoding="utf-8")
+        return str(path)
+    except Exception:
+        return ""
+
+
+def send_prompt(handle: str, prompt: str, key: str = "", worktree: str = "") -> None:
+    """Deliver a prompt to a worker terminal.
+
+    Claude Code's composer submits on every newline, so a multi-line prompt
+    arrives as a series of fragments and the real instruction never lands —
+    the step silently never starts. Codex takes the same text as one paste.
+    Hand Claude a file and a single-line instruction instead.
+    """
+    if "\n" in prompt and worktree:
+        agent, _ = inspect_terminal(handle)
+        if agent == "claude":
+            path = write_task_file(worktree, key, prompt)
+            if path:
+                one_liner = (
+                    f"{path} 파일을 읽고 거기 적힌 작업을 지금 수행해줘. "
+                    "파일에 적힌 TELEGRAM_RESULT 마커 규칙도 그대로 지켜서 "
+                    "마지막에 한 줄로 출력해."
+                )
+                run_orca(
+                    ["terminal", "send", "--terminal", handle, "--text", one_liner, "--enter", "--json"]
+                )
+                return
     run_orca(["terminal", "send", "--terminal", handle, "--text", prompt, "--enter", "--json"])
 
 
@@ -490,7 +523,7 @@ def send_base_job(job: dict[str, Any], tg: Telegram) -> None:
         # Workers are reused across jobs, so start past whatever the previous
         # job left in the scrollback.
         skip_terminal_backlog(job, key, term["handle"])
-        send_prompt(term["handle"], prompts[key])
+        send_prompt(term["handle"], prompts[key], key, term.get("worktreePath", ""))
     job["status"] = "base_running"
     stamp_job(job, reset_warning=True)
     tg.send(f"접수: {job['id']}\n카페글 / 유튜브 게시글 / 스크립트 작업을 시작했습니다.")
@@ -502,7 +535,7 @@ def send_shorts_job(job: dict[str, Any], tg: Telegram, regenerate: bool = False)
     job.setdefault("terminals", {})["shorts"] = term["handle"]
     job.get("prompts", {}).pop("shorts", None)
     skip_terminal_backlog(job, "shorts", term["handle"])
-    send_prompt(term["handle"], shorts_prompt(job, regenerate=regenerate))
+    send_prompt(term["handle"], shorts_prompt(job, regenerate=regenerate), "shorts", term.get("worktreePath", ""))
     job["status"] = "shorts_running"
     stamp_job(job, reset_warning=True)
     tg.send(f"쇼츠 {'재생성' if regenerate else '제작'} 시작: {job['id']}")
@@ -780,7 +813,7 @@ def retry_base_job(job: dict[str, Any], tg: Telegram) -> None:
         # Skip past the failed run's output, or the old blocked marker would be
         # re-read on the next tick and instantly block the retry again.
         skip_terminal_backlog(job, key, term["handle"])
-        send_prompt(term["handle"], prompts[key])
+        send_prompt(term["handle"], prompts[key], key, term.get("worktreePath", ""))
         retried.append(key)
     job["status"] = "base_running"
     stamp_job(job, reset_warning=True)
@@ -836,7 +869,7 @@ def handoff_exhausted_worker(
     job.setdefault("terminals", {})[key] = term["handle"]
     job.get("prompts", {}).pop(key, None)
     skip_terminal_backlog(job, key, term["handle"])
-    send_prompt(term["handle"], prompt)
+    send_prompt(term["handle"], prompt, key, term.get("worktreePath", ""))
     stamp_job(job, reset_warning=True)
     new_agent, _ = inspect_terminal(term["handle"])
     tg.send(
@@ -881,7 +914,7 @@ def handoff_stalled_worker(
     job.setdefault("terminals", {})[key] = term["handle"]
     job.get("prompts", {}).pop(key, None)
     skip_terminal_backlog(job, key, term["handle"])
-    send_prompt(term["handle"], prompt)
+    send_prompt(term["handle"], prompt, key, term.get("worktreePath", ""))
     stamp_job(job, reset_warning=True)
     new_agent, _ = inspect_terminal(term["handle"])
     tg.send(
@@ -1077,7 +1110,7 @@ def handle_callback(cb: dict[str, Any], state: dict[str, Any], tg: Telegram) -> 
             job.get("results", {}).pop("shorts_publish", None)
             job.get("prompts", {}).pop("shorts_publish", None)
             skip_terminal_backlog(job, "shorts_publish", term["handle"])
-            send_prompt(term["handle"], shorts_publish_prompt(job))
+            send_prompt(term["handle"], shorts_publish_prompt(job), "shorts_publish", term.get("worktreePath", ""))
             job["status"] = "shorts_publish_running"
             stamp_job(job, reset_warning=True)
             tg.send(f"쇼츠 발행 요청됨: {job_id}\n제목: {job.get('shorts_title', '')}")
