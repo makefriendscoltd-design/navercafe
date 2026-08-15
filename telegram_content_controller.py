@@ -77,6 +77,9 @@ PROMPT_SIGNS = (
     ("approaching rate limits", "레이트리밋 모델 전환 프롬프트"),
     ("do you want to proceed", "진행 확인 대기"),
     ("esc to go back", "확인 프롬프트 대기"),
+    ("enter to select", "선택 메뉴 대기"),
+    ("to navigate", "선택 메뉴 대기"),
+    ("esc to cancel", "선택 메뉴 대기"),
 )
 # Hard stops: the worker will not resume on its own, so waiting out the
 # timeout only delays the report.
