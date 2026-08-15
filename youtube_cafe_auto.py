@@ -2413,14 +2413,9 @@ def make_publisher_driver():
     return driver
 
 
-def _naver_session_alive(driver):
-    """NID cookies first, then visible logged-in Naver UI."""
+def _logged_in_ui_visible(driver):
+    """현재 떠 있는 페이지에서 로그인 흔적을 찾는다. 페이지를 이동하지 않는다."""
     try:
-        driver.get("https://www.naver.com")
-        time.sleep(2)
-        cookies = {c["name"] for c in driver.get_cookies()}
-        if "NID_AUT" in cookies or "NID_SES" in cookies:
-            return True
         return bool(driver.execute_script("""
             var text = (document.body && document.body.innerText) || '';
             if (/로그아웃|내정보/.test(text)) return true;
@@ -2429,6 +2424,23 @@ def _naver_session_alive(driver):
                 'a[href*="nid.naver.com/nidlogin.logout"]'
             );
         """))
+    except Exception:
+        return False
+
+
+def _naver_session_alive(driver):
+    """NID cookies first, then visible logged-in Naver UI.
+
+    naver.com 으로 이동해서 확인하므로 '로그인 전 1회 점검'에만 쓴다.
+    사람이 로그인하는 동안 반복 호출하면 입력 화면을 계속 날려버린다.
+    """
+    try:
+        driver.get("https://www.naver.com")
+        time.sleep(2)
+        cookies = {c["name"] for c in driver.get_cookies()}
+        if "NID_AUT" in cookies or "NID_SES" in cookies:
+            return True
+        return _logged_in_ui_visible(driver)
     except Exception:
         return False
 
@@ -2515,7 +2527,14 @@ def ensure_naver_login(driver, wait_minutes=5):
 
     print(f"  -> 로그인 완료를 기다립니다 (최대 {wait_minutes}분). "
           "캡챠/2차 인증이 뜨면 창에서 직접 처리해주세요.")
-    for i in range(wait_minutes * 60):
+    # 대기 중에는 절대 페이지를 이동시키지 않는다.
+    # _naver_session_alive() 는 첫 줄에서 naver.com 으로 driver.get() 을 하므로,
+    # 대기 루프에서 부르면 사람이 캡챠/2차 인증을 입력하는 도중에 매번 화면을
+    # 날려버려 로그인을 영영 끝낼 수 없다. 쿠키와 현재 DOM 만 본다.
+    started = time.time()
+    deadline = started + wait_minutes * 60
+    notified = False
+    while time.time() < deadline:
         try:
             if _handle_naver_device_confirm(driver):
                 print("  -> 새 기기 확인 화면에서 '등록안함'을 자동 선택했습니다.")
@@ -2524,14 +2543,15 @@ def ensure_naver_login(driver, wait_minutes=5):
             if "NID_AUT" in cookies or "NID_SES" in cookies:
                 print("  -> 로그인 성공.")
                 return True   # 새로 로그인함 → 호출자가 세션을 디스크에 저장해야 함
-            if _naver_session_alive(driver):
+            if _logged_in_ui_visible(driver):
                 print("  -> 로그인 UI 확인 완료.")
                 return True
         except Exception:
             pass
-        if i == 20:
-            print("  -> 아직 로그인 대기 중입니다...")
-        time.sleep(1)
+        if not notified and time.time() - started > 20:
+            print("  -> 아직 로그인 대기 중입니다... (창에서 직접 완료해주세요)")
+            notified = True
+        time.sleep(2)
 
     raise Exception(f"로그인 실패: {wait_minutes}분 내에 로그인이 완료되지 않았습니다.")
 
