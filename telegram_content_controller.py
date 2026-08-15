@@ -39,6 +39,8 @@ WARN_REPEAT_SEC = int(os.environ.get("TELEGRAM_WARN_REPEAT_SEC", "1800"))
 TERMINAL_READ_LIMIT = int(os.environ.get("TELEGRAM_TERMINAL_READ_LIMIT", "2000"))
 WORKER_IDLE_SEC = int(os.environ.get("TELEGRAM_WORKER_IDLE_SEC", "300"))
 EXHAUST_CHECK_LINES = int(os.environ.get("TELEGRAM_EXHAUST_CHECK_LINES", "40"))
+STALL_HANDOFF_SEC = int(os.environ.get("TELEGRAM_STALL_HANDOFF_SEC", "900"))
+MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
 
 YOUTUBE_RE = re.compile(
     r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[^\s]+",
@@ -728,7 +730,16 @@ def retry_base_job(job: dict[str, Any], tg: Telegram) -> None:
             continue
         if results.get(key, {}).get("status") not in (None, "", "blocked", "failed", "running"):
             continue
-        term = pick_terminal(TARGETS[key], terminals)
+        # This worker already failed the step, so send the retry to the other
+        # agent rather than to the one that just came up short.
+        stale = job.get("terminals", {}).get(key)
+        stale_agent, _ = inspect_terminal(stale) if stale else ("", False)
+        term = pick_terminal(
+            TARGETS[key],
+            terminals,
+            exclude={stale} if stale else set(),
+            avoid_agent=stale_agent,
+        )
         job["terminals"][key] = term["handle"]
         results.pop(key, None)
         job.get("prompts", {}).pop(key, None)
@@ -803,6 +814,52 @@ def handoff_exhausted_worker(
     return True
 
 
+def handoff_stalled_worker(
+    job: dict[str, Any], key: str, handle: str, tg: Telegram, terminals: list[dict[str, Any]]
+) -> bool:
+    """A worker that has gone quiet without a result gets handed to the other agent.
+
+    Quota, a wedged environment, a crashed tool — the cause does not matter.
+    If it stopped producing and never reported, the other agent gets a turn.
+    """
+    last_output = terminal_last_output_ts(handle, terminals)
+    if last_output is None or now_ts() - last_output < STALL_HANDOFF_SEC:
+        return False
+
+    handoffs = job.setdefault("handoffs", {})
+    if handoffs.get(key, 0) >= MAX_HANDOFFS:
+        return False
+
+    target = TARGETS.get("shorts" if key == "shorts_publish" else key)
+    prompt = prompt_for_key(job, key)
+    if target is None or prompt is None:
+        return False
+
+    stale_agent, _ = inspect_terminal(handle)
+    dead = set(job.setdefault("exhausted", {}).get(key, [])) | {handle}
+    try:
+        term = pick_terminal(target, terminals, exclude=dead, avoid_agent=stale_agent)
+    except RuntimeError:
+        return False
+
+    handoffs[key] = handoffs.get(key, 0) + 1
+    job["exhausted"][key] = sorted(dead)
+    job.setdefault("terminals", {})[key] = term["handle"]
+    job.get("prompts", {}).pop(key, None)
+    skip_terminal_backlog(job, key, term["handle"])
+    send_prompt(term["handle"], prompt)
+    stamp_job(job, reset_warning=True)
+    new_agent, _ = inspect_terminal(term["handle"])
+    tg.send(
+        f"워커 정지 → 다른 에이전트로 이관: {job['id']}\n"
+        f"단계: {key}\n"
+        f"{int((now_ts() - last_output) / 60)}분간 출력 없음\n"
+        f"{stale_agent or '?'} → {new_agent or '?'}\n"
+        f"({handoffs[key]}/{MAX_HANDOFFS}회차)"
+    )
+    return True
+
+
 def notify_worker_prompt(
     job: dict[str, Any], key: str, handle: str, text: str, tg: Telegram
 ) -> None:
@@ -832,7 +889,11 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
         results = job.setdefault("results", {})
         cursors = job.setdefault("cursors", {})
         terminals = job.get("terminals", {})
-        for key, handle in terminals.items():
+        try:
+            terminal_rows = list_terminals()
+        except Exception:
+            terminal_rows = []
+        for key, handle in list(terminals.items()):
             if key in results and results[key].get("status") not in ("running", ""):
                 continue
             try:
@@ -850,6 +911,7 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
             if handoff_exhausted_worker(job, key, handle, text, tg):
                 continue
             notify_worker_prompt(job, key, handle, text, tg)
+            handoff_stalled_worker(job, key, handle, tg, terminal_rows)
 
         if job.get("status") == "base_running" and all(k in results for k in ("cafe", "youtube", "script")):
             send_base_summary(job, tg)
