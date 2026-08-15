@@ -29,6 +29,9 @@ frame_*.jpg
 temp_video*.mp4
 *.tmp
 
+# Telegram controller: video previews staged for upload (tens of MB each)
+telegram_previews/
+
 # Windows accidents
 nul
 
