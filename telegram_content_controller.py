@@ -37,6 +37,8 @@ SHORTS_TIMEOUT_SEC = int(os.environ.get("TELEGRAM_SHORTS_TIMEOUT_SEC", "5400"))
 PUBLISH_TIMEOUT_SEC = int(os.environ.get("TELEGRAM_PUBLISH_TIMEOUT_SEC", "1800"))
 WARN_REPEAT_SEC = int(os.environ.get("TELEGRAM_WARN_REPEAT_SEC", "1800"))
 TERMINAL_READ_LIMIT = int(os.environ.get("TELEGRAM_TERMINAL_READ_LIMIT", "2000"))
+WORKER_IDLE_SEC = int(os.environ.get("TELEGRAM_WORKER_IDLE_SEC", "300"))
+EXHAUST_CHECK_LINES = int(os.environ.get("TELEGRAM_EXHAUST_CHECK_LINES", "40"))
 
 YOUTUBE_RE = re.compile(
     r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[^\s]+",
@@ -63,6 +65,15 @@ PROMPT_SIGNS = (
     ("approaching rate limits", "레이트리밋 모델 전환 프롬프트"),
     ("do you want to proceed", "진행 확인 대기"),
     ("esc to go back", "확인 프롬프트 대기"),
+)
+# Hard stops: the worker will not resume on its own, so waiting out the
+# timeout only delays the report.
+BLOCK_SIGNS = (
+    ("you've hit your usage limit", "WORKER_USAGE_LIMIT"),
+    ("you have hit your usage limit", "WORKER_USAGE_LIMIT"),
+    ("you've hit your weekly limit", "WORKER_WEEKLY_LIMIT"),
+    ("usage limit reached", "WORKER_USAGE_LIMIT"),
+    ("purchase more credits", "WORKER_OUT_OF_CREDITS"),
 )
 
 
@@ -322,11 +333,53 @@ def terminal_score(term: dict[str, Any], target: Target) -> int:
     return score
 
 
-def pick_terminal(target: Target, terminals: list[dict[str, Any]]) -> dict[str, Any]:
-    ranked = sorted(terminals, key=lambda t: (terminal_score(t, target), t.get("lastOutputAt") or 0), reverse=True)
-    if not ranked or terminal_score(ranked[0], target) < 100:
+def inspect_terminal(handle: str) -> tuple[str, bool]:
+    """(agent, looks_exhausted) from the terminal's current screen."""
+    try:
+        text, _ = read_terminal(handle, limit=EXHAUST_CHECK_LINES)
+    except Exception:
+        return "", False
+    lowered = text.lower()
+    agent = ""
+    if "gpt-5" in lowered or "codex" in lowered:
+        agent = "codex"
+    elif "usage-credits" in lowered or "claude" in lowered:
+        agent = "claude"
+    return agent, bool(detect_hard_block(text))
+
+
+def pick_terminal(
+    target: Target,
+    terminals: list[dict[str, Any]],
+    exclude: set[str] | None = None,
+    avoid_agent: str = "",
+) -> dict[str, Any]:
+    exclude = exclude or set()
+    ranked = [
+        t for t in terminals
+        if terminal_score(t, target) >= 100 and t.get("handle") not in exclude
+    ]
+    if not ranked:
         raise RuntimeError(f"{target.label} 워커 터미널을 찾지 못했습니다.")
-    return ranked[0]
+
+    # A limit notice can sit on screen long after the quota reset, so treat it
+    # as a ranking signal rather than a disqualification — otherwise a stale
+    # message would take a perfectly usable worker out of the pool.
+    def rank(term: dict[str, Any]) -> tuple:
+        agent, exhausted = inspect_terminal(term["handle"])
+        # Codex and Claude bill separately: when one account is spent, the
+        # other agent in the same worktree is the useful fallback, even if its
+        # screen still shows an old limit notice.
+        other_agent = bool(avoid_agent) and agent not in ("", avoid_agent)
+        return (
+            other_agent and not exhausted,
+            other_agent,
+            not exhausted,
+            terminal_score(term, target),
+            term.get("lastOutputAt") or 0,
+        )
+
+    return max(ranked, key=rank)
 
 
 def send_prompt(handle: str, prompt: str) -> None:
@@ -486,6 +539,14 @@ def detect_prompt(text: str) -> str:
     return ""
 
 
+def detect_hard_block(text: str) -> str:
+    lowered = text.lower()
+    for needle, reason in BLOCK_SIGNS:
+        if needle in lowered:
+            return reason
+    return ""
+
+
 def infer_result(key: str, text: str) -> dict[str, str] | None:
     # Terminal transcripts contain prompts, examples, old URLs, and exploratory
     # paths. Only an explicit, non-placeholder marker is a completion signal.
@@ -511,10 +572,10 @@ def video_id_from_path(text: str) -> bool:
     return bool(re.search(r"outputs[\\/][A-Za-z0-9_-]{6,}", text))
 
 
-def read_terminal(handle: str, cursor: Any = None) -> tuple[str, str]:
+def read_terminal(handle: str, cursor: Any = None, limit: int | None = None) -> tuple[str, str]:
     # Without a cursor the tail is a short window, so a marker printed hours ago
     # scrolls out and the job waits forever. Read incrementally instead.
-    args = ["terminal", "read", "--terminal", handle, "--limit", str(TERMINAL_READ_LIMIT), "--json"]
+    args = ["terminal", "read", "--terminal", handle, "--limit", str(limit or TERMINAL_READ_LIMIT), "--json"]
     if cursor not in (None, ""):
         args.extend(["--cursor", str(cursor)])
     payload = run_orca(args)
@@ -607,15 +668,65 @@ def skip_terminal_backlog(job: dict[str, Any], key: str, handle: str) -> None:
         cursors.pop(key, None)
 
 
+def terminal_last_output_ts(handle: str, terminals: list[dict[str, Any]] | None = None) -> int | None:
+    """Epoch seconds of the terminal's last output, or None if unknown."""
+    try:
+        rows = list_terminals() if terminals is None else terminals
+    except Exception:
+        return None
+    for term in rows:
+        if term.get("handle") == handle:
+            raw = term.get("lastOutputAt")
+            try:
+                return int(int(raw) / 1000)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def worker_is_idle(job: dict[str, Any], key: str, terminals: list[dict[str, Any]] | None = None) -> bool:
+    """Has the worker gone quiet long enough to be considered done or dead?
+
+    A single tick with no new output means nothing — agents pause for seconds
+    between tool calls — so judge by how long the terminal has been silent.
+    Draining the pending chunk first keeps the probe from swallowing a
+    completion marker the monitor has not read yet.
+    """
+    handle = job.get("terminals", {}).get(key)
+    if not handle:
+        return True
+    cursors = job.setdefault("cursors", {})
+    try:
+        text, next_cursor = read_terminal(handle, cursors.get(key))
+        cursors[key] = next_cursor
+        parsed = infer_result(key, text)
+        if parsed:
+            job.setdefault("results", {})[key] = parsed
+    except Exception:
+        pass
+    last_output = terminal_last_output_ts(handle, terminals)
+    if last_output is None:
+        return True
+    return (now_ts() - last_output) >= WORKER_IDLE_SEC
+
+
 def retry_base_job(job: dict[str, Any], tg: Telegram) -> None:
     terminals = list_terminals()
     prompts = base_prompts(job["url"], job["id"])
     results = job.setdefault("results", {})
     job.setdefault("terminals", {})
     retried: list[str] = []
+    skipped: list[str] = []
     for key in ("cafe", "youtube", "script"):
         current = results.get(key, {})
         if current and current.get("status") not in ("blocked", "failed", "running", ""):
+            continue
+        # A key with no result may still be mid-run. Re-sending its prompt would
+        # throw away work in progress, so only restart workers that went quiet.
+        if not current and not worker_is_idle(job, key, terminals):
+            skipped.append(key)
+            continue
+        if results.get(key, {}).get("status") not in (None, "", "blocked", "failed", "running"):
             continue
         term = pick_terminal(TARGETS[key], terminals)
         job["terminals"][key] = term["handle"]
@@ -628,7 +739,68 @@ def retry_base_job(job: dict[str, Any], tg: Telegram) -> None:
         retried.append(key)
     job["status"] = "base_running"
     stamp_job(job, reset_warning=True)
-    tg.send(f"미완료 기본 작업 재시도: {job['id']}\n{', '.join(retried) if retried else '재시도할 미완료 항목 없음'}")
+    lines = [f"미완료 기본 작업 재시도: {job['id']}"]
+    lines.append(f"재시도: {', '.join(retried) if retried else '없음'}")
+    if skipped:
+        lines.append(f"진행 중이라 건너뜀: {', '.join(skipped)}")
+    tg.send("\n".join(lines))
+
+
+def prompt_for_key(job: dict[str, Any], key: str) -> str | None:
+    if key in ("cafe", "youtube", "script"):
+        return base_prompts(job["url"], job["id"])[key]
+    if key == "shorts":
+        return shorts_prompt(job)
+    if key == "shorts_publish":
+        return shorts_publish_prompt(job)
+    return None
+
+
+def handoff_exhausted_worker(
+    job: dict[str, Any], key: str, handle: str, text: str, tg: Telegram
+) -> bool:
+    """Move the step to another agent when this worker's quota is spent.
+
+    Codex and Claude sit in the same worktree, so a limit on one is not a
+    reason to stall the job — it is a reason to hand the work to the other.
+    """
+    reason = detect_hard_block(text)
+    if not reason:
+        return False
+    target = TARGETS.get("shorts" if key == "shorts_publish" else key)
+    prompt = prompt_for_key(job, key)
+    if target is None or prompt is None:
+        return False
+
+    exhausted = job.setdefault("exhausted", {})
+    dead = set(exhausted.get(key, []))
+    dead.add(handle)
+    exhausted[key] = sorted(dead)
+
+    spent_agent, _ = inspect_terminal(handle)
+    try:
+        term = pick_terminal(target, list_terminals(), exclude=dead, avoid_agent=spent_agent)
+    except RuntimeError as e:
+        job.setdefault("results", {})[key] = {"status": "blocked", "reason": reason}
+        tg.send(
+            f"워커 한도 소진: {job['id']}\n단계: {key}\n사유: {reason}\n{e}",
+            stall_buttons(job),
+        )
+        return True
+
+    job.setdefault("terminals", {})[key] = term["handle"]
+    job.get("prompts", {}).pop(key, None)
+    skip_terminal_backlog(job, key, term["handle"])
+    send_prompt(term["handle"], prompt)
+    stamp_job(job, reset_warning=True)
+    new_agent, _ = inspect_terminal(term["handle"])
+    tg.send(
+        f"워커 한도 소진 → 다른 에이전트로 이관: {job['id']}\n"
+        f"단계: {key}\n사유: {reason}\n"
+        f"{spent_agent or '?'} → {new_agent or '?'}\n"
+        f"새 터미널: {term['handle']}"
+    )
+    return True
 
 
 def notify_worker_prompt(
@@ -674,6 +846,8 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 results[key] = parsed
                 job.get("prompts", {}).pop(key, None)
                 stamp_job(job)
+                continue
+            if handoff_exhausted_worker(job, key, handle, text, tg):
                 continue
             notify_worker_prompt(job, key, handle, text, tg)
 
