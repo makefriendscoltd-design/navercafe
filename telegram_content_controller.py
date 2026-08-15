@@ -897,6 +897,21 @@ def handoff_stalled_worker(
     if handoffs.get(key, 0) >= MAX_HANDOFFS:
         return False
 
+    # A worker goes quiet when it finishes, not only when it wedges. Sweep the
+    # whole scrollback before reassigning: if the marker is sitting there and a
+    # tick simply missed it, handing the step to another agent would throw away
+    # finished work and redo it.
+    try:
+        full, _ = read_terminal(handle)
+        done = infer_result(key, full)
+    except Exception:
+        done = None
+    if done:
+        job.setdefault("results", {})[key] = done
+        job.get("prompts", {}).pop(key, None)
+        stamp_job(job)
+        return False
+
     target = TARGETS.get("shorts" if key == "shorts_publish" else key)
     prompt = prompt_for_key(job, key)
     if target is None or prompt is None:
