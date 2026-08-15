@@ -57,8 +57,18 @@ MARKER_RE = re.compile(
     r"TELEGRAM_RESULT\s+([A-Za-z_][A-Za-z0-9_]*)((?:\s+[A-Za-z_][A-Za-z0-9_]*=\S+)+)"
 )
 MARKER_PAIR_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
+# Values like a title contain spaces, so a token-at-a-time read truncates them
+# ("title=클로드 워터마크가 SEO에..." became "클로드"). Locate the field starts and
+# take everything up to the next field instead.
+MARKER_HEAD_RE = re.compile(r"TELEGRAM_RESULT\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)")
+FIELD_START_RE = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=")
+# How far past the keyword to re-join when the tail wrapped the marker.
+MARKER_WINDOW_CHARS = 400
+# A free-text value that runs this long means the window swallowed unrelated
+# output; refuse it rather than publish garbage as a title.
+MAX_TITLE_CHARS = 120
 # Status-line glyphs the terminal glues onto the last token of a marker.
-TUI_NOISE_CHARS = "•›·│┃▌▶◆■□▪"
+TUI_NOISE_CHARS = "•›·│┃▌▶◆■□▪✻✶✽❯─"
 # A worker sitting on one of these is waiting for a human, not working.
 PROMPT_SIGNS = (
     ("would you like to run the following command", "명령 승인 대기"),
@@ -548,21 +558,53 @@ def clean_marker_value(value: str) -> str:
     return value.strip().strip("\"'")
 
 
+def _values_from_segment(segment: str) -> dict[str, str]:
+    """Split 'a=1 title=여러 단어 b=2' keeping spaces inside each value."""
+    starts = [(m.start(1), m.group(1), m.end()) for m in FIELD_START_RE.finditer(segment)]
+    values: dict[str, str] = {}
+    for i, (_, name, value_start) in enumerate(starts):
+        value_end = starts[i + 1][0] if i + 1 < len(starts) else len(segment)
+        v = clean_marker_value(segment[value_start:value_end])
+        if not v or "<" in v or ">" in v:
+            return {}
+        values[name] = v
+    return values
+
+
 def parse_marker(text: str) -> dict[str, dict[str, str]]:
     found: dict[str, dict[str, str]] = {}
-    # Match across newlines too: a wrapped tail can break the marker mid-line.
+
+    def offer(key: str, values: dict[str, str]) -> None:
+        # A wrapped line yields a partial marker ("status=ready" alone). Never
+        # let a poorer read block a richer one; keep whichever has more fields.
+        if values and len(values) > len(found.get(key, {})):
+            found[key] = values
+
+    # Per line first: the line end bounds the last value, which is what makes a
+    # free-text field like title safe to read.
+    for line in text.splitlines():
+        m = MARKER_HEAD_RE.search(line)
+        if not m:
+            continue
+        offer(m.group(1), _values_from_segment(m.group(2)))
+    # The tail wraps long lines into columns, so a marker often spans several
+    # lines. Re-join a bounded window after each keyword and parse that.
+    for m in re.finditer(r"TELEGRAM_RESULT", text):
+        window = re.sub(r"\s+", " ", text[m.start(): m.start() + MARKER_WINDOW_CHARS])
+        head = MARKER_HEAD_RE.search(window)
+        if not head:
+            continue
+        offer(head.group(1), _values_from_segment(head.group(2)))
+    # Last resort: strict key=value only, no spaces inside a value.
     for match in MARKER_RE.finditer(text):
-        key = match.group(1)
-        values: dict[str, str] = {}
+        values = {}
         for k, raw in MARKER_PAIR_RE.findall(match.group(2)):
             v = clean_marker_value(raw)
             if not v or "<" in v or ">" in v:
                 values = {}
                 break
             values[k] = v
-        if not values:
-            continue
-        found[key] = values
+        offer(match.group(1), values)
     return found
 
 
@@ -600,6 +642,13 @@ def marker_value_is_complete(key: str, field: str, value: str) -> bool:
     """
     if not value:
         return False
+    if field == "title":
+        return len(value) <= MAX_TITLE_CHARS
+    if field == "video":
+        # A path chopped mid-string loses its extension; the file will not exist.
+        return value.lower().endswith(".mp4")
+    if field == "output_dir":
+        return len(value) > 3
     if field != "url":
         return True
     hosts = EXPECTED_HOSTS.get(key)
