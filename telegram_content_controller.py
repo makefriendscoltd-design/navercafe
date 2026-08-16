@@ -1105,8 +1105,13 @@ def verify_shorts_publish(result: dict[str, Any], since_ts: int = 0) -> str:
     if SHORTS_CHANNEL_ID and channel_id and channel_id != SHORTS_CHANNEL_ID:
         return f"WRONG_CHANNEL(기대 {SHORTS_CHANNEL_ID}, 실제 {channel_id})"
     if since_ts:
+        # YouTube reports upload_date in UTC while the job clock is local, so a
+        # KST late-night publish comes back dated "yesterday". Allow a day of
+        # skew — still far tighter than the failure this guards against, where
+        # the reported video was three days old.
         started = time.strftime("%Y%m%d", time.localtime(int(since_ts)))
-        if upload_date < started:
+        floor = time.strftime("%Y%m%d", time.localtime(int(since_ts) - 86400))
+        if upload_date < floor:
             return f"UPLOAD_STALE(업로드 {upload_date}, 작업 시작 {started} — 기존 영상)"
     return ""
 
