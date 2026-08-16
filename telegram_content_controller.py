@@ -43,6 +43,8 @@ STALL_HANDOFF_SEC = int(os.environ.get("TELEGRAM_STALL_HANDOFF_SEC", "900"))
 MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
 # House spec for the shorts narration, taken from the accepted timing master.
 SHORTS_VOICE_ID = os.environ.get("TELEGRAM_SHORTS_VOICE_ID", "34bevfaPHev7LXnjGAlA")
+# 나민수 AI. An upload that lands anywhere else is a mis-publish, not a success.
+SHORTS_CHANNEL_ID = os.environ.get("TELEGRAM_SHORTS_CHANNEL_ID", "UCWyi-m_CdIbRpcwZN6MgBfg")
 SHORTS_TARGET_LUFS = float(os.environ.get("TELEGRAM_SHORTS_TARGET_LUFS", "-14.0"))
 SHORTS_LUFS_TOLERANCE = float(os.environ.get("TELEGRAM_SHORTS_LUFS_TOLERANCE", "1.5"))
 
@@ -1067,6 +1069,48 @@ def verify_shorts(result: dict[str, Any], since_ts: int = 0) -> str:
     return ""
 
 
+def youtube_upload_info(url: str) -> tuple[str, str]:
+    """('YYYYMMDD', channel_id) for a public video, or ('', '') if unknowable."""
+    try:
+        done = subprocess.run(
+            ["yt-dlp", "--no-update", "--skip-download", "--no-warnings",
+             "--print", "%(upload_date)s|%(channel_id)s", url],
+            capture_output=True, text=True, timeout=90,
+            encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return "", ""
+    for line in (done.stdout or "").strip().splitlines():
+        if "|" in line:
+            date, _, channel = line.partition("|")
+            return date.strip(), channel.strip()
+    return "", ""
+
+
+def verify_shorts_publish(result: dict[str, Any], since_ts: int = 0) -> str:
+    """Return a failure reason, or '' when the URL is really this job's upload.
+
+    A worker that cannot complete the upload may still report published and
+    hand back a URL it found on the channel. That happened: the marker pointed
+    at a video from three days earlier, so the job would have been recorded as
+    published without anything being uploaded. The marker says what the worker
+    claims; this checks the channel itself.
+    """
+    url = result.get("url", "")
+    if not url:
+        return "URL_MISSING"
+    upload_date, channel_id = youtube_upload_info(url)
+    if not upload_date:
+        return ""  # unlisted/private or probe failed — caller warns instead
+    if SHORTS_CHANNEL_ID and channel_id and channel_id != SHORTS_CHANNEL_ID:
+        return f"WRONG_CHANNEL(기대 {SHORTS_CHANNEL_ID}, 실제 {channel_id})"
+    if since_ts:
+        started = time.strftime("%Y%m%d", time.localtime(int(since_ts)))
+        if upload_date < started:
+            return f"UPLOAD_STALE(업로드 {upload_date}, 작업 시작 {started} — 기존 영상)"
+    return ""
+
+
 def worktree_root_for(video_path: Path) -> Path:
     """Manifest paths are stored relative to the worktree, not the output dir."""
     for parent in video_path.parents:
@@ -1252,6 +1296,21 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                             f"쇼츠 규격 미달로 반려: {job['id']}\n"
                             f"사유: {reason}\n"
                             f"파일: {results.get('shorts', {}).get('video') or parsed.get('video', '')}",
+                            stall_buttons(job),
+                        )
+                if key == "shorts_publish" and parsed.get("status") == "published":
+                    reason = verify_shorts_publish(
+                        parsed,
+                        int(job.get("phase_started_at_ts") or job.get("updated_at_ts") or 0),
+                    )
+                    if reason:
+                        parsed = {"status": "blocked", "reason": reason,
+                                  **{k: v for k, v in parsed.items() if k == "url"}}
+                        tg.send(
+                            f"쇼츠 발행 반려: {job['id']}\n"
+                            f"사유: {reason}\n"
+                            f"보고된 URL: {parsed.get('url', '')}\n"
+                            f"실제로 올라간 것이 없습니다. 다시 시도하세요.",
                             stall_buttons(job),
                         )
                 results[key] = parsed
