@@ -41,6 +41,10 @@ WORKER_IDLE_SEC = int(os.environ.get("TELEGRAM_WORKER_IDLE_SEC", "300"))
 EXHAUST_CHECK_LINES = int(os.environ.get("TELEGRAM_EXHAUST_CHECK_LINES", "40"))
 STALL_HANDOFF_SEC = int(os.environ.get("TELEGRAM_STALL_HANDOFF_SEC", "900"))
 MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
+# House spec for the shorts narration, taken from the accepted timing master.
+SHORTS_VOICE_ID = os.environ.get("TELEGRAM_SHORTS_VOICE_ID", "34bevfaPHev7LXnjGAlA")
+SHORTS_TARGET_LUFS = float(os.environ.get("TELEGRAM_SHORTS_TARGET_LUFS", "-14.0"))
+SHORTS_LUFS_TOLERANCE = float(os.environ.get("TELEGRAM_SHORTS_LUFS_TOLERANCE", "1.5"))
 
 YOUTUBE_RE = re.compile(
     r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[^\s]+",
@@ -876,6 +880,76 @@ def retry_base_job(job: dict[str, Any], tg: Telegram) -> None:
     tg.send("\n".join(lines))
 
 
+def measure_lufs(path: str) -> float | None:
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "ebur128=peak=true", "-f", "null", "-"],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=600,
+        )
+    except Exception:
+        return None
+    hits = re.findall(r"I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", proc.stderr or "")
+    return float(hits[-1]) if hits else None
+
+
+def verify_shorts(result: dict[str, Any]) -> str:
+    """Return a failure reason, or '' when the file meets the house spec.
+
+    A worker that cannot reach ElevenLabs will happily substitute a free TTS
+    voice and still report ready. Nothing downstream would catch that, and the
+    channel would publish in the wrong voice — so check the artifact itself.
+    """
+    video = result.get("video", "")
+    path = Path(video) if video else None
+    if not path or not path.exists():
+        return "VIDEO_MISSING"
+    if path.stat().st_size < 1024 * 1024:
+        return "VIDEO_TOO_SMALL"
+
+    # The approved pipeline (build_minsoo_timing_master.py) always writes a
+    # manifest next to the narration; its absence means another route was used.
+    manifests = sorted(path.parent.glob("*.manifest.json"))
+    if not manifests:
+        return "MANIFEST_MISSING(승인된 나레이션 파이프라인을 쓰지 않음)"
+
+    # Output dirs are reused across takes, so a manifest from a later rework can
+    # sit beside an older video. Only a manifest the render could have consumed
+    # counts as evidence for that render.
+    usable = [m for m in manifests if m.stat().st_mtime <= path.stat().st_mtime]
+    if not usable:
+        return "MANIFEST_NEWER_THAN_VIDEO(이 영상이 쓴 나레이션이 아님)"
+
+    newest = max(usable, key=lambda m: m.stat().st_mtime)
+    try:
+        data = json.loads(newest.read_text(encoding="utf-8"))
+    except Exception as e:
+        return f"MANIFEST_UNREADABLE({e})"
+
+    voice = data.get("voice_id", "")
+    if voice != SHORTS_VOICE_ID:
+        return f"VOICE_MISMATCH(기대 {SHORTS_VOICE_ID}, 실제 {voice or '없음'})"
+
+    audio = data.get("audio", "")
+    if audio:
+        audio_path = Path(audio)
+        if not audio_path.is_absolute():
+            audio_path = worktree_root_for(path) / audio
+        if not audio_path.exists():
+            return f"NARRATION_MISSING({audio})"
+    return ""
+
+
+def worktree_root_for(video_path: Path) -> Path:
+    """Manifest paths are stored relative to the worktree, not the output dir."""
+    for parent in video_path.parents:
+        if (parent / "outputs").is_dir():
+            return parent
+    return video_path.parent
+
+
 def prompt_for_key(job: dict[str, Any], key: str) -> str | None:
     if key in ("cafe", "youtube", "script"):
         return base_prompts(job["url"], job["id"])[key]
@@ -1038,6 +1112,20 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
             cursors[key] = next_cursor
             parsed = infer_result(key, text)
             if parsed:
+                # Trust the marker for what the worker did, not for whether the
+                # artifact is publishable. Check the file before accepting it.
+                if key == "shorts" and parsed.get("status") == "ready":
+                    reason = verify_shorts(parsed)
+                    if reason:
+                        parsed = {"status": "blocked", "reason": reason, **{
+                            k: v for k, v in parsed.items() if k in ("video", "title")
+                        }}
+                        tg.send(
+                            f"쇼츠 규격 미달로 반려: {job['id']}\n"
+                            f"사유: {reason}\n"
+                            f"파일: {results.get('shorts', {}).get('video') or parsed.get('video', '')}",
+                            stall_buttons(job),
+                        )
                 results[key] = parsed
                 job.get("prompts", {}).pop(key, None)
                 stamp_job(job)
