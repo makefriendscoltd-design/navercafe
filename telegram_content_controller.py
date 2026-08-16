@@ -601,6 +601,16 @@ Publish this video as a YouTube Shorts upload on channel 나민수 AI.
 Video: {video}
 Title: {title}
 
+Channel check (do this BEFORE uploading — a wrong-channel upload can only be undone
+by deleting and re-uploading, which loses the URL):
+- The active YouTube channel must be 나민수 AI (@naminsoo_aimax, UCWyi-m_CdIbRpcwZN6MgBfg).
+- If the signed-in account exposes several channels, switch to that one first.
+- If it is not available or the session is signed out, stop and report blocked.
+  Do not upload to whatever channel happens to be active.
+- The dedicated Playwright profile (cardnews_youtube/chrome_profile_youtube) is signed
+  out, so use the live Chrome session instead.
+
+Upload the ORIGINAL file at the path above (4K master), not a downscaled _tg.mp4 preview.
 Before upload, confirm the title shown above is used exactly. Do not rewrite it unless the title is empty.
 After publishing, print exactly one marker:
   TELEGRAM_RESULT shorts_publish status=published url=<youtube_shorts_url>
@@ -866,12 +876,32 @@ def maybe_warn_stalled(job: dict[str, Any], tg: Telegram) -> None:
 
 
 def skip_terminal_backlog(job: dict[str, Any], key: str, handle: str) -> None:
+    """Park the cursor at the terminal's current end before dispatching work.
+
+    One read was not enough. Reads are line-capped, so on a worker with a long
+    scrollback the returned cursor could stop short of the end and leave an
+    older TELEGRAM_RESULT ahead of it — the next monitor tick then read that
+    marker and accepted a previous job's video as this run's result. A cursor
+    is also only meaningful for the terminal it came from, and this key's
+    terminal changes between runs, so a carried-over value is a bogus offset.
+    Drain to the end instead, and remember which terminal the cursor belongs to.
+    """
     cursors = job.setdefault("cursors", {})
+    owners = job.setdefault("cursor_terminals", {})
+    cursor = cursors.get(key) if owners.get(key) == handle else None
     try:
-        _, next_cursor = read_terminal(handle, cursors.get(key))
-        cursors[key] = next_cursor
+        for _ in range(50):  # bounded so a chatty worker cannot spin this
+            _, next_cursor = read_terminal(handle, cursor)
+            if not next_cursor or next_cursor == cursor:
+                break
+            cursor = next_cursor
+        cursors[key] = cursor or ""
+        owners[key] = handle
     except Exception:
+        # Leave no stale offset behind; the freshness check in verify_shorts is
+        # the backstop if we end up re-reading old output.
         cursors.pop(key, None)
+        owners.pop(key, None)
 
 
 def terminal_last_output_ts(handle: str, terminals: list[dict[str, Any]] | None = None) -> int | None:
@@ -976,7 +1006,7 @@ def measure_lufs(path: str) -> float | None:
     return float(hits[-1]) if hits else None
 
 
-def verify_shorts(result: dict[str, Any]) -> str:
+def verify_shorts(result: dict[str, Any], since_ts: int = 0) -> str:
     """Return a failure reason, or '' when the file meets the house spec.
 
     A worker that cannot reach ElevenLabs will happily substitute a free TTS
@@ -989,6 +1019,20 @@ def verify_shorts(result: dict[str, Any]) -> str:
         return "VIDEO_MISSING"
     if path.stat().st_size < 1024 * 1024:
         return "VIDEO_TOO_SMALL"
+
+    # Workers are reused, so a marker from an earlier job can still sit in the
+    # scrollback and be read back as this run's result. That happened once and
+    # pointed publishing at a video from the previous day. The cursor is the
+    # first defence; this is the one that does not depend on it — a render this
+    # job actually produced cannot predate the job's dispatch.
+    # (shutil.copy2 keeps the source mtime, so a --final-dir copy still carries
+    # the render time, not the copy time.)
+    if since_ts:
+        age_slack = 60
+        if path.stat().st_mtime < int(since_ts) - age_slack:
+            produced = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+            started = time.strftime("%m-%d %H:%M", time.localtime(int(since_ts)))
+            return f"VIDEO_STALE(파일 {produced}, 작업 시작 {started} — 이전 작업물)"
 
     # The approved pipeline (build_minsoo_timing_master.py) always writes a
     # manifest next to the narration; its absence means another route was used.
@@ -1196,7 +1240,10 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 # Trust the marker for what the worker did, not for whether the
                 # artifact is publishable. Check the file before accepting it.
                 if key == "shorts" and parsed.get("status") == "ready":
-                    reason = verify_shorts(parsed)
+                    reason = verify_shorts(
+                        parsed,
+                        int(job.get("phase_started_at_ts") or job.get("updated_at_ts") or 0),
+                    )
                     if reason:
                         parsed = {"status": "blocked", "reason": reason, **{
                             k: v for k, v in parsed.items() if k in ("video", "title")
