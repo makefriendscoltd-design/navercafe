@@ -532,25 +532,59 @@ def shorts_prompt(job: dict[str, Any], regenerate: bool = False) -> str:
     job_id = job["id"]
     result = job.get("results", {})
     script_dir = result.get("script", {}).get("output_dir", "")
-    extra = "Regenerate a new shorts version; avoid repeating the previous cut/style." if regenerate else "Generate the first shorts version."
+    # 규격을 프롬프트에 박아두지 않으면 새 터미널이 매번 예전 포맷(Edge TTS + 구문자막 +
+    # 배경음 없음)으로 만든다. 정본은 script_video/SHORTS_SPEC.md 이고 여기에는
+    # 그것을 안 읽고 넘어가지 못하도록 하드 규칙만 요약해 둔다.
+    extra = (
+        "Regenerate the shorts video. Keep the spec below exactly; vary only the cut/framing."
+        if regenerate
+        else "Generate the shorts video."
+    )
     return f"""Telegram shorts job {job_id}
 Source YouTube URL: {url}
 Script/body output dir: {script_dir}
 
 {extra}
-Use the existing script_video/shortform workflow in this session.
-Goal:
-- create one vertical YouTube Shorts-ready mp4
-- propose 3 Korean YouTube Shorts titles, referencing prior title_candidates and existing Naminsoo AI Shorts upload titles when available
-- title policy:
-  - prioritize direct topic clarity over emotional copywriting or vague hooks
-  - make the viewer understand the exact subject/process in one scan
-  - put the core keyword near the front
-  - use natural Korean, 20-35 characters when possible
-  - avoid clickbait, abstract phrases, metaphor-only titles, and curiosity-only titles
-  - match the existing Naminsoo AI Shorts style: practical, specific, and immediately understandable
-  - recommended title must be the clearest topic-delivery option, not the most poetic option
-- do not publish yet
+
+FIRST read script_video/SHORTS_SPEC.md and follow it. It is the authoritative recipe
+(exact commands, fixed assets, fixed mix values, verification steps).
+Do not invent your own pipeline and do not copy settings from an older job.
+
+Hard rules (blocked if any cannot be met — never ship a stopgap as done):
+1. Narration = ElevenLabs Minsoo voice, voice_id 34bevfaPHev7LXnjGAlA,
+   built with build_minsoo_timing_master.py (overlap 0.1, lufs -14.0, true peak -1.8).
+   Never fall back to Edge TTS or any other voice. Key comes from ELEVENLABS_API_KEY,
+   or D:\\coding\\ccidainsta\\config.yaml api_keys.elevenlabs. Never print the key.
+2. Subtitles are word (eojel) units, built with make_sentence_srt.py --mode word.
+   Never sentence or phrase units.
+3. Subtitles carry no punctuation at all (. , : ; ! ?).
+4. Subtitle blocks must not overlap. Confirm the generator reports 0 overlaps.
+5. The script must end with the CTA:
+   "이 영상을 정리했습니다. / 자료가 궁금하신 분들은 채널 구독 후 프로필 링크를 확인해주세요."
+6. Background music AND transition sfx are required, using only the fixed assets:
+   bgm assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3
+   sfx assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3 (no riser, no pop,
+   never assets/sfx/whoosh.wav — that one is a placeholder and is inaudible).
+   One whoosh at every phrase transition, recomputed from THIS job's manifest.
+7. Music must not bury the voice: narration-to-music separation >= 12 dB.
+   If it does, lower music_volume and render again.
+8. Output 2160x3840, 30fps. Keep previous versions; save as <VIDEO_ID>_shorts_vN.mp4.
+
+Also produce the Telegram preview copy (1080x1920, <48MB, suffix _tg.mp4) as the spec
+describes, but put the ORIGINAL 4K path in the marker.
+
+Report the verification numbers: voice_id, subtitle unit/punctuation/overlap counts,
+CTA present, music separation dB, sfx count at transitions, integrated LUFS.
+
+Also propose 3 Korean YouTube Shorts titles:
+- prioritize direct topic clarity over emotional copywriting or vague hooks
+- make the viewer understand the exact subject/process in one scan
+- put the core keyword near the front
+- use natural Korean, 20-35 characters when possible
+- avoid clickbait, abstract phrases, metaphor-only titles, and curiosity-only titles
+- recommended title must be the clearest topic-delivery option, not the most poetic option
+
+Do not publish yet.
 
 At the end, print exactly one marker:
   TELEGRAM_RESULT shorts status=ready video=<absolute_mp4_path> title=<recommended_title>

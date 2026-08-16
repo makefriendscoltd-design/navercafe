@@ -40,3 +40,6 @@ nul
 .idea/
 .DS_Store
 Thumbs.db
+
+# 컨트롤러 상태 백업본
+telegram_content_controller_state.json.bak
