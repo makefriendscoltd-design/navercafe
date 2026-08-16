@@ -452,22 +452,24 @@ def base_prompts(url: str, job_id: str) -> dict[str, str]:
         "cafe": f"""Telegram content job {job_id}
 YouTube URL: {url}
 
-Create and publish the Naver cafe article now using the existing cafe pipeline.
+Prepare the Naver cafe article using the existing cafe pipeline. DO NOT PUBLISH.
+Publishing needs the owner's review first. Save the draft and stop.
 Hard rules:
-- If cafe images are 0, do not publish.
-- If the same source URL was already published, stop without publishing.
+- If cafe images are 0, stop and report blocked.
+- If the same source URL was already published, stop and report blocked.
 - If login is required, keep the browser visible and explicitly report LOGIN_REQUIRED.
 - At the end, print exactly one marker:
-  TELEGRAM_RESULT cafe status=published url=<cafe_article_url> images=<count>
+  TELEGRAM_RESULT cafe status=prepared body=<absolute_body_path> images=<count>
   or TELEGRAM_RESULT cafe status=blocked reason=<reason>
 """,
         "youtube": f"""Telegram content job {job_id}
 YouTube URL: {url}
 
-Create the NotebookLM/cardnews package and publish the YouTube community post now.
-Confirm active channel is 나민수 AI before publishing.
+Create the NotebookLM/cardnews package. DO NOT PUBLISH.
+Publishing to a public channel needs the owner's review first.
+Prepare the post body and the cardnews images, save them, and stop.
 At the end, print exactly one marker:
-  TELEGRAM_RESULT youtube status=published url=<youtube_post_url> images=<count>
+  TELEGRAM_RESULT youtube status=prepared body=<absolute_body_path> images=<count>
   or TELEGRAM_RESULT youtube status=blocked reason=<reason>
 """,
         "script": f"""Telegram content job {job_id}
@@ -480,6 +482,49 @@ At the end, print exactly one marker:
   or TELEGRAM_RESULT script status=blocked reason=<reason>
 """,
     }
+
+
+def publish_prompt(job: dict[str, Any], key: str) -> str:
+    """Sent only after the owner approves the prepared draft."""
+    prepared = job.get("results", {}).get(key, {})
+    body = prepared.get("body", "")
+    if key == "cafe":
+        return f"""Telegram content job {job['id']} — 발행 승인됨
+Publish the prepared Naver cafe article now.
+Draft: {body}
+Do not rewrite the approved body. Publish it as prepared.
+At the end, print exactly one marker:
+  TELEGRAM_RESULT cafe status=published url=<cafe_article_url> images=<count>
+  or TELEGRAM_RESULT cafe status=blocked reason=<reason>
+"""
+    return f"""Telegram content job {job['id']} — 발행 승인됨
+Publish the prepared YouTube community post now.
+Draft: {body}
+Confirm the active channel is 나민수 AI before publishing.
+Upload all cardnews images in one batch; a split upload overwrites the earlier batch.
+Do not rewrite the approved body. Publish it as prepared.
+At the end, print exactly one marker:
+  TELEGRAM_RESULT youtube status=published url=<youtube_post_url> images=<count>
+  or TELEGRAM_RESULT youtube status=blocked reason=<reason>
+"""
+
+
+def request_publish_approval(job: dict[str, Any], key: str, tg: Telegram) -> None:
+    prepared = job.get("results", {}).get(key, {})
+    label = TARGETS[key].label
+    tg.send(
+        f"검수 요청: {job['id']}\n"
+        f"단계: {label}\n"
+        f"이미지: {prepared.get('images', '?')}장\n"
+        f"초안: {prepared.get('body', '-')}\n\n"
+        f"확인하고 발행할지 결정해줘. 승인 전에는 발행하지 않는다.",
+        {
+            "inline_keyboard": [
+                [{"text": f"✅ {label} 발행", "callback_data": f"approve:{key}:{job['id']}"}],
+                [{"text": f"❌ 보류", "callback_data": f"reject:{key}:{job['id']}"}],
+            ]
+        },
+    )
 
 
 def shorts_prompt(job: dict[str, Any], regenerate: bool = False) -> str:
@@ -677,6 +722,8 @@ def infer_result(key: str, text: str) -> dict[str, str] | None:
         status = result.get("status", "").lower()
         if status in {"blocked", "failed", "error"}:
             return result
+        if key in ("cafe", "youtube") and status == "prepared":
+            return result if result.get("body") else None
         required = {
             "cafe": ("published", "url"),
             "youtube": ("published", "url"),
@@ -1129,6 +1176,12 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 results[key] = parsed
                 job.get("prompts", {}).pop(key, None)
                 stamp_job(job)
+                # Nothing reaches a public channel until the owner says so.
+                if parsed.get("status") == "prepared":
+                    asked = job.setdefault("approval_asked", {})
+                    if not asked.get(key):
+                        asked[key] = True
+                        request_publish_approval(job, key, tg)
                 continue
             if handoff_exhausted_worker(job, key, handle, text, tg):
                 continue
@@ -1241,13 +1294,37 @@ def handle_callback(cb: dict[str, Any], state: dict[str, Any], tg: Telegram) -> 
     if not tg.allowed(chat_id):
         return
     data = cb.get("data", "")
-    action, _, job_id = data.partition(":")
+    # "action:job" for the plain buttons, "action:key:job" for per-step approval.
+    parts = data.split(":")
+    action = parts[0] if parts else ""
+    step_key = parts[1] if len(parts) > 2 else ""
+    job_id = parts[-1] if len(parts) > 1 else ""
     job = state.get("jobs", {}).get(job_id)
     if not job:
         tg.answer_callback(callback_id, "job not found")
         return
     try:
-        if action == "check":
+        if action == "approve" and step_key in ("cafe", "youtube"):
+            tg.answer_callback(callback_id, f"{step_key} 발행 시작")
+            terminals = list_terminals()
+            term = pick_terminal(TARGETS[step_key], terminals)
+            job.setdefault("terminals", {})[step_key] = term["handle"]
+            job.get("results", {}).pop(step_key, None)
+            job.setdefault("approval_asked", {}).pop(step_key, None)
+            skip_terminal_backlog(job, step_key, term["handle"])
+            send_prompt(
+                term["handle"],
+                publish_prompt(job, step_key),
+                step_key,
+                term.get("worktreePath", ""),
+            )
+            stamp_job(job, reset_warning=True)
+            tg.send(f"{TARGETS[step_key].label} 발행 승인됨: {job_id}\n발행을 시작한다.")
+        elif action == "reject" and step_key:
+            tg.answer_callback(callback_id, "보류")
+            job.setdefault("held", {})[step_key] = True
+            tg.send(f"{TARGETS[step_key].label} 발행 보류: {job_id}\n초안은 그대로 둔다.")
+        elif action == "check":
             tg.answer_callback(callback_id, "상태 확인")
             tg.send(format_job_status(job), stall_buttons(job))
         elif action == "retrybase":
