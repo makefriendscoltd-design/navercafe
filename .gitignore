@@ -40,3 +40,14 @@ nul
 .idea/
 .DS_Store
 Thumbs.db
+
+# Telegram controller task files (job-specific, rewritten every run)
+.telegram_task_*.md
+
+# Superseded / placeholder audio: kept locally, not part of the spec.
+# SHORTS_SPEC.md pins the reference bgm+whoosh, which ARE committed.
+# whoosh.wav/riser.wav/pop.wav are inaudible placeholders — do not use them.
+assets/bgm/dynamic_pulse.mp3
+assets/sfx/whoosh.wav
+assets/sfx/riser.wav
+assets/sfx/pop.wav

@@ -10,11 +10,11 @@
     "audio_bitrate": "192k",
     "x265_params": "log-level=error"
   },
-  "silence_db": -35,
+  "silence_db": -99,
   "silence_min_duration": 0.35,
   "keep_padding": 0.08,
   "min_clip_duration": 0.12,
-  "max_segment_duration": 3.0,
+  "max_segment_duration": 0,
   "whisper_model": "medium",
   "whisper_language": "ko",
   "subtitle": {
@@ -99,8 +99,8 @@
     "speed": 2.0
   },
   "audio": {
-    "music_path": "",
-    "music_volume": 0.18,
+    "music_path": "assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3",
+    "music_volume": 0.1,
     "voice_volume": 0.82,
     "music_volume_scale": 1.85,
     "sfx_volume_scale": 2.2,

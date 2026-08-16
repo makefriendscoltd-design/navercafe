@@ -128,6 +128,19 @@ def merge_close_segments(segments, min_gap: float):
     return merged
 
 
+def next_sequence_path(directory: Path, prefix: str, suffix: str = ".mp4") -> Path:
+    highest = 0
+    pattern = re.compile(rf"^{re.escape(prefix)}_(\d+){re.escape(suffix)}$", re.IGNORECASE)
+    if directory.exists():
+        for item in directory.iterdir():
+            if not item.is_file():
+                continue
+            match = pattern.match(item.name)
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return directory / f"{prefix}_{highest + 1}{suffix}"
+
+
 def split_long_segments(segments, max_duration: float):
     if max_duration <= 0:
         return segments
@@ -237,10 +250,13 @@ def parse_srt_time(value: str) -> float:
 
 def ass_time(seconds: float) -> str:
     seconds = max(0.0, seconds)
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    cs = int(round((seconds - math.floor(seconds)) * 100))
+    total_cs = int(round(seconds * 100))
+    h = total_cs // 360000
+    total_cs %= 360000
+    m = total_cs // 6000
+    total_cs %= 6000
+    s = total_cs // 100
+    cs = total_cs % 100
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
@@ -250,6 +266,123 @@ def rgb_hex_to_ass(value: str) -> str:
         return value
     rr, gg, bb = cleaned[0:2], cleaned[2:4], cleaned[4:6]
     return f"&H00{bb}{gg}{rr}".upper()
+
+
+def wrap_ass_caption(text: str, max_chars: int = 15, max_lines: int = 2) -> str:
+    words = [word for word in re.split(r"\s+", text.replace(r"\N", " ")) if word]
+    if not words:
+        return ""
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip() if current else word
+        if current and len(candidate) > max_chars:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    if len(lines) > max_lines:
+        kept = lines[: max_lines - 1]
+        kept.append(" ".join(lines[max_lines - 1 :]))
+        lines = kept
+    return r"\N".join(lines[:max_lines])
+
+
+def split_caption_text(text: str, max_chars: int) -> list[str]:
+    plain = re.sub(r"\s+", " ", text.replace(r"\N", " ")).strip()
+    if not plain:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for unit in re.split(r"\s+", plain):
+        if not unit:
+            continue
+        candidate = f"{current} {unit}".strip() if current else unit
+        if current and len(candidate) > max_chars:
+            chunks.append(current)
+            current = unit
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def split_caption_events(
+    events: list[tuple[float, float, str]],
+    max_chars: int,
+) -> list[tuple[float, float, str]]:
+    rendered: list[tuple[float, float, str]] = []
+    for start, end, caption in events:
+        chunks = split_caption_text(caption, max_chars)
+        if not chunks:
+            continue
+        weights = [max(1, len(chunk)) for chunk in chunks]
+        total = sum(weights)
+        cursor = start
+        for index, (chunk, weight) in enumerate(zip(chunks, weights), start=1):
+            chunk_end = end if index == len(chunks) else min(end, cursor + (end - start) * weight / total)
+            rendered.append((cursor, chunk_end, chunk))
+            cursor = chunk_end
+    return rendered
+
+
+def merge_short_caption_events(
+    events: list[tuple[float, float, str]],
+    min_duration: float,
+    min_chars: int,
+    max_chars: int,
+) -> list[tuple[float, float, str]]:
+    merged: list[tuple[float, float, str]] = []
+    pending: tuple[float, float, str] | None = None
+
+    def char_count(value: str) -> int:
+        return len(re.sub(r"\s+", "", value.replace(r"\N", " ")))
+
+    def join_text(left: str, right: str) -> str:
+        return re.sub(r"\s+", " ", f"{left} {right}".replace(r"\N", " ")).strip()
+
+    for start, end, caption in events:
+        caption = re.sub(r"\s+", " ", caption.replace(r"\N", " ")).strip()
+        if not caption:
+            continue
+        if pending is None:
+            pending = (start, end, caption)
+            continue
+
+        p_start, p_end, p_caption = pending
+        p_short = (p_end - p_start) < min_duration or char_count(p_caption) <= min_chars
+        combined = join_text(p_caption, caption)
+        if p_short and char_count(combined) <= max_chars:
+            if merged:
+                prev_start, _, prev_caption = merged[-1]
+                prev_combined = join_text(prev_caption, p_caption)
+                if char_count(prev_combined) <= max_chars:
+                    merged[-1] = (prev_start, p_end, prev_combined)
+                    pending = (start, end, caption)
+                else:
+                    pending = (p_start, end, combined)
+            else:
+                pending = (p_start, end, combined)
+        else:
+            merged.append(pending)
+            pending = (start, end, caption)
+
+    if pending is not None:
+        if merged:
+            start, end, caption = pending
+            short = (end - start) < min_duration or char_count(caption) <= min_chars
+            prev_start, _, prev_caption = merged[-1]
+            combined = join_text(prev_caption, caption)
+            if short and char_count(combined) <= max_chars:
+                merged[-1] = (prev_start, end, combined)
+            else:
+                merged.append(pending)
+        else:
+            merged.append(pending)
+    return merged
 
 
 def srt_to_ass(srt_path: Path, ass_path: Path, config: dict):
@@ -291,7 +424,8 @@ def srt_to_ass(srt_path: Path, ass_path: Path, config: dict):
         "Style: Title,"
         f"{title.get('font_name', 'BM HANNA 11yrs old')},{title.get('font_size', 165)},"
         f"{rgb_hex_to_ass(title.get('color', '29D6EA'))},&H000000FF,&H00000000,&H00000000,"
-        f"0,{int(title.get('italic', -1))},0,0,100,100,0,0,1,0,{title.get('shadow', 10)},5,80,80,0,1",
+        f"{int(title.get('bold', -1))},{int(title.get('italic', -1))},0,0,100,100,0,0,1,"
+        f"{title.get('outline', 0)},{title.get('shadow', 10)},5,80,80,0,1",
         "Style: Watermark,"
         f"{watermark.get('font_name', 'BM HANNA 11yrs old')},{watermark.get('font_size', 88)},"
         f"{rgb_hex_to_ass(watermark.get('color', '29D6EA'))},&H000000FF,&H00000000,&H00000000,"
@@ -303,7 +437,18 @@ def srt_to_ass(srt_path: Path, ass_path: Path, config: dict):
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    if sub.get("mode") == "word":
+    max_chars = int(sub.get("max_chars_per_line", 15))
+    max_lines = int(sub.get("max_lines", 2))
+    max_event_chars = max_chars * max_lines
+    subtitle_mode = sub.get("mode")
+    if subtitle_mode != "eojel" and sub.get("merge_enabled", True):
+        events = merge_short_caption_events(
+            events,
+            min_duration=float(sub.get("merge_min_duration", 0.65)),
+            min_chars=int(sub.get("merge_min_chars", 3)),
+            max_chars=int(sub.get("merge_max_chars", max_event_chars + 8)),
+        )
+    if subtitle_mode == "word":
         rendered_events = []
         for start, end, caption in events:
             words = [word for word in re.split(r"\s+", caption.replace(r"\N", " ")) if word]
@@ -320,10 +465,19 @@ def srt_to_ass(srt_path: Path, ass_path: Path, config: dict):
             if rendered_events and rendered_events[-1][1] < end:
                 last_start, _, last_word = rendered_events[-1]
                 rendered_events[-1] = (last_start, end, last_word)
-    else:
+    elif subtitle_mode == "eojel":
         rendered_events = events
+    else:
+        rendered_events = split_caption_events(events, max_event_chars)
 
+    caption_x = sub.get("x")
+    caption_y = sub.get("y")
     for start, end, caption in rendered_events:
+        caption = wrap_ass_caption(caption, max_chars=max_chars, max_lines=max_lines)
+        if not caption:
+            continue
+        if caption_x is not None and caption_y is not None:
+            caption = f"{{\\pos({int(caption_x)},{int(caption_y)})}}{caption}"
         ass.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{caption}")
 
     title_text = str(title.get("text", "")).replace("\n", r"\N")
@@ -653,7 +807,7 @@ def apply_capcut_template(config: dict, draft_path: Path) -> Path | None:
     config["fps"] = int(round(float(draft.get("fps") or config.get("fps") or 30)))
     config["_capcut_template"] = str(draft_path)
     config["export"] = {
-        "video_codec": "libx265",
+        "video_codec": "libx264",
         "video_bitrate": "9M",
         "preset": "veryfast",
         "audio_bitrate": "192k",
@@ -685,7 +839,7 @@ def apply_capcut_template(config: dict, draft_path: Path) -> Path | None:
         config["title"]["auto"] = False
 
     caption_tracks = [track for track in text_tracks if len(track.get("segments") or []) > 10]
-    if caption_tracks:
+    if caption_tracks and config.setdefault("subtitle", {}).get("import_template_style"):
         first = caption_tracks[0]["segments"][0]
         first_material = materials.get(first.get("material_id"), {})
         content = text_content(first_material)
@@ -756,7 +910,7 @@ def apply_capcut_template(config: dict, draft_path: Path) -> Path | None:
         presenter["width"] = 860
         presenter["height"] = 860
         presenter["color_filter"] = "eq=brightness=0.025:contrast=1.14:saturation=1.06,colorbalance=bs=0.035:gs=0.01"
-        presenter["left_light"] = {"color": "00C8FF", "alpha": 0.26, "width": 420}
+        presenter["left_light"] = {"color": "00C8FF", "alpha": 0.38, "width": 520}
 
     return talking_path if talking_path and talking_path.exists() else None
 
@@ -793,8 +947,20 @@ def video_encoding_args(config: dict) -> list[str]:
         args.extend(["-crf", str(export.get("crf", 18))])
     if codec == "libx265" and export.get("x265_params"):
         args.extend(["-x265-params", str(export["x265_params"])])
-    args.extend(["-c:a", "aac", "-b:a", str(export.get("audio_bitrate", "192k"))])
+    args.extend(["-c:a", "aac", "-b:a", str(export.get("audio_bitrate", "192k")), "-ac", "2", "-ar", "48000"])
     return args
+
+
+def audio_master_filter(input_label: str, output_label: str, audio_cfg: dict) -> str:
+    lufs = float(audio_cfg.get("master_lufs", -14.0))
+    lra = float(audio_cfg.get("master_lra", 3.0))
+    true_peak = float(audio_cfg.get("master_true_peak", -1.8))
+    limiter = 10 ** (true_peak / 20.0)
+    return (
+        f"[{input_label}]aformat=sample_rates=48000:channel_layouts=stereo,"
+        f"loudnorm=I={lufs:g}:LRA={lra:g}:TP={true_peak:g}:linear=true,"
+        f"alimiter=limit={limiter:.4f}:level=false,aresample=48000[{output_label}]"
+    )
 
 
 def drawtext_filter(text_config: dict) -> str:
@@ -805,6 +971,8 @@ def drawtext_filter(text_config: dict) -> str:
     x = int(text_config["x"])
     y = int(text_config["y"])
     line_spacing = int(text_config.get("line_spacing", 0))
+    borderw = int(text_config.get("outline", 0))
+    shadow = int(text_config.get("shadow", 5))
     line_step = font_size + line_spacing
     first_y = y - ((len(lines) - 1) * line_step / 2)
     filters = []
@@ -817,7 +985,8 @@ def drawtext_filter(text_config: dict) -> str:
             f"text='{text}':"
             f"fontcolor=0x{color}:fontsize={font_size}:"
             f"x={x}-(text_w/2):y={line_y:.1f}-(text_h/2):"
-            "shadowcolor=black@0.9:shadowx=5:shadowy=5"
+            f"bordercolor=black@0.85:borderw={borderw}:"
+            f"shadowcolor=black@0.9:shadowx={shadow}:shadowy={shadow}"
         )
     return ",".join(filters)
 
@@ -936,17 +1105,25 @@ def render_vertical_aimax(
 
     if voiceover:
         cmd.extend(["-i", str(voiceover)])
-        audio_mix_filters.append(f"[{next_input_index}:a]volume=1.0,aresample=48000[a0]")
+        voice_volume = float(audio_cfg.get("voice_volume", 1.0))
+        audio_mix_filters.append(
+            f"[{next_input_index}:a]volume={voice_volume},"
+            "aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[a0]"
+        )
         next_input_index += 1
+        audio_map = "[a0]"
     else:
-        audio_mix_filters.append("[0:a]volume=1.0[a0]")
+        audio_mix_filters.append("[0:a]volume=1.0,aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[a0]")
     audio_labels.append("[a0]")
 
     music_file = as_existing_path(music_path)
     if music_file:
         cmd.extend(["-stream_loop", "-1", "-i", str(music_file)])
-        music_volume = float(audio_cfg.get("music_volume", 0.08))
-        audio_mix_filters.append(f"[{next_input_index}:a]volume={music_volume},aresample=48000[music]")
+        music_volume = float(audio_cfg.get("music_volume", 0.08)) * float(audio_cfg.get("music_volume_scale", 1.0))
+        audio_mix_filters.append(
+            f"[{next_input_index}:a]volume={music_volume},"
+            "aresample=48000,aformat=sample_rates=48000:channel_layouts=stereo[music]"
+        )
         audio_labels.append("[music]")
         next_input_index += 1
 
@@ -956,10 +1133,11 @@ def render_vertical_aimax(
             continue
         cmd.extend(["-i", str(effect_file)])
         start_ms = int(round(float(effect.get("start", 0.0)) * 1000))
-        volume = float(effect.get("volume", 0.7))
+        volume = float(effect.get("volume", 0.7)) * float(audio_cfg.get("sfx_volume_scale", 1.0))
         label = f"sfx{idx}"
         audio_mix_filters.append(
-            f"[{next_input_index}:a]volume={volume},aresample=48000,adelay={start_ms}|{start_ms}[{label}]"
+            f"[{next_input_index}:a]volume={volume},aresample=48000,"
+            f"aformat=sample_rates=48000:channel_layouts=stereo,adelay={start_ms}|{start_ms}[{label}]"
         )
         audio_labels.append(f"[{label}]")
         next_input_index += 1
@@ -968,8 +1146,13 @@ def render_vertical_aimax(
         filter_complex += ";" + ";".join(audio_mix_filters)
         filter_complex += (
             f";{''.join(audio_labels)}amix=inputs={len(audio_labels)}:"
-            "duration=first:dropout_transition=0:normalize=0[aout]"
+            "duration=first:dropout_transition=0:normalize=0[mix0];"
+            + audio_master_filter("mix0", "aout", audio_cfg)
         )
+        audio_map = "[aout]"
+    elif audio_map.startswith("["):
+        filter_complex += ";" + ";".join(audio_mix_filters)
+        filter_complex += ";" + audio_master_filter("a0", "aout", audio_cfg)
         audio_map = "[aout]"
 
     cmd.extend(
@@ -1086,11 +1269,20 @@ def main():
     parser.add_argument("--talking", type=Path, help="presenter recording mp4")
     parser.add_argument("--screen", type=Path, help="배경/원본 유튜브 화면 녹화 mp4")
     parser.add_argument("--out-dir", type=Path, default=ROOT / "outputs")
+    parser.add_argument("--final-dir", type=Path, help="copy final upload mp4 to this directory")
+    parser.add_argument("--final-prefix", default="minsoo_aimax", help="sequence filename prefix for --final-dir")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--capcut-template", type=str, help="CapCut draft_content.json path, or latest")
     parser.add_argument("--use-template-talking", action="store_true")
     parser.add_argument("--disable-template-cuts", action="store_true")
+    parser.add_argument("--disable-template-screen-cuts", action="store_true")
     parser.add_argument("--voiceover", type=Path, help="generated narration wav/mp3")
+    parser.add_argument("--title-text", help="override top headline text; use \\n for line breaks")
+    parser.add_argument("--title-font-size", type=int, help="override top headline font size")
+    parser.add_argument("--source-text", help="override source credit text")
+    parser.add_argument("--voice-volume", type=float, help="voiceover volume multiplier")
+    parser.add_argument("--music-volume-scale", type=float, help="background music volume multiplier")
+    parser.add_argument("--sfx-volume-scale", type=float, help="sound effect volume multiplier")
     parser.add_argument("--skip-whisper", action="store_true")
     parser.add_argument("--srt", type=Path, help="이미 만든 SRT가 있으면 지정")
     args = parser.parse_args()
@@ -1114,6 +1306,22 @@ def main():
         if template_talking:
             print(f"[info] template talking: {template_talking}")
 
+    if args.title_text:
+        title_cfg = config.setdefault("title", {})
+        title_cfg["text"] = args.title_text.replace("\\n", "\n")
+        title_cfg["auto"] = False
+    if args.title_font_size:
+        config.setdefault("title", {})["font_size"] = args.title_font_size
+    if args.source_text:
+        config.setdefault("source", {})["text"] = args.source_text
+    audio_cfg = config.setdefault("audio", {})
+    if args.voice_volume is not None:
+        audio_cfg["voice_volume"] = args.voice_volume
+    if args.music_volume_scale is not None:
+        audio_cfg["music_volume_scale"] = args.music_volume_scale
+    if args.sfx_volume_scale is not None:
+        audio_cfg["sfx_volume_scale"] = args.sfx_volume_scale
+
     talking_arg = template_talking if args.use_template_talking and template_talking else args.talking
     if not talking_arg:
         raise SystemExit("[error] --talking is required unless --capcut-template with --use-template-talking finds one")
@@ -1127,6 +1335,8 @@ def main():
         raise SystemExit(f"[error] talking 파일이 없습니다: {talking}")
     if screen and not screen.exists():
         raise SystemExit(f"[error] screen 파일이 없습니다: {screen}")
+    if voiceover and not voiceover.exists():
+        raise SystemExit(f"[error] voiceover 파일이 없습니다: {voiceover}")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     stem = sanitize_stem(talking)
@@ -1155,7 +1365,7 @@ def main():
     edited = work_dir / f"{stem}_edited.mp4"
     cut_video(talking, edited, segments)
     render_screen = screen
-    screen_segments = named_template_segments(config, "_template_screen_segments")
+    screen_segments = [] if args.disable_template_screen_cuts else named_template_segments(config, "_template_screen_segments")
     if screen and screen_segments:
         screen_stem = sanitize_stem(screen)
         screen_edited = work_dir / f"{screen_stem}_screen_edited.mp4"
@@ -1183,7 +1393,12 @@ def main():
     srt_to_ass(corrected_srt, ass_path, config)
 
     final = work_dir / f"{stem}_final.mp4"
-    render_final(edited, ass_path, final, config, render_screen)
+    render_final(edited, ass_path, final, config, render_screen, voiceover)
+    if args.final_dir:
+        args.final_dir.mkdir(parents=True, exist_ok=True)
+        final_copy = next_sequence_path(args.final_dir, args.final_prefix)
+        shutil.copy2(final, final_copy)
+        print(f"[done] upload copy: {final_copy}")
     print(f"[done] {final}")
 
 
