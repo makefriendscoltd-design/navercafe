@@ -495,8 +495,12 @@ def send_prompt(handle: str, prompt: str, key: str = "", worktree: str = "") -> 
         if agent == "claude":
             path = write_task_file(worktree, key, prompt)
             if path:
+                # Keep the job header on screen. Results are matched by job id,
+                # and a file-delivered prompt would otherwise leave no trace of
+                # which job the terminal is working on.
+                header = prompt.splitlines()[0].strip()
                 one_liner = (
-                    f"{path} 파일을 읽고 거기 적힌 작업을 지금 수행해줘. "
+                    f"{header} / {path} 파일을 읽고 거기 적힌 작업을 지금 수행해줘. "
                     "파일에 적힌 TELEGRAM_RESULT 마커 규칙도 그대로 지켜서 "
                     "마지막에 한 줄로 출력해."
                 )
@@ -826,6 +830,23 @@ def marker_value_is_complete(key: str, field: str, value: str) -> bool:
     return any(netloc == h or netloc.endswith("." + h) for h in hosts)
 
 
+def scope_to_job(text: str, job_id: str) -> str:
+    """Keep only what the terminal printed after this job's prompt arrived.
+
+    Worker terminals are reused and some of them have no usable cursor, so the
+    whole scrollback gets re-read every tick. Every prompt carries its job id,
+    so anything before the last mention of it belongs to an earlier job.
+    """
+    if not job_id:
+        return text
+    idx = text.rfind(job_id)
+    if idx < 0:
+        # The prompt for this job never reached the terminal, so whatever
+        # marker is sitting there belongs to someone else.
+        return ""
+    return text[idx:]
+
+
 def infer_result(key: str, text: str) -> dict[str, str] | None:
     # Terminal transcripts contain prompts, examples, old URLs, and exploratory
     # paths. Only an explicit, non-placeholder marker is a completion signal.
@@ -861,7 +882,10 @@ def read_terminal(handle: str, cursor: Any = None, limit: int | None = None) -> 
     # Without a cursor the tail is a short window, so a marker printed hours ago
     # scrolls out and the job waits forever. Read incrementally instead.
     args = ["terminal", "read", "--terminal", handle, "--limit", str(limit or TERMINAL_READ_LIMIT), "--json"]
-    if cursor not in (None, ""):
+    # Some terminals always report nextCursor "0". Passing --cursor 0 back to
+    # them returns nothing, so the marker is never seen and the step hangs
+    # forever while the worker sits there finished. Treat 0 as "no cursor".
+    if str(cursor or "").strip() not in ("", "0", "None"):
         args.extend(["--cursor", str(cursor)])
     payload = run_orca(args)
     term = payload.get("result", {}).get("terminal", {})
@@ -1354,7 +1378,7 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 results[key] = {"status": "blocked", "reason": f"terminal_read_failed:{e}"}
                 continue
             cursors[key] = next_cursor
-            parsed = infer_result(key, text)
+            parsed = infer_result(key, scope_to_job(text, job.get("id", "")))
             if parsed:
                 # Trust the marker for what the worker did, not for whether the
                 # artifact is publishable. Check the file before accepting it.
