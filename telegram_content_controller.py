@@ -644,6 +644,17 @@ FIRST read script_video/SHORTS_SPEC.md and follow it. It is the authoritative re
 (exact commands, fixed assets, fixed mix values, verification steps).
 Do not invent your own pipeline and do not copy settings from an older job.
 
+Inputs are fixed. Build only from what the script step already produced in
+{script_dir}:
+- reusable_body.md  -> the source for the shorts script (podcast chatter already removed)
+- key_points.md     -> which points to keep
+- title_candidates.md -> pick the title from here
+- source_summary.md -> anything flagged in its Fact-Check Notes must NOT enter the script
+Do not re-read the raw transcript and do not write a fresh summary of the video.
+That throws away the filtering and the title work the previous step already did.
+If you believe none of the title candidates fit, say which ones you rejected and why,
+and offer your new title alongside them.
+
 Hard rules (blocked if any cannot be met — never ship a stopgap as done):
 1. Narration = ElevenLabs Minsoo voice, voice_id 34bevfaPHev7LXnjGAlA,
    built with build_minsoo_timing_master.py (overlap 0.1, lufs -14.0, true peak -1.8).
