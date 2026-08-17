@@ -727,6 +727,12 @@ Use the script exactly as returned. The opening hook, the 첫째~여섯째 struc
 the closing CTA are all part of that format; do not rewrite them and do not
 append your own CTA. If NotebookLM fails, report blocked — never substitute a
 caption summary.
+Fact-checking is a correction pass, not a veto. Verify vendor facts (model names,
+versions, release dates, prices, official benchmarks) and fix or drop what is
+wrong. Keep the speaker's own workflow numbers as quoted. Fix misspelled person
+or product names using the script step's clean_script.md as the reference. Do not
+report blocked just because a speaker's claim cannot be verified — that would make
+the notebook format unusable. Report factcheck=ok or factcheck=fixed in the marker.
 
 Everything else is fixed too. Build only from what the script step produced in
 {script_dir}:
