@@ -570,7 +570,24 @@ At the end, print exactly one marker:
 YouTube URL: {url}
 
 Create script/body outputs only. Do not publish anywhere.
-Save transcript, clean script, reusable body, key points, and title candidates.
+
+The manuscript comes from NotebookLM. It is not optional and there is no fallback.
+Use D:/coding/ccidacafe/notebooklm_source.py — fetch_manuscript(url, cfg) with
+load_config(config.ini). The notebook and scoping are already configured there.
+- Check auth first: `notebooklm auth check --test --json` must show status=ok AND
+  checks.token_fetch=true. On failure run `notebooklm auth refresh` and report
+  blocked if it still fails. The CLI can exit 255 even on success, so judge by
+  the JSON, not the exit code.
+- Do NOT rewrite what NotebookLM returns. Do not summarize the captions yourself
+  and do not substitute a transcript-based summary — that silently replaces the
+  method and the output stops matching what the owner gets by hand.
+- If NotebookLM cannot produce the manuscript, report blocked. Never ship a
+  caption-summary as if it were the manuscript.
+
+Then save the supporting outputs: transcript, clean script, reusable body,
+key points, title candidates, source summary, metadata. Record in metadata.json
+which method produced the manuscript.
+
 At the end, print exactly one marker:
   TELEGRAM_RESULT script status=done output_dir=<absolute_path>
   or TELEGRAM_RESULT script status=blocked reason=<reason>
@@ -644,7 +661,16 @@ FIRST read script_video/SHORTS_SPEC.md and follow it. It is the authoritative re
 (exact commands, fixed assets, fixed mix values, verification steps).
 Do not invent your own pipeline and do not copy settings from an older job.
 
-Inputs are fixed. Build only from what the script step already produced in
+The shorts narration script comes from NotebookLM, same as the cafe manuscript.
+Use D:/coding/ccidacafe/notebooklm_source.py fetch_manuscript with these overrides:
+  cfg['retry_if_no_heading'] = False   # narration must have no headings
+  cfg['strip_promo'] = False           # the CTA is required, do not strip it
+  cfg['prompt'] = the shorts narration prompt in SHORTS_SPEC.md
+Save it as outputs/<VIDEO_ID>/notebooklm_shorts_script.txt and use it as
+aimax_script_ko_short.txt. Do not rewrite it. If NotebookLM fails, report blocked
+rather than writing your own summary.
+
+Everything else is fixed too. Build only from what the script step produced in
 {script_dir}:
 - reusable_body.md  -> the source for the shorts script (podcast chatter already removed)
 - key_points.md     -> which points to keep
