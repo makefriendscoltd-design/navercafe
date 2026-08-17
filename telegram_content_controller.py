@@ -70,6 +70,10 @@ MARKER_PAIR_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\S+)")
 # take everything up to the next field instead.
 MARKER_HEAD_RE = re.compile(r"TELEGRAM_RESULT\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)")
 FIELD_START_RE = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=")
+# Proof the step ran, even when the tail mangled the value beyond parsing.
+FINISHED_MARKER_RE = re.compile(
+    r"TELEGRAM_RESULT\s+\w+\s+status=(published|done|ready|prepared)", re.I
+)
 # How far past the keyword to re-join when the tail wrapped the marker.
 MARKER_WINDOW_CHARS = 400
 # A free-text value that runs this long means the window swallowed unrelated
@@ -213,8 +217,16 @@ def load_state() -> dict[str, Any]:
 
 
 def save_state(state: dict[str, Any]) -> None:
+    # Merge, do not overwrite: a process that never loaded the registry would
+    # otherwise erase cooldowns another one just recorded.
+    merged = dict(state.get("exhausted_terminals") or {})
+    for handle, until in _EXHAUSTED_UNTIL.items():
+        try:
+            merged[handle] = max(int(merged.get(handle, 0)), int(until))
+        except (TypeError, ValueError):
+            merged[handle] = until
     state["exhausted_terminals"] = {
-        h: u for h, u in _EXHAUSTED_UNTIL.items() if u > now_ts()
+        h: u for h, u in merged.items() if int(u) > now_ts()
     }
     tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
@@ -1378,13 +1390,35 @@ def handoff_stalled_worker(
     # finished work and redo it.
     try:
         full, _ = read_terminal(handle)
-        done = infer_result(key, full)
+        scoped = scope_to_job(full, job.get("id", ""))
+        done = infer_result(key, scoped)
     except Exception:
+        full = scoped = ""
         done = None
     if done:
         job.setdefault("results", {})[key] = done
         job.get("prompts", {}).pop(key, None)
         stamp_job(job)
+        return False
+
+    # A marker whose value the terminal mangled still proves the work ran.
+    # Re-dispatching would repeat it — for a publish step that means posting
+    # twice — so stop and let a human read the mangled line instead.
+    # Deliberately the unscoped text: a false "finished" only costs a question
+    # to the operator, while a false "not finished" re-runs a publish step.
+    if FINISHED_MARKER_RE.search(full):
+        job.setdefault("results", {})[key] = {
+            "status": "blocked",
+            "reason": "MARKER_UNREADABLE(작업은 끝났으나 값이 깨져 읽지 못함)",
+        }
+        stamp_job(job)
+        tg.send(
+            f"완료 마커를 읽지 못했다: {job['id']}\n"
+            f"단계: {key}\n"
+            f"작업은 끝난 것으로 보이니 재실행하지 않는다. 결과를 직접 확인해줘.\n"
+            f"터미널: {handle}",
+            stall_buttons(job),
+        )
         return False
 
     target = TARGETS.get("shorts" if key == "shorts_publish" else key)
