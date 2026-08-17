@@ -1666,6 +1666,18 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 continue
             cursors[key] = next_cursor
             parsed = infer_result(key, scope_to_job(text, job.get("id", "")))
+            if not parsed:
+                # The incremental window can miss a marker that was already on
+                # screen when the cursor first advanced past it (fast worker,
+                # slow first tick). Fall back to the full scrollback, scoped to
+                # this job so an older job's marker cannot leak in.
+                try:
+                    full, _ = read_terminal(handle)
+                    parsed = infer_result(key, scope_to_job(full, job.get("id", "")))
+                    if parsed:
+                        text = full
+                except Exception:
+                    pass
             if parsed:
                 # Trust the marker for what the worker did, not for whether the
                 # artifact is publishable. Check the file before accepting it.
