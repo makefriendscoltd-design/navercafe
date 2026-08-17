@@ -1541,6 +1541,23 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
             notify_worker_prompt(job, key, handle, text, tg)
             handoff_stalled_worker(job, key, handle, tg, terminal_rows)
 
+        # Report each step as it lands. Waiting for all three means one missed
+        # transition swallows the whole report, which is how a published post
+        # went unannounced.
+        reported = job.setdefault("reported", {})
+        for key, res in results.items():
+            status = res.get("status", "")
+            if reported.get(key) == status:
+                continue
+            reported[key] = status
+            detail = res.get("url") or res.get("video") or res.get("output_dir") or res.get("body") or ""
+            images = f"\n이미지: {res['images']}장" if res.get("images") else ""
+            reason = f"\n사유: {res['reason']}" if res.get("reason") else ""
+            tg.send(
+                f"{TARGETS.get(key, TARGETS['cafe']).label if key in TARGETS else key} "
+                f"{status}: {job['id']}{images}{reason}\n{detail}"
+            )
+
         # Ask on state, not on the moment of transition: a result written by a
         # recovery path would otherwise never trigger the approval request and
         # the draft would sit there with no way to publish it.
