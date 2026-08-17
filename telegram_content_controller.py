@@ -1716,8 +1716,16 @@ def send_shorts_summary(job: dict[str, Any], tg: Telegram) -> None:
     }
     # Buttons ride on the video itself: judging and deciding happen together.
     preview = telegram_preview_video(video) if video else ""
-    if preview and tg.send_video_if_small(preview, text, buttons):
-        return
+    if preview:
+        try:
+            if tg.send_video_if_small(preview, text, buttons):
+                return
+        except TypeError:
+            # An older host adapter without reply_markup. Send the video anyway
+            # and follow with the buttons; losing the video is the worse failure.
+            if tg.send_video_if_small(preview, text):
+                tg.send("위 쇼츠를 발행하거나 재생성할 수 있다.", buttons)
+                return
     tg.send(text + "\n\n(영상 미리보기 전송 실패 — 파일을 직접 확인해줘)", buttons)
 
 
