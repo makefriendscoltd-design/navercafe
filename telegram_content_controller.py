@@ -78,6 +78,9 @@ FIELD_START_RE = re.compile(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)=")
 FINISHED_MARKER_RE = re.compile(
     r"TELEGRAM_RESULT\s+\w+\s+status=(published|done|ready|prepared)", re.I
 )
+# The prompt itself contains the marker template. Echoing it back is not proof of
+# work: "url=<youtube_shorts_url>" is the instruction, not a result.
+MARKER_TEMPLATE_RE = re.compile(r"TELEGRAM_RESULT\s+\w+\s+status=\w+\s+\w+=<[^>]*>", re.I)
 # How far past the keyword to re-join when the tail wrapped the marker.
 MARKER_WINDOW_CHARS = 400
 # A free-text value that runs this long means the window swallowed unrelated
@@ -828,6 +831,11 @@ def prompt_landed(handle: str, job_id: str) -> bool:
     return job_id in text
 
 
+def target_for(key: str) -> Target:
+    """shorts_publish runs on the shorts worker; it has no target of its own."""
+    return TARGETS["shorts"] if key == "shorts_publish" else TARGETS[key]
+
+
 def dispatch_step(
     job: dict[str, Any],
     key: str,
@@ -840,7 +848,7 @@ def dispatch_step(
     last_error: Exception | None = None
     for _ in range(max(1, attempts)):
         try:
-            term = pick_terminal(TARGETS[key], terminals, exclude=tried)
+            term = pick_terminal(target_for(key), terminals, exclude=tried)
         except RuntimeError as e:
             last_error = e
             break
@@ -861,7 +869,7 @@ def dispatch_step(
         time.sleep(DISPATCH_CONFIRM_SEC)
         if prompt_landed(handle, job["id"]):
             return term
-    raise RuntimeError(f"{TARGETS[key].label} 프롬프트 전달 실패: {last_error or '확인 불가'}")
+    raise RuntimeError(f"{target_for(key).label} 프롬프트 전달 실패: {last_error or '확인 불가'}")
 
 
 def clear_blocking_prompt(handle: str) -> str:
@@ -1515,7 +1523,11 @@ def handoff_stalled_worker(
     # twice — so stop and let a human read the mangled line instead.
     # Deliberately the unscoped text: a false "finished" only costs a question
     # to the operator, while a false "not finished" re-runs a publish step.
-    if FINISHED_MARKER_RE.search(full):
+    # Strip the echoed prompt template first — treating it as evidence made a
+    # step that never ran look finished, and blocked the handoff that would
+    # have moved it off a worker that was out of credits.
+    evidence = MARKER_TEMPLATE_RE.sub("", full)
+    if FINISHED_MARKER_RE.search(evidence):
         job.setdefault("results", {})[key] = {
             "status": "blocked",
             "reason": "MARKER_UNREADABLE(작업은 끝났으나 값이 깨져 읽지 못함)",
@@ -1915,15 +1927,16 @@ def handle_callback(cb: dict[str, Any], state: dict[str, Any], tg: Telegram) -> 
             send_shorts_job(job, tg, regenerate=True)
         elif action == "publish":
             tg.answer_callback(callback_id, "쇼츠 발행 시작")
-            terminals = list_terminals()
-            term = pick_terminal(TARGETS["shorts"], terminals)
-            job.setdefault("terminals", {})["shorts_publish"] = term["handle"]
             job.get("results", {}).pop("shorts_publish", None)
             job.get("prompts", {}).pop("shorts_publish", None)
-            skip_terminal_backlog(job, "shorts_publish", term["handle"])
-            send_prompt(term["handle"], shorts_publish_prompt(job), "shorts_publish", term.get("worktreePath", ""))
+            job.setdefault("reported", {}).pop("shorts_publish", None)
+            # Same delivery guarantees as every other step. Without them the
+            # publish went to a worker that was out of credits and stopped there
+            # with nothing reported.
+            term = dispatch_step(job, "shorts_publish", shorts_publish_prompt(job), list_terminals())
             job["status"] = "shorts_publish_running"
             stamp_job(job, reset_warning=True)
+            tg.send(f"쇼츠 발행 시작: {job_id}\n워커: {term['handle']}\n제목: {job.get('shorts_title', '')}")
             tg.send(f"쇼츠 발행 요청됨: {job_id}\n제목: {job.get('shorts_title', '')}")
     except Exception as e:
         tg.send(f"버튼 처리 실패: {job_id}\n{e}")
