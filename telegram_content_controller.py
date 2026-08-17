@@ -41,6 +41,8 @@ WORKER_IDLE_SEC = int(os.environ.get("TELEGRAM_WORKER_IDLE_SEC", "300"))
 EXHAUST_CHECK_LINES = int(os.environ.get("TELEGRAM_EXHAUST_CHECK_LINES", "40"))
 STALL_HANDOFF_SEC = int(os.environ.get("TELEGRAM_STALL_HANDOFF_SEC", "900"))
 MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
+# How long to wait before checking that a sent prompt actually landed.
+DISPATCH_CONFIRM_SEC = int(os.environ.get("TELEGRAM_DISPATCH_CONFIRM_SEC", "8"))
 # House spec for the shorts narration, taken from the accepted timing master.
 SHORTS_VOICE_ID = os.environ.get("TELEGRAM_SHORTS_VOICE_ID", "34bevfaPHev7LXnjGAlA")
 # 나민수 AI. An upload that lands anywhere else is a mis-publish, not a success.
@@ -691,21 +693,100 @@ After publishing, print exactly one marker:
 """
 
 
+def prompt_landed(handle: str, job_id: str) -> bool:
+    """Did the prompt actually reach the composer and get submitted?
+
+    Sending is fire-and-forget: a wedged TUI, a modal, or a swallowed paste all
+    look like success. The job header carries the id, so its presence on screen
+    is the proof.
+    """
+    try:
+        text, _ = read_terminal(handle, limit=120)
+    except Exception:
+        return False
+    return job_id in text
+
+
+def dispatch_step(
+    job: dict[str, Any],
+    key: str,
+    prompt: str,
+    terminals: list[dict[str, Any]],
+    attempts: int = 2,
+) -> dict[str, Any]:
+    """Send a step to a worker and confirm it took. Try another worker if not."""
+    tried: set[str] = set(job.get("exhausted", {}).get(key, []))
+    last_error: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            term = pick_terminal(TARGETS[key], terminals, exclude=tried)
+        except RuntimeError as e:
+            last_error = e
+            break
+        handle = term["handle"]
+        tried.add(handle)
+        job.setdefault("terminals", {})[key] = handle
+        skip_terminal_backlog(job, key, handle)
+        try:
+            send_prompt(handle, prompt, key, term.get("worktreePath", ""))
+        except Exception as e:
+            last_error = e
+            continue
+        time.sleep(DISPATCH_CONFIRM_SEC)
+        if prompt_landed(handle, job["id"]):
+            return term
+        # Something on screen ate it — a modal, a rate-limit notice, a wedge.
+        clear_blocking_prompt(handle)
+        time.sleep(DISPATCH_CONFIRM_SEC)
+        if prompt_landed(handle, job["id"]):
+            return term
+    raise RuntimeError(f"{TARGETS[key].label} 프롬프트 전달 실패: {last_error or '확인 불가'}")
+
+
+def clear_blocking_prompt(handle: str) -> str:
+    """Answer the prompts that are safe to answer, so a job is not stuck on them.
+
+    The rate-limit model switch is a pure cost question and 'keep current model'
+    changes nothing, so answering it beats waiting for a human. Command-approval
+    prompts are left alone — those are the operator's call.
+    """
+    try:
+        text, _ = read_terminal(handle, limit=EXHAUST_CHECK_LINES)
+    except Exception:
+        return ""
+    lowered = text.lower()
+    if "approaching rate limits" in lowered and "keep current model" in lowered:
+        try:
+            run_orca(["terminal", "send", "--terminal", handle, "--text", "2", "--json"])
+            return "레이트리밋 모델 전환 프롬프트 자동 해제"
+        except Exception:
+            return ""
+    return ""
+
+
 def send_base_job(job: dict[str, Any], tg: Telegram) -> None:
     terminals = list_terminals()
     prompts = base_prompts(job["url"], job["id"])
     job["terminals"] = {}
     job["cursors"] = {}
+    failed: list[str] = []
     for key in ("cafe", "youtube", "script"):
-        term = pick_terminal(TARGETS[key], terminals)
-        job["terminals"][key] = term["handle"]
-        # Workers are reused across jobs, so start past whatever the previous
-        # job left in the scrollback.
-        skip_terminal_backlog(job, key, term["handle"])
-        send_prompt(term["handle"], prompts[key], key, term.get("worktreePath", ""))
+        try:
+            dispatch_step(job, key, prompts[key], terminals)
+        except RuntimeError as e:
+            failed.append(f"{key}: {e}")
+            job.setdefault("results", {})[key] = {
+                "status": "blocked",
+                "reason": f"DISPATCH_FAILED:{e}",
+            }
     job["status"] = "base_running"
     stamp_job(job, reset_warning=True)
-    tg.send(f"접수: {job['id']}\n카페글 / 유튜브 게시글 / 스크립트 작업을 시작했습니다.")
+    lines = [f"접수: {job['id']}", "카페글 / 유튜브 게시글 / 스크립트 작업을 시작했습니다."]
+    if failed:
+        lines.append("")
+        lines.append("전달 실패:")
+        lines.extend(failed)
+    tg.send("\n".join(lines), stall_buttons(job) if failed else None)
 
 
 def send_shorts_job(job: dict[str, Any], tg: Telegram, regenerate: bool = False) -> None:
@@ -1415,17 +1496,28 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 results[key] = parsed
                 job.get("prompts", {}).pop(key, None)
                 stamp_job(job)
-                # Nothing reaches a public channel until the owner says so.
-                if parsed.get("status") == "prepared":
-                    asked = job.setdefault("approval_asked", {})
-                    if not asked.get(key):
-                        asked[key] = True
-                        request_publish_approval(job, key, tg)
                 continue
             if handoff_exhausted_worker(job, key, handle, text, tg):
                 continue
+            # Free the worker from prompts that only need a safe default.
+            cleared = clear_blocking_prompt(handle)
+            if cleared:
+                tg.send(f"{job['id']} / {key}: {cleared}")
+                continue
             notify_worker_prompt(job, key, handle, text, tg)
             handoff_stalled_worker(job, key, handle, tg, terminal_rows)
+
+        # Ask on state, not on the moment of transition: a result written by a
+        # recovery path would otherwise never trigger the approval request and
+        # the draft would sit there with no way to publish it.
+        for key in ("cafe", "youtube"):
+            if results.get(key, {}).get("status") != "prepared":
+                continue
+            asked = job.setdefault("approval_asked", {})
+            if asked.get(key) or job.get("held", {}).get(key):
+                continue
+            asked[key] = True
+            request_publish_approval(job, key, tg)
 
         if job.get("status") == "base_running" and all(k in results for k in ("cafe", "youtube", "script")):
             send_base_summary(job, tg)
