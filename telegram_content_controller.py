@@ -45,6 +45,8 @@ MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
 DISPATCH_CONFIRM_SEC = int(os.environ.get("TELEGRAM_DISPATCH_CONFIRM_SEC", "8"))
 # How often to speak up while a job is still open.
 HEARTBEAT_SEC = int(os.environ.get("TELEGRAM_HEARTBEAT_SEC", "1800"))
+# Telegram bot upload cap, minus headroom.
+TELEGRAM_VIDEO_LIMIT = 48 * 1024 * 1024
 # House spec for the shorts narration, taken from the accepted timing master.
 SHORTS_VOICE_ID = os.environ.get("TELEGRAM_SHORTS_VOICE_ID", "34bevfaPHev7LXnjGAlA")
 # 나민수 AI. An upload that lands anywhere else is a mis-publish, not a success.
@@ -358,11 +360,14 @@ class Telegram:
     def allowed(self, chat_id: Any) -> bool:
         return str(chat_id) == self.allowed_chat_id
 
-    def send_video_if_small(self, path: str, caption: str) -> bool:
+    def send_video_if_small(self, path: str, caption: str, reply_markup: dict[str, Any] | None = None) -> bool:
         file_path = Path(path)
         if not file_path.exists() or file_path.stat().st_size > 48 * 1024 * 1024:
             return False
-        return self._multipart("sendVideo", "video", file_path, {"chat_id": self.allowed_chat_id, "caption": caption[:900]})
+        fields = {"chat_id": self.allowed_chat_id, "caption": caption[:900]}
+        if reply_markup:
+            fields["reply_markup"] = json.dumps(reply_markup, ensure_ascii=False)
+        return self._multipart("sendVideo", "video", file_path, fields)
 
     def _multipart(self, method: str, field: str, file_path: Path, fields: dict[str, str]) -> bool:
         boundary = "----ccida-telegram-boundary"
@@ -1659,6 +1664,33 @@ def send_base_summary(job: dict[str, Any], tg: Telegram) -> None:
     tg.send("\n".join(lines))
 
 
+def telegram_preview_video(path: str) -> str:
+    """A version small enough for Telegram, made on demand if needed.
+
+    The deliverable is 4K and always exceeds the bot upload cap, so sending the
+    original silently fell back to a text-only message. Nobody can judge a
+    shorts video from a file path.
+    """
+    original = Path(path)
+    if not original.exists():
+        return ""
+    if original.stat().st_size <= TELEGRAM_VIDEO_LIMIT:
+        return str(original)
+    preview = original.with_name(f"{original.stem}_tg.mp4")
+    if preview.exists() and preview.stat().st_size <= TELEGRAM_VIDEO_LIMIT:
+        return str(preview)
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(original),
+             "-vf", "scale=1080:1920", "-c:v", "libx264", "-crf", "27",
+             "-preset", "veryfast", "-c:a", "aac", "-b:a", "160k", str(preview)],
+            check=True, capture_output=True, timeout=1800,
+        )
+    except Exception:
+        return ""
+    return str(preview) if preview.exists() and preview.stat().st_size <= TELEGRAM_VIDEO_LIMIT else ""
+
+
 def send_shorts_summary(job: dict[str, Any], tg: Telegram) -> None:
     r = job["results"].get("shorts", {})
     video = r.get("video", "")
@@ -1671,10 +1703,11 @@ def send_shorts_summary(job: dict[str, Any], tg: Telegram) -> None:
             [{"text": "쇼츠 재생성", "callback_data": f"regen:{job['id']}"}],
         ]
     }
-    if video and tg.send_video_if_small(video, text):
-        tg.send("위 쇼츠를 발행하거나 재생성할 수 있습니다.", buttons)
-    else:
-        tg.send(text, buttons)
+    # Buttons ride on the video itself: judging and deciding happen together.
+    preview = telegram_preview_video(video) if video else ""
+    if preview and tg.send_video_if_small(preview, text, buttons):
+        return
+    tg.send(text + "\n\n(영상 미리보기 전송 실패 — 파일을 직접 확인해줘)", buttons)
 
 
 def handle_message(msg: dict[str, Any], state: dict[str, Any], tg: Telegram) -> None:
