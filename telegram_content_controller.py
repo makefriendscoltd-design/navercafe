@@ -541,6 +541,24 @@ def new_job_id(url: str) -> str:
     return f"{video_id(url)}-{int(time.time()) % 100000}"
 
 
+# The manuscript only repeats what the source video said. A video from a few
+# months ago calls whatever was current then "the newest model", and that claim
+# survives NotebookLM, the rewrite and the owner's skim untouched — a published
+# post named Opus 4.6 and GPT 5.4 as the latest models when Opus 5 and GPT-5.6
+# had already shipped. Nothing in the pipeline checks this, so the worker must.
+FACT_CHECK_RULES = """Fact-check the body before saving. This is mandatory, not optional:
+- Treat every model name, version number, release date, price, benchmark figure
+  and company claim carried over from the source as unverified.
+- Run a real web search for each one you keep. Do not answer from memory: your
+  training cutoff is older than the news the post is about.
+- Fix what the search contradicts, or drop the claim. Never keep a version number
+  or a "the latest model is X" line you did not confirm today against the
+  vendor's own release page.
+- Keep the manuscript's wording otherwise; this is a correction pass, not a rewrite.
+- Report it in the marker: factcheck=ok if nothing needed changing, factcheck=fixed
+  if you corrected something. A draft without this field counts as unverified."""
+
+
 def base_prompts(url: str, job_id: str) -> dict[str, str]:
     return {
         "cafe": f"""Telegram content job {job_id}
@@ -548,12 +566,13 @@ YouTube URL: {url}
 
 Prepare the Naver cafe article using the existing cafe pipeline. DO NOT PUBLISH.
 Publishing needs the owner's review first. Save the draft and stop.
+{FACT_CHECK_RULES}
 Hard rules:
 - If cafe images are 0, stop and report blocked.
 - If the same source URL was already published, stop and report blocked.
 - If login is required, keep the browser visible and explicitly report LOGIN_REQUIRED.
 - At the end, print exactly one marker:
-  TELEGRAM_RESULT cafe status=prepared body=<absolute_body_path> images=<count>
+  TELEGRAM_RESULT cafe status=prepared body=<absolute_body_path> images=<count> factcheck=<ok|fixed>
   or TELEGRAM_RESULT cafe status=blocked reason=<reason>
 """,
         "youtube": f"""Telegram content job {job_id}
@@ -562,8 +581,11 @@ YouTube URL: {url}
 Create the NotebookLM/cardnews package. DO NOT PUBLISH.
 Publishing to a public channel needs the owner's review first.
 Prepare the post body and the cardnews images, save them, and stop.
+{FACT_CHECK_RULES}
+- The cardnews slides carry the same claims as the body. Fix them there too and
+  re-render, or the corrected body ships next to a stale card.
 At the end, print exactly one marker:
-  TELEGRAM_RESULT youtube status=prepared body=<absolute_body_path> images=<count>
+  TELEGRAM_RESULT youtube status=prepared body=<absolute_body_path> images=<count> factcheck=<ok|fixed>
   or TELEGRAM_RESULT youtube status=blocked reason=<reason>
 """,
         "script": f"""Telegram content job {job_id}
@@ -588,11 +610,28 @@ Then save the supporting outputs: transcript, clean script, reusable body,
 key points, title candidates, source summary, metadata. Record in metadata.json
 which method produced the manuscript.
 
+{FACT_CHECK_RULES}
+- Apply this to the reusable body and key points, not to the raw manuscript file:
+  keep the NotebookLM original as returned and record the corrections separately.
+
 At the end, print exactly one marker:
-  TELEGRAM_RESULT script status=done output_dir=<absolute_path>
+  TELEGRAM_RESULT script status=done output_dir=<absolute_path> factcheck=<ok|fixed>
   or TELEGRAM_RESULT script status=blocked reason=<reason>
 """,
     }
+
+
+# The approval only says the owner liked the draft; a stale version number reads
+# fine in a skim. This is the last gate before the post is public, and a wrong
+# fact costs a deletion to undo, so verify here too — but do not silently edit
+# approved copy: hand the decision back instead.
+PUBLISH_FACT_CHECK_RULES = """Verify before you publish (mandatory):
+- Web-search every model name, version number, release date, price and benchmark
+  figure in the draft. Do not answer from memory.
+- If the search contradicts the draft, do NOT publish and do NOT edit the approved
+  body. Stop and report blocked with reason=stale_fact:<what is wrong>, so the
+  owner decides.
+- Publish only when every checked claim holds up today."""
 
 
 def publish_prompt(job: dict[str, Any], key: str) -> str:
@@ -604,6 +643,7 @@ def publish_prompt(job: dict[str, Any], key: str) -> str:
 Publish the prepared Naver cafe article now.
 Draft: {body}
 Do not rewrite the approved body. Publish it as prepared.
+{PUBLISH_FACT_CHECK_RULES}
 At the end, print exactly one marker:
   TELEGRAM_RESULT cafe status=published url=<cafe_article_url> images=<count>
   or TELEGRAM_RESULT cafe status=blocked reason=<reason>
@@ -614,19 +654,33 @@ Draft: {body}
 Confirm the active channel is 나민수 AI before publishing.
 Upload all cardnews images in one batch; a split upload overwrites the earlier batch.
 Do not rewrite the approved body. Publish it as prepared.
+{PUBLISH_FACT_CHECK_RULES}
 At the end, print exactly one marker:
   TELEGRAM_RESULT youtube status=published url=<youtube_post_url> images=<count>
   or TELEGRAM_RESULT youtube status=blocked reason=<reason>
 """
 
 
+FACTCHECK_LABELS = {
+    "ok": "웹검색 검증됨 (수정 없음)",
+    "fixed": "웹검색 검증됨 (사실 수정함)",
+}
+
+
 def request_publish_approval(job: dict[str, Any], key: str, tg: Telegram) -> None:
     prepared = job.get("results", {}).get(key, {})
     label = TARGETS[key].label
+    # An unverified draft looks identical to a verified one in the approval card,
+    # and that is exactly how a stale model version got published. Say it out loud.
+    factcheck = FACTCHECK_LABELS.get(
+        str(prepared.get("factcheck", "")).lower(),
+        "⚠️ 검증 안 됨 — 버전·날짜·수치는 직접 확인 필요",
+    )
     tg.send(
         f"검수 요청: {job['id']}\n"
         f"단계: {label}\n"
         f"이미지: {prepared.get('images', '?')}장\n"
+        f"사실확인: {factcheck}\n"
         f"초안: {prepared.get('body', '-')}\n\n"
         f"확인하고 발행할지 결정해줘. 승인 전에는 발행하지 않는다.",
         {
@@ -661,14 +715,18 @@ FIRST read script_video/SHORTS_SPEC.md and follow it. It is the authoritative re
 (exact commands, fixed assets, fixed mix values, verification steps).
 Do not invent your own pipeline and do not copy settings from an older job.
 
-The shorts narration script comes from NotebookLM, same as the cafe manuscript.
-Use D:/coding/ccidacafe/notebooklm_source.py fetch_manuscript with these overrides:
-  cfg['retry_if_no_heading'] = False   # narration must have no headings
-  cfg['strip_promo'] = False           # the CTA is required, do not strip it
-  cfg['prompt'] = the shorts narration prompt in SHORTS_SPEC.md
-Save it as outputs/<VIDEO_ID>/notebooklm_shorts_script.txt and use it as
-aimax_script_ko_short.txt. Do not rewrite it. If NotebookLM fails, report blocked
-rather than writing your own summary.
+The narration script comes from the 민수대표님_숏폼 NotebookLM notebook. Run:
+  python notebooklm_shorts.py --url "{url}" \
+    --out outputs/<VIDEO_ID>/aimax_script_ko_short.txt \
+    --raw-out outputs/<VIDEO_ID>/notebooklm_shorts_raw.txt
+That notebook (ed70fc3b-...) carries the owner's shorts format. Do NOT use the
+cafe notebook and do NOT add format instructions to the prompt — the format is
+already designed inside the notebook, and any 자수/문단/문체 instruction overrides
+it and produces flat column prose with no hook.
+Use the script exactly as returned. The opening hook, the 첫째~여섯째 structure and
+the closing CTA are all part of that format; do not rewrite them and do not
+append your own CTA. If NotebookLM fails, report blocked — never substitute a
+caption summary.
 
 Everything else is fixed too. Build only from what the script step produced in
 {script_dir}:
@@ -690,8 +748,9 @@ Hard rules (blocked if any cannot be met — never ship a stopgap as done):
    Never sentence or phrase units.
 3. Subtitles carry no punctuation at all (. , : ; ! ?).
 4. Subtitle blocks must not overlap. Confirm the generator reports 0 overlaps.
-5. The script must end with the CTA:
-   "이 영상을 정리했습니다. / 자료가 궁금하신 분들은 채널 구독 후 프로필 링크를 확인해주세요."
+5. The script must end with a CTA. The 숏폼 notebook writes one as part of its
+   format (댓글 유도 + 구독 유도), so keep what it returned. Only if the returned
+   script has no CTA at all, report blocked instead of inventing one.
 6. Background music AND transition sfx are required, using only the fixed assets:
    bgm assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3
    sfx assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3 (no riser, no pop,
