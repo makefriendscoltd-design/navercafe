@@ -52,6 +52,24 @@ master_lufs -14.0 / master_lra 3.0 / master_true_peak -1.8
 
 ## 제작 순서
 
+### 0. 준비물 확인 (없으면 여기서 만든다)
+
+새 job 은 보통 이 둘이 없다. 없다고 blocked 로 보고하지 말고 만들어라.
+
+**원본 영상** `assets/youtube/<VIDEO_ID>.mp4` — 화면 레이어로 쓴다.
+```bash
+yt-dlp -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b" \
+  --merge-output-format mp4 -o "assets/youtube/<VIDEO_ID>.mp4" "<원본 URL>"
+```
+
+**쇼츠 대본** `outputs/<VIDEO_ID>/aimax_script_ko_short.txt` — 스크립트 단계 산출물
+(`notebooklm_script/outputs/<VIDEO_ID>/key_points.md`, `clean_script.md`)에서 압축해 쓴다.
+- **공백 제외 520~560자**를 목표로 한다. 이 분량이 70~78초로 나온다(어절 자막 기준).
+- 문단(빈 줄) 하나가 나레이션 구문 하나가 되고, 그 경계마다 whoosh 가 들어간다.
+  8~10문단이 적당하다.
+- 첫 줄은 결론부터. 짧은 단문, 존댓말(`~합니다`).
+- 마지막 문단은 반드시 아래 CTA 두 문장.
+
 ### 1. 대본에 CTA 확인
 `outputs/<VIDEO_ID>/aimax_script_ko_short.txt` 끝에 CTA 두 문장이 있어야 한다. 없으면 붙인다.
 
@@ -103,6 +121,12 @@ python aimax_video_pipeline.py \
 - 결과 2160x3840 / 30fps.
 - 템플릿의 `silence_db -99`, `max_segment_duration 0` 은 진행자 클립을 다시 자르지
   않기 위한 값이다. 건드리면 영상이 나레이션보다 짧아진다.
+- 템플릿의 `export.threads` 는 x264 메모리 상한용이다. 2160x3840 인코딩에서
+  기본 스레드 수(코어 수만큼)로 돌리면 램이 모자랄 때 몇 분 돌다가
+  `x264 [error]: malloc of size ... failed` 로 죽고 1초짜리 빈 mp4 가 남는다.
+  이 실패는 설정이 아니라 자원 문제이므로, 여유 램을 확인하고
+  (`Get-CimInstance Win32_OperatingSystem`) 값을 더 낮춰 다시 돌리면 된다.
+  **완성본은 반드시 길이와 해상도를 확인해라.** exit code 만 보면 이 실패를 놓친다.
 - 완성본을 `outputs/<VIDEO_ID>/<VIDEO_ID>_shorts_vN.mp4` 로 복사한다. 이전 버전은 지우지 않는다.
 
 ### 6. 텔레그램 전송본

@@ -941,6 +941,12 @@ def video_encoding_args(config: dict) -> list[str]:
     export = config.get("export") or {}
     codec = export.get("video_codec", "libx264")
     args = ["-c:v", codec, "-preset", export.get("preset", "veryfast")]
+    # x264 allocates frame buffers per thread, and at 2160x3840 the default
+    # (one per core) can exhaust RAM mid-encode — it fails with
+    # "malloc of size ... failed" after minutes of work. Cap it when the
+    # machine is tight; unset keeps ffmpeg's default.
+    if export.get("threads"):
+        args.extend(["-threads", str(export["threads"])])
     if export.get("video_bitrate"):
         args.extend(["-b:v", str(export["video_bitrate"]), "-maxrate", str(export["video_bitrate"]), "-bufsize", "18M"])
     else:
