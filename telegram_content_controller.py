@@ -142,18 +142,78 @@ TARGETS = {
 }
 
 
+# handle -> epoch seconds until which the terminal's account is spent.
+# Kept module-level so pick_terminal can see it without threading state through
+# every call, and persisted so a new job does not re-pick a worker we already
+# know is out of credits. Per-job memory was not enough: each new job started
+# clean and burned hours on the same dead account.
+_EXHAUSTED_UNTIL: dict[str, int] = {}
+RESET_AT_RE = re.compile(
+    r"try again at\s+([A-Z][a-z]{2})\w*\s+(\d{1,2})\w*,?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})\s*([AP]M)",
+    re.I,
+)
+MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+DEFAULT_EXHAUST_COOLDOWN_SEC = int(os.environ.get("TELEGRAM_EXHAUST_COOLDOWN_SEC", str(6 * 3600)))
+
+
+def parse_reset_time(text: str) -> int:
+    """Read '...try again at Aug 20th, 2026 12:33 PM' out of the worker's notice."""
+    m = RESET_AT_RE.search(text or "")
+    if not m:
+        return 0
+    mon, day, year, hour, minute, ampm = m.groups()
+    month = MONTHS.get(mon.lower()[:3])
+    if not month:
+        return 0
+    hour = int(hour) % 12 + (12 if ampm.upper() == "PM" else 0)
+    try:
+        return int(time.mktime((int(year), month, int(day), hour, int(minute), 0, 0, 0, -1)))
+    except Exception:
+        return 0
+
+
+def mark_terminal_exhausted(handle: str, text: str = "") -> int:
+    until = parse_reset_time(text) or (now_ts() + DEFAULT_EXHAUST_COOLDOWN_SEC)
+    _EXHAUSTED_UNTIL[handle] = max(_EXHAUSTED_UNTIL.get(handle, 0), until)
+    return _EXHAUSTED_UNTIL[handle]
+
+
+def terminal_on_cooldown(handle: str) -> bool:
+    until = _EXHAUSTED_UNTIL.get(handle, 0)
+    if not until:
+        return False
+    if until <= now_ts():
+        _EXHAUSTED_UNTIL.pop(handle, None)
+        return False
+    return True
+
+
 def load_state() -> dict[str, Any]:
     if not STATE_PATH.exists():
         return {"offset": 0, "jobs": {}}
     try:
         # Accept a Windows-written UTF-8 BOM so a transient encoding mismatch
         # cannot erase the in-memory job queue on the next monitor tick.
-        return json.loads(STATE_PATH.read_text(encoding="utf-8-sig"))
+        state = json.loads(STATE_PATH.read_text(encoding="utf-8-sig"))
     except Exception:
         return {"offset": 0, "jobs": {}, "state_load_error": True}
+    # Merge, never clear: a reload mid-run must not forget a worker we just
+    # watched run out of credits.
+    for handle, until in (state.get("exhausted_terminals") or {}).items():
+        try:
+            until = int(until)
+        except (TypeError, ValueError):
+            continue
+        if until > now_ts():
+            _EXHAUSTED_UNTIL[handle] = max(_EXHAUSTED_UNTIL.get(handle, 0), until)
+    return state
 
 
 def save_state(state: dict[str, Any]) -> None:
+    state["exhausted_terminals"] = {
+        h: u for h, u in _EXHAUSTED_UNTIL.items() if u > now_ts()
+    }
     tmp = STATE_PATH.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(tmp, STATE_PATH)
@@ -361,11 +421,14 @@ def inspect_terminal(handle: str) -> tuple[str, bool]:
     except Exception:
         return "", False
     lowered = text.lower()
+    # Claude's own chrome first: a task prompt can mention "codex" in passing,
+    # but only the Claude TUI draws these.
+    claude_marks = ("bypass permissions", "⏵⏵", "usage-credits", "/btw", "shift+tab to cycle")
     agent = ""
-    if "gpt-5" in lowered or "codex" in lowered:
-        agent = "codex"
-    elif "usage-credits" in lowered or "claude" in lowered:
+    if any(m in lowered for m in claude_marks):
         agent = "claude"
+    elif "gpt-5" in lowered or "codex" in lowered:
+        agent = "codex"
     return agent, bool(detect_hard_block(text))
 
 
@@ -387,7 +450,11 @@ def pick_terminal(
     # as a ranking signal rather than a disqualification — otherwise a stale
     # message would take a perfectly usable worker out of the pool.
     def rank(term: dict[str, Any]) -> tuple:
-        agent, exhausted = inspect_terminal(term["handle"])
+        handle = term["handle"]
+        agent, exhausted = inspect_terminal(handle)
+        # A terminal we already saw run out of credits stays out until its
+        # reset time, even across jobs.
+        exhausted = exhausted or terminal_on_cooldown(handle)
         # Codex and Claude bill separately: when one account is spent, the
         # other agent in the same worktree is the useful fallback, even if its
         # screen still shows an old limit notice.
@@ -1154,6 +1221,8 @@ def handoff_exhausted_worker(
     dead = set(exhausted.get(key, []))
     dead.add(handle)
     exhausted[key] = sorted(dead)
+    # Remember it beyond this job so the next one does not pick it again.
+    until = mark_terminal_exhausted(handle, text)
 
     spent_agent, _ = inspect_terminal(handle)
     try:
@@ -1176,7 +1245,8 @@ def handoff_exhausted_worker(
         f"워커 한도 소진 → 다른 에이전트로 이관: {job['id']}\n"
         f"단계: {key}\n사유: {reason}\n"
         f"{spent_agent or '?'} → {new_agent or '?'}\n"
-        f"새 터미널: {term['handle']}"
+        f"새 터미널: {term['handle']}\n"
+        f"소진 워커 제외: {time.strftime('%m-%d %H:%M', time.localtime(until))} 까지"
     )
     return True
 
