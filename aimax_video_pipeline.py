@@ -1088,10 +1088,16 @@ def render_vertical_aimax(
         f"[v2]format=yuv420p,{sub_filter}[outv]"
     )
 
-    cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-y",
+    cmd = ["ffmpeg", "-hide_banner", "-y"]
+    # The presenter clip is a fixed take, so a script longer than it used to be
+    # truncated by -shortest — the narration's last seconds, CTA included, were
+    # simply missing from the render. Loop it like the screen layer does.
+    # Only safe when a voiceover bounds the output: without one the audio comes
+    # from this input, and looping every stream would leave -shortest nothing
+    # finite to stop on.
+    if voiceover:
+        cmd.extend(["-stream_loop", "-1"])
+    cmd.extend([
             "-i",
             str(edited_video),
             "-ss",
@@ -1100,7 +1106,7 @@ def render_vertical_aimax(
             "-1",
             "-i",
             str(screen_video),
-    ]
+    ])
 
     audio_map = "0:a"
     audio_cfg = config.get("audio") or {}
