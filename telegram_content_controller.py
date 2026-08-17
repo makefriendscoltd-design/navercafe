@@ -43,6 +43,8 @@ STALL_HANDOFF_SEC = int(os.environ.get("TELEGRAM_STALL_HANDOFF_SEC", "900"))
 MAX_HANDOFFS = int(os.environ.get("TELEGRAM_MAX_HANDOFFS", "2"))
 # How long to wait before checking that a sent prompt actually landed.
 DISPATCH_CONFIRM_SEC = int(os.environ.get("TELEGRAM_DISPATCH_CONFIRM_SEC", "8"))
+# How often to speak up while a job is still open.
+HEARTBEAT_SEC = int(os.environ.get("TELEGRAM_HEARTBEAT_SEC", "1800"))
 # House spec for the shorts narration, taken from the accepted timing master.
 SHORTS_VOICE_ID = os.environ.get("TELEGRAM_SHORTS_VOICE_ID", "34bevfaPHev7LXnjGAlA")
 # 나민수 AI. An upload that lands anywhere else is a mis-publish, not a success.
@@ -1430,7 +1432,14 @@ def handoff_stalled_worker(
     dead = set(job.setdefault("exhausted", {}).get(key, [])) | {handle}
     try:
         term = pick_terminal(target, terminals, exclude=dead, avoid_agent=stale_agent)
-    except RuntimeError:
+    except RuntimeError as e:
+        # No worker left to take it. Saying nothing here is how a job dies quietly.
+        job.setdefault("results", {})[key] = {"status": "blocked", "reason": f"NO_WORKER:{e}"}
+        stamp_job(job)
+        tg.send(
+            f"이관할 워커가 없다: {job['id']}\n단계: {key}\n{e}",
+            stall_buttons(job),
+        )
         return False
 
     handoffs[key] = handoffs.get(key, 0) + 1
@@ -1473,7 +1482,51 @@ def notify_worker_prompt(
     )
 
 
+_RUNTIME_DOWN_SINCE = 0
+
+
+def check_runtime(state: dict[str, Any], tg: Telegram) -> bool:
+    """Is the Orca CLI reachable? Silence must never look like progress.
+
+    When the app restarts or updates, every terminal call fails and the whole
+    pipeline stops with no outward sign. Say so, once, and say when it is back.
+    """
+    global _RUNTIME_DOWN_SINCE
+    try:
+        list_terminals()
+    except Exception as e:
+        if not _RUNTIME_DOWN_SINCE:
+            _RUNTIME_DOWN_SINCE = now_ts()
+            tg.send(
+                "오르카 런타임 불가 — 파이프라인 정지\n"
+                f"{str(e)[:200]}\n"
+                "오르카 앱이 떠야 작업이 이어진다."
+            )
+        return False
+    if _RUNTIME_DOWN_SINCE:
+        down_min = int((now_ts() - _RUNTIME_DOWN_SINCE) / 60)
+        _RUNTIME_DOWN_SINCE = 0
+        tg.send(f"오르카 런타임 복구됨 ({down_min}분 정지). 작업을 이어간다.")
+    return True
+
+
+def send_progress_heartbeat(job: dict[str, Any], tg: Telegram) -> None:
+    """Speak up periodically while a job is open, so silence is never ambiguous."""
+    if job.get("status") in ("done", "failed"):
+        return
+    last = int(job.get("last_heartbeat_ts") or 0)
+    if last and now_ts() - last < HEARTBEAT_SEC:
+        return
+    if not last:
+        job["last_heartbeat_ts"] = now_ts()
+        return
+    job["last_heartbeat_ts"] = now_ts()
+    tg.send(f"진행 확인 ({elapsed_minutes(job.get('phase_started_at_ts', 0))}분 경과)\n{format_job_status(job)}")
+
+
 def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
+    if not check_runtime(state, tg):
+        return
     for job in list(state.get("jobs", {}).values()):
         if job.get("status") in ("done", "failed"):
             continue
@@ -1591,6 +1644,7 @@ def monitor_jobs(state: dict[str, Any], tg: Telegram) -> None:
                 stamp_job(job)
 
         maybe_warn_stalled(job, tg)
+        send_progress_heartbeat(job, tg)
 
 
 def send_base_summary(job: dict[str, Any], tg: Telegram) -> None:
