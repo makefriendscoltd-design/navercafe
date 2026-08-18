@@ -62,8 +62,60 @@ yt-dlp -f "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b" \
   --merge-output-format mp4 -o "assets/youtube/<VIDEO_ID>.mp4" "<원본 URL>"
 ```
 
-**쇼츠 대본** `outputs/<VIDEO_ID>/aimax_script_ko_short.txt` — 스크립트 단계 산출물
-(`notebooklm_script/outputs/<VIDEO_ID>/key_points.md`, `clean_script.md`)에서 압축해 쓴다.
+**쇼츠 대본** `outputs/<VIDEO_ID>/aimax_script_ko_short.txt`
+
+### 대본은 `민수대표님_숏폼` 노트북에서 뽑는다
+
+```bash
+python notebooklm_shorts.py --url "<원본 URL>" \
+  --out outputs/<VIDEO_ID>/aimax_script_ko_short.txt \
+  --raw-out outputs/<VIDEO_ID>/notebooklm_shorts_raw.txt
+```
+
+- 노트북은 `ed70fc3b-…` (**민수대표님_숏폼**). 카페글 노트북(`c09a56d4-…`)이 아니다.
+  카페 노트북으로 뽑으면 칼럼체 평서문이 나오고 후킹이 사라진다.
+- **형식을 지시하지 마라.** 포맷은 노트북에 이미 설계돼 있다. 프롬프트는
+  `이 영상으로 숏폼 스크립트 만들어줘` 한 줄뿐이고, 여기에 자수·문단수·문체를
+  덧붙이면 그 설계를 덮어써서 결과가 달라진다.
+- 노트북 응답은 `### 영상 분석 결과` → `### 선택한 포맷` → `### 스크립트` 순이다.
+  나레이션은 **`### 스크립트` 아래만** 쓴다. 분석 파트는 나레이션에 넣지 않는다.
+  `notebooklm_shorts.py` 가 이 분리를 처리한다.
+- 받은 대본을 **재작성하지 않는다.** 후킹 문구, `첫째~여섯째` 구조, 끝의 CTA가
+  모두 노트북 포맷의 일부다. CTA도 노트북이 넣으므로 따로 붙이지 마라.
+- 노트북LM 이 실패하면 자막 요약으로 우회하지 말고 blocked 로 보고한다.
+
+**사실확인은 교정 패스다. 대본 전체를 막는 근거가 아니다.**
+`CLAUDE.md`의 발행 전 사실확인 대상은 **벤더 정보** — 모델명·버전·출시일·가격·
+공식 벤치마크 수치다. 낡은 모델명이 발행까지 통과한 사고에서 나온 규칙이다.
+- 그런 항목이 있으면 웹검색으로 확인해 고치거나 뺀다.
+- **화자가 자기 워크플로우를 두고 말한 수치**(예: "95%에게 불필요", "53토큰",
+  "컨텍스트 70%")는 영상에서 정확히 인용된 한 그대로 둔다. 검증 불가한 주장이라고
+  대본을 blocked 처리하지 마라. 그러면 노트북 포맷을 쓸 수 없다.
+- 인물·회사·제품 이름 오표기는 고친다. 앞 단계 산출물(`clean_script.md`)에 확인된
+  표기가 있으면 그것을 기준으로 한다.
+- 교정한 항목은 마커에 `factcheck=fixed` 로, 없으면 `factcheck=ok` 로 보고한다.
+- 인증: `notebooklm auth check --test --json` 에서 `status=ok` **그리고**
+  `checks.token_fetch=true` 둘 다여야 한다. 종료코드는 성공해도 255가 나온다.
+
+인증은 `notebooklm auth check --test --json` 에서 `status=ok` **그리고**
+`checks.token_fetch=true` 둘 다여야 살아있다. 종료코드는 성공해도 255가 나온다.
+
+### 나머지 입력 고정 — 앞 단계 산출물에서만 만든다
+
+스크립트 단계(`notebooklm_script/outputs/<VIDEO_ID>/`)가 이미 원본을 읽고 정리해뒀다.
+쇼츠는 **그 결과물에서만** 만든다. 원본 트랜스크립트를 다시 읽고 새로 요약하지 마라.
+그러면 앞 단계에서 걸러낸 잡담과 검증 안 된 주장이 되살아나고, 골라둔 제목 후보가 버려진다.
+
+| 쓸 것 | 용도 |
+|---|---|
+| `reusable_body.md` | 대본의 기본 소스. 팟캐스트 잡담·상호홍보가 이미 제거돼 있다 |
+| `key_points.md` | 어떤 포인트를 남길지 고르는 기준 |
+| `title_candidates.md` | **제목은 여기서 고른다** |
+| `source_summary.md` | Fact-Check Notes 에 걸린 주장은 대본에서 **제외한다** |
+
+- 제목은 `title_candidates.md` 후보 중에서 고른다. 굳이 새로 짓겠다면 어떤 후보를
+  왜 못 쓰는지 근거를 대고, 새 제목도 후보와 함께 제시한다.
+- `clean_script.md` 는 맥락 확인용으로만 본다. 원문 `transcript_*` 직접 참조 금지.
 - **공백 제외 520~560자**를 목표로 한다. 이 분량이 70~78초로 나온다(어절 자막 기준).
 - 문단(빈 줄) 하나가 나레이션 구문 하나가 되고, 그 경계마다 whoosh 가 들어간다.
   8~10문단이 적당하다.
