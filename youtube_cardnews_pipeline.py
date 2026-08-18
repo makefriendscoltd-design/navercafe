@@ -549,7 +549,84 @@ def render_cardnews_pngs(deck, out_dir, aspect="square"):
     return paths
 
 
-def build_cafe_assets(manuscript, youtube_url, title, image_count, optional_config, use_ai_keywords=True):
+def capture_youtube_frames_from_browser(youtube_url, image_count, out_dir):
+    """Capture YouTube player frames when direct video download is blocked."""
+    if image_count <= 0:
+        return []
+    try:
+        from PIL import Image, ImageStat
+        from playwright.sync_api import sync_playwright
+    except Exception as e:
+        print(f"[주의] 브라우저 캡처 fallback을 사용할 수 없습니다: {e}")
+        return []
+
+    frame_dir = Path(out_dir) / "youtube_frames"
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    target_times = [35, 85, 135, 205, 285, 360, 450, 540, 630, 720][:image_count]
+    paths = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=["--mute-audio"],
+        )
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        for idx, seconds in enumerate(target_times, 1):
+            page.goto(f"{youtube_url.split('&')[0]}&t={seconds}s", wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_selector("video", timeout=30000)
+            for _ in range(8):
+                for selector in (
+                    ".ytp-ad-skip-button",
+                    ".ytp-skip-ad-button",
+                    "button:has-text('건너뛰기')",
+                    "button:has-text('Skip')",
+                ):
+                    try:
+                        btn = page.locator(selector).first
+                        if btn.count():
+                            btn.click(timeout=500)
+                            break
+                    except Exception:
+                        pass
+                page.wait_for_timeout(500)
+            page.evaluate(
+                """async (seconds) => {
+                    const video = document.querySelector('video');
+                    video.muted = true;
+                    video.currentTime = Math.min(seconds, Math.max(0, (video.duration || seconds) - 2));
+                    try { await video.play(); } catch (e) {}
+                }""",
+                seconds,
+            )
+            page.wait_for_timeout(2500)
+            page.mouse.move(1200, 700)
+            box = page.locator("video").first.bounding_box()
+            path = frame_dir / f"{idx:02d}.png"
+            if box:
+                page.screenshot(
+                    path=str(path),
+                    clip={
+                        "x": max(0, box["x"]),
+                        "y": max(0, box["y"]),
+                        "width": min(box["width"], 1280),
+                        "height": min(box["height"], 720),
+                    },
+                )
+            else:
+                page.screenshot(path=str(path), full_page=False)
+
+            im = Image.open(path).convert("RGB")
+            mean = ImageStat.Stat(im).mean
+            if max(mean) - min(mean) > 2 or sum(mean) / 3 > 55:
+                paths.append(str(path))
+            else:
+                print(f"[주의] 어두운/빈 캡처 제외: {path.name}")
+        browser.close()
+    return paths
+
+
+def build_cafe_assets(manuscript, youtube_url, title, image_count, optional_config, out_dir=None, use_ai_keywords=True):
     if not title:
         title = make_title(manuscript)
     if image_count is None:
@@ -558,6 +635,9 @@ def build_cafe_assets(manuscript, youtube_url, title, image_count, optional_conf
     image_paths = []
     if youtube_url and image_count > 0:
         image_paths = auto.extract_frames(youtube_url, image_count)
+        if not image_paths and out_dir:
+            print("[카페 이미지] 직접 다운로드 캡처 실패. 브라우저 재생 화면 캡처로 재시도합니다.")
+            image_paths = capture_youtube_frames_from_browser(youtube_url, image_count, out_dir)
     body = build_body(manuscript, len(image_paths), optional_config, use_ai_keywords=use_ai_keywords)
     return title, body, image_paths
 
@@ -574,6 +654,7 @@ def main(argv=None):
     ap.add_argument("--youtube-open", action="store_true", help="YouTube 커뮤니티 작성창에 글+이미지까지 채우기")
     ap.add_argument("--youtube-publish", action="store_true", help="YouTube 커뮤니티 글을 바로 게시")
     ap.add_argument("--youtube-community-url", default="", help="채널 게시물 탭 URL 직접 지정")
+    ap.add_argument("--youtube-expected-channel", default="나민수 AI", help="게시 전 확인할 YouTube 채널명")
     ap.add_argument("--cardnews-aspect", choices=["square", "portrait"], default="square", help="카드뉴스 PNG 비율: square=YouTube 1:1, portrait=기존 4:5")
     ap.add_argument("--skip-cardnews", action="store_true")
     ap.add_argument("--skip-youtube-text", action="store_true")
@@ -599,6 +680,7 @@ def main(argv=None):
         args.title,
         args.images,
         optional_config,
+        out_dir=out_dir,
         use_ai_keywords=not args.no_keywords,
     )
     write_text(out_dir / "02_cafe_title.txt", title)
@@ -643,6 +725,7 @@ def main(argv=None):
             card_paths[:10],
             publish=args.youtube_publish,
             community_url=args.youtube_community_url,
+            expected_channel=args.youtube_expected_channel,
         )
         youtube_mode = yt_result.get("status", "opened")
 

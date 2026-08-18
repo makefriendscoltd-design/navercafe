@@ -5,6 +5,7 @@ config.ini
 comment_bot_seen.json
 chrome_profile_commentbot/
 chrome_profile_youtube/
+chrome_profile_publisher/
 comment_bot.log
 
 # Member extractor: session profile, exported personal data, diagnostic logs

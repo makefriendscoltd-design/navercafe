@@ -210,8 +210,28 @@ def _click_publish(page):
     page.wait_for_timeout(5000)
 
 
+def _assert_active_channel(page, expected_channel):
+    expected = (expected_channel or "").strip()
+    if not expected:
+        return
+
+    page.wait_for_timeout(1500)
+    visible_text = page.evaluate(
+        """() => [
+            document.title || '',
+            document.body ? (document.body.innerText || '') : '',
+            ...Array.from(document.querySelectorAll('[aria-label], [title]')).map(el =>
+                `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`
+            )
+        ].join('\\n')"""
+    )
+    if expected not in visible_text:
+        raise RuntimeError(f"active YouTube channel is not confirmed as {expected}")
+
+
 def post_to_youtube_community(post_text, image_paths, publish=False,
-                              community_url="", cdp_url="", profile_dir=""):
+                              community_url="", cdp_url="", profile_dir="",
+                              expected_channel=""):
     cfg = load_youtube_config()
     if community_url:
         cfg["community_url"] = community_url
@@ -237,10 +257,13 @@ def post_to_youtube_community(post_text, image_paths, publish=False,
         page = context.pages[0] if context.pages else context.new_page()
         try:
             _goto_composer(page, cfg)
+            if publish:
+                _assert_active_channel(page, expected_channel)
             _set_post_text(page, post_text)
             _upload_images(page, image_paths[:10])
 
             if publish:
+                _assert_active_channel(page, expected_channel)
                 _click_publish(page)
                 return {"status": "published", "url": page.url}
             return {"status": "filled", "url": page.url, "images": min(len(image_paths), 10)}
@@ -259,6 +282,7 @@ def main(argv=None):
     ap.add_argument("--community-url", default="")
     ap.add_argument("--cdp-url", default="")
     ap.add_argument("--profile-dir", default="")
+    ap.add_argument("--expected-channel", default="")
     args = ap.parse_args(argv)
 
     text = Path(args.text_file).read_text(encoding="utf-8")
@@ -269,6 +293,7 @@ def main(argv=None):
         community_url=args.community_url,
         cdp_url=args.cdp_url,
         profile_dir=args.profile_dir,
+        expected_channel=args.expected_channel,
     )
     print(result)
 
