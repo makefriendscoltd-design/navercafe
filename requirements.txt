@@ -1,0 +1,11 @@
+opencv-python
+youtube-transcript-api
+yt-dlp
+google-genai
+selenium
+pyperclip
+pyautogui
+beautifulsoup4
+fastapi
+uvicorn
+python-multipart
