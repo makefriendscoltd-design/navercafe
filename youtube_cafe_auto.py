@@ -490,6 +490,8 @@ def _cookie_configs():
     configs = []
     if os.path.exists(COOKIES_FILE):
         configs.append(('file', {'cookiefile': COOKIES_FILE}))
+    # 공개/일부공개 영상은 잠긴 브라우저 DB를 건드리지 않고 먼저 처리한다.
+    configs.append(('none', {}))
     for browser in ['chrome', 'edge', 'firefox']:
         configs.append((browser, {'cookiesfrombrowser': (browser, None, None, None)}))
     return configs

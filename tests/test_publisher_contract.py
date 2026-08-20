@@ -19,7 +19,7 @@ from publisher_contract import (
     write_result,
 )
 from publisher_notify import send_verified_article
-from youtube_cafe_auto import _parse_json3
+from youtube_cafe_auto import _cookie_configs, _parse_json3
 
 
 class Reference5854ContractTests(unittest.TestCase):
@@ -132,6 +132,11 @@ class ResultAndNotificationTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle, ensure_ascii=False)
             self.assertEqual(_parse_json3(path), "첫 문장 둘째 문장")
+
+    def test_public_youtube_path_is_tried_before_browser_cookie_profiles(self):
+        with mock.patch("youtube_cafe_auto.os.path.exists", return_value=False):
+            labels = [label for label, _options in _cookie_configs()]
+        self.assertEqual(labels, ["none", "chrome", "edge", "firefox"])
 
 
 if __name__ == "__main__":
