@@ -160,16 +160,19 @@ def validate_reference_5854_body(body: str, image_count: int = REFERENCE_IMAGE_C
             f"{'·'.join(map(str, paragraph_counts))}입니다."
         )
 
+    drifted_paragraphs = []
     for group_index, (group, patterns) in enumerate(
             zip(groups, REFERENCE_PARAGRAPH_PATTERNS), start=1):
         paragraphs = _paragraphs(group)
         for paragraph_index, (paragraph, pattern) in enumerate(
                 zip(paragraphs, patterns), start=1):
             if not re.search(pattern, paragraph.strip()):
-                raise PublisherContractError(
-                    f"기준글 {group_index}구간 {paragraph_index}문단의 "
-                    "고정 전개 문구가 달라졌습니다."
-                )
+                drifted_paragraphs.append(f"{group_index}구간 {paragraph_index}문단")
+    if drifted_paragraphs:
+        raise PublisherContractError(
+            "기준글 고정 전개 문구가 달라진 위치: "
+            + ", ".join(drifted_paragraphs)
+        )
 
     if "마법" in body:
         raise PublisherContractError(

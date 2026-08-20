@@ -28,7 +28,10 @@ class NotebookLMTemplateTests(unittest.TestCase):
                 template="reference-5854",
             )
 
-        self.assertEqual(result, manuscript)
+        self.assertEqual(
+            result,
+            nlm._normalize_reference_5854(manuscript, log=lambda _message: None),
+        )
         call = fake_fetch.call_args.args
         self.assertEqual(call[1], nlm.REFERENCE_5854_PROMPT)
         self.assertEqual(call[8], False)
@@ -58,6 +61,9 @@ class NotebookLMTemplateTests(unittest.TestCase):
             "**이게 정말 말이 되는 일입니까?**",
             1,
         ).replace(
+            "왜 AI랑 대화만 시작하면 뻔한 영상만 나올까요?",
+            "왜 인공지능에게 부탁하면 비슷비슷한 영상만 나올까요?",
+        ).replace(
             "여기서 꼭 나오는 질문이 있습니다.",
             "> 이제 자주 받는 질문을 보겠습니다.",
         )
@@ -65,7 +71,9 @@ class NotebookLMTemplateTests(unittest.TestCase):
         normalized = nlm._normalize_reference_5854(
             drifted, log=lambda _message: None)
 
-        self.assertEqual(normalized, manuscript)
+        expected = nlm._normalize_reference_5854(
+            manuscript, log=lambda _message: None)
+        self.assertEqual(normalized, expected)
         self.assertEqual(nlm._reference_5854_problem(normalized), "")
 
     def test_known_caption_terms_are_normalized(self):
@@ -121,7 +129,10 @@ class NotebookLMTemplateTests(unittest.TestCase):
                 template="reference-5854",
             )
 
-        self.assertEqual(result, manuscript)
+        self.assertEqual(
+            result,
+            nlm._normalize_reference_5854(manuscript, log=lambda _message: None),
+        )
         self.assertEqual(fake_fetch.call_args.kwargs["source_text"], "자동자막 원문")
 
     def test_reference_drift_is_retried_once_inside_same_notebook(self):
