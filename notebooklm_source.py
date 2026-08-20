@@ -73,6 +73,7 @@ REFERENCE_5854_PROMPT = """이 영상 내용만 근거로 네이버 카페에 �
 - 영상에 없는 내용은 추측하거나 지어내지 말 것
 - 구독, 후기 보상, 판매 가격, 외부 커뮤니티 가입, 제휴 링크 등 영상 제작자의 홍보 문구는 제외할 것
 - 이모지와 해시태그를 쓰지 말 것
+- 굵게 표시(** **), 기울임, 인용구 등 모든 마크다운 서식을 쓰지 말 것
 - '마법'이라는 비유는 쓰지 말고 '놀라울 만큼'처럼 구체적으로 바꿀 것
 - 영상 URL은 본문에 쓰지 말 것. 원본 영상 카드는 발행기가 별도로 붙인다
 
@@ -331,6 +332,7 @@ def _finish_manuscript(answer, cfg, log, expected_scene_markers=None,
         answer = _ensure_scene_markers(answer, expected_scene_markers, log=log)
 
     if validate_reference:
+        answer = _normalize_reference_5854(answer, log=log)
         problem = _reference_5854_problem(answer)
         if problem:
             raise NotebookLMError(f"5854 기준글 골격 검증 실패: {problem}")
@@ -344,11 +346,65 @@ def _reference_5854_problem(text):
     """Return a stable error message when generated prose drifts from 5854."""
     cleaned = _strip_citations(text or '')
     cleaned = _normalize_known_terms(cleaned, log=lambda _message: None)
+    cleaned = _normalize_reference_5854(cleaned, log=lambda _message: None)
     try:
         build_reference_5854_body(cleaned)
     except PublisherContractError as exc:
         return str(exc)
     return ''
+
+
+_REFERENCE_EXACT_PARAGRAPHS = {
+    (0, 0): '이게 말이 됩니까?',
+    (0, 2): '이건 진짜 경이로운 수준이다.',
+    (2, 4): '구체적인 재료를 던져줘야 합니다.',
+    (3, 0): '게다가 속도를 보면 진짜 깜짝 놀라실 겁니다.',
+    (3, 4): '이게 말이 됩니까? 진짜 경이롭다는 말이 절로 나옵니다.',
+    (3, 5): '이렇게 실행된 결과물들을 확인해 보면,',
+    (4, 0): '여기서 꼭 나오는 질문이 있습니다.',
+    (4, 3): '하지만 여기서 제가 비장의 치트키를 알려 드립니다.',
+}
+
+
+def _normalize_reference_5854(text, log=print):
+    """Remove model-added markup and pin rhetoric-only reference paragraphs.
+
+    Content-bearing paragraphs are never rewritten here. Normalization only
+    runs after the model has already produced the exact 6-group, 41-paragraph
+    shape, so malformed summaries still fail closed.
+    """
+    raw = (text or '').strip()
+    groups = [part.strip() for part in re.split(
+        r'\s*\[\[SCENE\]\]\s*', raw)]
+    if len(groups) != 6:
+        return text
+
+    paragraphs = [
+        [part.strip() for part in re.split(r'\n\s*\n', group) if part.strip()]
+        for group in groups
+    ]
+    if tuple(map(len, paragraphs)) != (4, 8, 11, 8, 6, 4):
+        return text
+
+    changes = 0
+    for group_index, group in enumerate(paragraphs):
+        for paragraph_index, paragraph in enumerate(group):
+            normalized = paragraph.replace('\u200b', '').strip()
+            normalized = re.sub(
+                r'^\s*(?:#{1,6}\s+|>\s+|(?:\d+[.)]|[-•])\s+)', '', normalized)
+            normalized = normalized.replace('**', '').replace('__', '').replace('`', '')
+            exact = _REFERENCE_EXACT_PARAGRAPHS.get((group_index, paragraph_index))
+            if exact is not None:
+                normalized = exact
+            if normalized != paragraph:
+                changes += 1
+                group[paragraph_index] = normalized
+
+    normalized_text = f'\n\n{_SCENE_MARKER}\n\n'.join(
+        '\n\n'.join(group) for group in paragraphs)
+    if changes:
+        log(f'  -> 기준글 고정 문구/마크다운 정규화: {changes}개 문단')
+    return normalized_text
 
 
 _KNOWN_TERM_REPLACEMENTS = (

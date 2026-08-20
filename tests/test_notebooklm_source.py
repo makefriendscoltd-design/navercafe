@@ -51,6 +51,23 @@ class NotebookLMTemplateTests(unittest.TestCase):
 
         self.assertIn("문단 배열", problem)
 
+    def test_reference_exact_rhetoric_and_markdown_are_normalized(self):
+        manuscript = reference_5854_manuscript()
+        drifted = manuscript.replace(
+            "이게 말이 됩니까?",
+            "**이게 정말 말이 되는 일입니까?**",
+            1,
+        ).replace(
+            "여기서 꼭 나오는 질문이 있습니다.",
+            "> 이제 자주 받는 질문을 보겠습니다.",
+        )
+
+        normalized = nlm._normalize_reference_5854(
+            drifted, log=lambda _message: None)
+
+        self.assertEqual(normalized, manuscript)
+        self.assertEqual(nlm._reference_5854_problem(normalized), "")
+
     def test_known_caption_terms_are_normalized(self):
         raw = "맥패밀리의 다민수 대표가 QN3와 복스 스타일을 소개하고 정립금을 안내했습니다."
         result = nlm._normalize_known_terms(raw, log=lambda _message: None)
