@@ -10,6 +10,7 @@ from unittest import mock
 from publisher_contract import (
     IMAGE_MARKER,
     PublisherContractError,
+    REFERENCE_PARAGRAPH_COUNTS,
     SCENE_MARKER,
     assert_cafe_target,
     build_reference_5854_body,
@@ -18,24 +19,27 @@ from publisher_contract import (
     validate_reference_5854_body,
     write_result,
 )
+from tests.reference_5854_fixture import REFERENCE_GROUPS, reference_5854_manuscript
 from publisher_notify import send_verified_article
 from youtube_cafe_auto import _cookie_configs, _parse_json3
 
 
 class Reference5854ContractTests(unittest.TestCase):
     def test_scene_markers_become_exact_interleaving(self):
-        groups = [f"본문 구간 {index}" for index in range(1, 7)]
-        manuscript = f"\n\n{SCENE_MARKER}\n\n".join(groups)
+        groups = ["\n\n".join(group) for group in REFERENCE_GROUPS]
+        manuscript = reference_5854_manuscript()
 
         body = build_reference_5854_body(manuscript)
 
         self.assertEqual(body.count(IMAGE_MARKER), 5)
         self.assertNotIn(SCENE_MARKER, body)
         self.assertEqual([part.strip() for part in body.split(IMAGE_MARKER)], groups)
-        self.assertEqual(validate_reference_5854_body(body)["textGroupCount"], 6)
+        shape = validate_reference_5854_body(body)
+        self.assertEqual(shape["textGroupCount"], 6)
+        self.assertEqual(shape["paragraphCounts"], list(REFERENCE_PARAGRAPH_COUNTS))
 
     def test_marker_free_fallback_preserves_all_paragraph_text(self):
-        manuscript = "\n\n".join(f"문단 {index}" for index in range(1, 10))
+        manuscript = reference_5854_manuscript().replace(SCENE_MARKER, "")
 
         body = build_reference_5854_body(manuscript)
 
@@ -53,6 +57,20 @@ class Reference5854ContractTests(unittest.TestCase):
     def test_too_few_paragraphs_are_rejected(self):
         manuscript = "\n\n".join(f"문단 {index}" for index in range(1, 6))
         with self.assertRaises(PublisherContractError):
+            build_reference_5854_body(manuscript)
+
+    def test_generic_six_group_summary_is_rejected(self):
+        manuscript = f"\n\n{SCENE_MARKER}\n\n".join(
+            f"본문 구간 {index}" for index in range(1, 7))
+        with self.assertRaisesRegex(PublisherContractError, "문단 배열"):
+            build_reference_5854_body(manuscript)
+
+    def test_reference_transition_drift_is_rejected(self):
+        manuscript = reference_5854_manuscript().replace(
+            "여기서 꼭 나오는 질문이 있습니다.",
+            "이제 자주 받는 질문을 보겠습니다.",
+        )
+        with self.assertRaisesRegex(PublisherContractError, "5구간 1문단"):
             build_reference_5854_body(manuscript)
 
     def test_headings_and_blockquotes_are_rejected(self):

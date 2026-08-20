@@ -22,6 +22,11 @@ import re
 import asyncio
 from datetime import datetime
 
+from publisher_contract import (
+    PublisherContractError,
+    build_reference_5854_body,
+)
+
 DEFAULT_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴 칼럼을 작성해줘.
 
 형식:
@@ -41,13 +46,25 @@ DEFAULT_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴
 
 REFERENCE_5854_PROMPT = """이 영상 내용만 근거로 네이버 카페에 올릴 한국어 정리글을 작성해줘.
 
+아래 형식은 참고 분위기가 아니라 반드시 그대로 지켜야 하는 고정 골격이다.
+전개 문구와 문단 순서는 유지하고, 대괄호로 설명한 강의별 사실만 이번 영상 내용으로 바꿔라.
+
 반드시 지킬 출력 형식:
 - 제목, 머리말, 소제목, 마크다운 헤딩, 불릿, 번호 목록을 쓰지 말 것
 - 본문을 정확히 6개의 텍스트 구간으로 나눌 것
 - 앞의 5개 구간 뒤에는 각각 독립된 한 줄로 [[SCENE]]을 넣을 것
 - 따라서 [[SCENE]]은 정확히 5개이고, 마지막 6번째 구간 뒤에는 넣지 말 것
-- 각 구간은 1~3개의 자연스러운 문단으로 구성할 것
-- 전체 분량은 한국어 1800~2600자
+- 각 구간의 문단 수는 순서대로 정확히 4개, 8개, 11개, 8개, 6개, 4개일 것
+- 아래 41개 항목은 각각 별도 문단으로 쓰고 문단 사이는 빈 줄로 구분할 것
+- 전체 분량은 한국어 1800~3000자
+
+고정 문단 골격:
+1구간: "이게 말이 됩니까?" / "처음 AI가"로 시작하는 변화 장면 / "이건 진짜 경이로운 수준이다." / "오늘 내용은 바쁜 분들을 위해"로 시작하는 1분 압축 안내
+2구간: "예전엔" / "이 [대상] 하나, [대상] 하나" / "그러다" / "하지만" / "지나고 보니" / "그런데 이제는" / "여기에 한번 빠지시면" / 마지막은 "패러다임이 완전히 뒤바뀐 겁니다."
+3구간: "왜 AI랑 대화만 시작하면 [뻔한 결과]만 나올까요?" / "대부분 AI한테" / "그러니 당연히" / 데이터 근거를 주지 않았기 "때문입니다." / "구체적인 재료를 던져줘야 합니다." / "단순히 지어내지 말고" / "내 말투" / "이런 식으로 명확한 재료와 지침을 쥐여줘야" / "[이번 자동화 주체]는 일반적인 챗봇과 차원이 다릅니다." / "단순히" / "내가 전달한"
+4구간: "게다가 속도를 보면 진짜 깜짝 놀라실 겁니다." / "주제 선정부터" / "자, 이제" / "AI가" / "이게 말이 됩니까? 진짜 경이롭다는 말이 절로 나옵니다." / "이렇게 실행된 결과물들을 확인해 보면," / "눈앞에서 유능한" / 마지막은 "노가다가 완전히 증발하는 순간입니다."
+5구간: "여기서 꼭 나오는 질문이 있습니다." / "그래도 결국 내가 직접 [검수할] 부분이 있지 않나요?" / "맞습니다." / "하지만 여기서 제가 비장의 치트키를 알려 드립니다." / "AI를 '대신 [해]주는 기계'가 아닌 '지능형 파트너'로 활용해 보세요." / "반복적이고"
+6구간: "그러면 신기하게도" / "이제 남은 시간에는 더 본질적인" / "더 이상" / "더욱 구체적인 실제 시연 과정과 비하인드 꿀팁들은"으로 시작해 이번 영상 시청을 안내
 
 문체와 내용:
 - 존댓말의 담백한 구어체로 짧고 명확하게 쓸 것
@@ -56,8 +73,17 @@ REFERENCE_5854_PROMPT = """이 영상 내용만 근거로 네이버 카페에 �
 - 영상에 없는 내용은 추측하거나 지어내지 말 것
 - 구독, 후기 보상, 판매 가격, 외부 커뮤니티 가입, 제휴 링크 등 영상 제작자의 홍보 문구는 제외할 것
 - 이모지와 해시태그를 쓰지 말 것
+- '마법'이라는 비유는 쓰지 말고 '놀라울 만큼'처럼 구체적으로 바꿀 것
+- 영상 URL은 본문에 쓰지 말 것. 원본 영상 카드는 발행기가 별도로 붙인다
 
 설명이나 코드 블록 없이 본문과 [[SCENE]] 마커만 출력해줘."""
+
+
+REFERENCE_5854_RETRY_SUFFIX = """
+
+직전 출력은 5854 고정 골격 검증을 통과하지 못했다. 내용을 요약해 새 글을 쓰지 말고,
+위 41개 문단의 시작 문구와 4·8·11·8·6·4 배열을 한 글자도 빠뜨리지 말고 다시 작성해라.
+강의별 사실만 이번 영상의 내용으로 치환하고 [[SCENE]]은 정확히 5개만 출력해라."""
 
 
 class NotebookLMError(RuntimeError):
@@ -77,7 +103,7 @@ def _heading_count(text):
 async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
                        scope_to_new_source, wait_timeout, delete_after,
                        delete_source_after, retry_if_no_heading, profile, log,
-                       source_text=None):
+                       source_text=None, reference_template=False):
     try:
         from notebooklm import NotebookLMClient, SourceStatus
         from notebooklm.exceptions import AuthError, NotebookNotFoundError
@@ -168,6 +194,25 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
                     else:
                         log("  -> [주의] 재시도해도 소제목 없음. 소제목 없이 진행합니다.")
 
+                if reference_template:
+                    problem = _reference_5854_problem(answer)
+                    if problem:
+                        log(f"  -> [재시도] 기준글 골격 불일치: {problem}")
+                        res2 = await client.chat.ask(
+                            nb.id,
+                            prompt + REFERENCE_5854_RETRY_SUFFIX,
+                            source_ids=source_ids,
+                        )
+                        answer2 = (res2.answer or '').strip()
+                        problem2 = _reference_5854_problem(answer2)
+                        if not problem2:
+                            answer = answer2
+                            log("  -> 재시도 성공: 5854 고정 골격 검증 완료")
+                        else:
+                            raise NotebookLMError(
+                                f"5854 기준글 골격을 두 번 연속 지키지 못했습니다: {problem2}"
+                            )
+
                 if not answer:
                     raise NotebookLMError("노트북LM이 빈 응답을 반환했습니다.")
 
@@ -222,11 +267,13 @@ def fetch_manuscript(youtube_url, cfg, log=print, template=None):
         retry_if_no_heading,
         cfg.get('profile', ''),
         log,
+        reference_template=(template == 'reference-5854'),
     ))
 
     return _finish_manuscript(
         answer, cfg, log,
         expected_scene_markers=5 if template == 'reference-5854' else None,
+        validate_reference=(template == 'reference-5854'),
     )
 
 
@@ -257,15 +304,18 @@ def fetch_manuscript_from_text(youtube_url, source_text, cfg, log=print, templat
         cfg.get('profile', ''),
         log,
         source_text=(source_text or '').strip(),
+        reference_template=(template == 'reference-5854'),
     ))
 
     return _finish_manuscript(
         answer, cfg, log,
         expected_scene_markers=5 if template == 'reference-5854' else None,
+        validate_reference=(template == 'reference-5854'),
     )
 
 
-def _finish_manuscript(answer, cfg, log, expected_scene_markers=None):
+def _finish_manuscript(answer, cfg, log, expected_scene_markers=None,
+                       validate_reference=False):
     """NotebookLM 응답의 각주·홍보 꼬리를 공통 정리합니다."""
 
     answer = _strip_citations(answer)
@@ -280,9 +330,25 @@ def _finish_manuscript(answer, cfg, log, expected_scene_markers=None):
     if expected_scene_markers is not None:
         answer = _ensure_scene_markers(answer, expected_scene_markers, log=log)
 
+    if validate_reference:
+        problem = _reference_5854_problem(answer)
+        if problem:
+            raise NotebookLMError(f"5854 기준글 골격 검증 실패: {problem}")
+
     log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
 
     return answer
+
+
+def _reference_5854_problem(text):
+    """Return a stable error message when generated prose drifts from 5854."""
+    cleaned = _strip_citations(text or '')
+    cleaned = _normalize_known_terms(cleaned, log=lambda _message: None)
+    try:
+        build_reference_5854_body(cleaned)
+    except PublisherContractError as exc:
+        return str(exc)
+    return ''
 
 
 _KNOWN_TERM_REPLACEMENTS = (
@@ -407,13 +473,12 @@ def _strip_citations(text):
     #    한 덩어리로 안 지우면 대괄호만 사라지고 쉼표가 '됩니다.,,' 처럼 남는다.
     #    가로 공백만 흡수한다 — \s* 를 쓰면 줄바꿈을 먹어서 문단이 통째로 붙는다.
     group = r'\[\d+(?:[ \t]*[-–—,][ \t]*\d+)*\]'
-    text = re.sub(rf'[ \t]*{group}(?:[ \t]*,?[ \t]*{group})*', '', text)
+    text = re.sub(rf'[ \t]*{group}(?:[ \t]*,?[ \t]*{group})*[ \t]*,?', '', text)
 
     # 3) 각주가 빠지면서 떠버린 문장부호 정리
     text = re.sub(r'([.!?])[ \t]*,+', r'\1', text)      # '됩니다.,,' → '됩니다.'
     text = re.sub(r',[ \t]*(?=,)', '', text)            # 연속 쉼표
     text = re.sub(r'[ \t]+([,.!?])', r'\1', text)       # 부호 앞 공백
-    text = re.sub(r'(?m)[ \t]*,[ \t]*$', '', text)      # 줄 끝에 남은 쉼표
 
     return text.strip()
 

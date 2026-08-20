@@ -133,7 +133,7 @@ python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID" --file manuscript.txt
 자동화에는 운영 사고를 줄이기 위한 guard가 들어 있습니다.
 
 - 이미지가 0장이면 카페 임시저장/발행을 하지 않습니다.
-- `reference-5854`는 이미지가 정확히 5장이 아니거나 본문이 정확히 6구간이 아니면 저장/발행하지 않습니다.
+- `reference-5854`는 텍스트 6구간·이미지 5장과 구간별 4·8·11·8·6·4 문단 배열, 기준글의 고정 전개 문구가 모두 맞지 않으면 저장/발행하지 않습니다.
 - 예약 실행은 승인된 카페 `26321967`·게시판 `315`와 `config.ini`의 URL이 다르면 쓰기 전에 중단합니다.
 - 같은 YouTube source key가 `published_posts.json`에 있으면 새 글을 쓰지 않고 기존 글 URL만 재검증합니다.
 - Naver 로그인이 필요하면 visible Chrome에서 사람이 CAPTCHA, 2차 인증, 새 기기 확인을 처리할 수 있게 기다립니다.
