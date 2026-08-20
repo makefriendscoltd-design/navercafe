@@ -87,8 +87,8 @@ python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID" --dry
 기준글 5854와 같은 `텍스트 6구간 + 장면 5장 + 마지막 YouTube OG 카드` 포맷으로, 기존 다운로드 영상을 재사용하고 결과 JSON을 남기기:
 
 ```powershell
-python notebook_cafe_auto.py "https://youtu.be/NEW_REPLAY_ID" `
-  --notebook-url "https://youtu.be/ORIGINAL_LIVE_ID" `
+python notebook_cafe_auto.py "https://youtu.be/ORIGINAL_MEMBERS_ONLY_ID" `
+  --notebook-url "https://youtu.be/UNLISTED_REPLAY_ID" `
   --video-file "C:\path\downloaded-live.mp4" `
   --title "2026-08-18 강의 제목" `
   --template reference-5854 --images 5 --no-keywords --unattended `
