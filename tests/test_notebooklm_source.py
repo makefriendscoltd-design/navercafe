@@ -53,7 +53,8 @@ class NotebookLMTemplateTests(unittest.TestCase):
             "PDF 원고를 전자책으로 조판하고 판매 상세 페이지를 만드는 시스템을 공개했습니다.\n\n"
             "후기 작성자에게 노션 자료를 무료로 제공합니다. "
             "전자책을 9만 9천 원에 선착순 판매합니다. "
-            "네이버 카페 후기에는 적립금 1만 원을 드립니다."
+            "네이버 카페 후기에는 적립금 1만 원을 드립니다. "
+            "수강생은 적립금 혜택으로 교육을 이어갈 수 있습니다."
         )
 
         result = nlm.strip_promo_tail(text, log=lambda _message: None)

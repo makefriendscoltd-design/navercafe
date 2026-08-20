@@ -431,6 +431,7 @@ _PROMO_SIGNALS = re.compile(
     r'결제마다.{0,30}(?:인상|\d+\s*(?:천|만)\s*원)|가격.{0,20}인상|'
     r'전자책.{0,40}(?:구매|가격|\d+\s*만\s*원)|'
     r'(?:SNS|네이버\s*카페).{0,30}(?:적립금|\d+\s*만\s*원)|'
+    r'적립금\s*(?:혜택|보상|제공|지급)|'
     r'할인\s*코드|프로모션\s*코드|제휴\s*링크|'
     r'school\.com|skool\.com|patreon|gumroad|discord\.gg)',
     re.IGNORECASE)
