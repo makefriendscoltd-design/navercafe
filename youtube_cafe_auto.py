@@ -2528,6 +2528,42 @@ def _handle_naver_device_confirm(driver):
         return False
 
 
+def _detect_naver_login_challenge(driver):
+    """Return a specific visible Naver login blocker, if any."""
+    try:
+        return driver.execute_script(r"""
+            const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ');
+            const href = location.href || '';
+            const selectors = [
+                '#captcha, [id*="captcha" i], [class*="captcha" i], [name*="captcha" i]',
+                'iframe[src*="captcha" i], img[src*="captcha" i]'
+            ];
+            if (selectors.some((sel) => document.querySelector(sel))) return 'CAPTCHA_REQUIRED';
+            if (/captcha|자동입력|보안문자|문자를 입력|이미지에 보이는|스팸 방지/i.test(text + ' ' + href)) {
+                return 'CAPTCHA_REQUIRED';
+            }
+            if (/2단계|2차|OTP|인증번호|본인 확인|휴대전화|휴대폰|보안 인증|추가 인증/i.test(text + ' ' + href)) {
+                return 'SECOND_FACTOR_REQUIRED';
+            }
+            if (/새로운 기기|자주 사용하는 기기|등록안함|등록하지 않음/i.test(text + ' ' + href)) {
+                return 'DEVICE_CONFIRM_REQUIRED';
+            }
+            return '';
+        """) or ""
+    except Exception:
+        return ""
+
+
+def _save_login_challenge_screenshot(driver, reason):
+    try:
+        path = os.path.join(SCRIPT_DIR, f"naver_login_{reason.lower()}_{int(time.time())}.png")
+        driver.save_screenshot(path)
+        print(f"  -> login challenge screenshot: {path}")
+        return path
+    except Exception:
+        return ""
+
+
 def ensure_naver_login(driver, wait_minutes=5):
     """로그인 상태를 보장한다.
 
@@ -2601,6 +2637,13 @@ def ensure_naver_login(driver, wait_minutes=5):
             if _handle_naver_device_confirm(driver):
                 print("  -> 새 기기 확인 화면에서 '등록안함'을 자동 선택했습니다.")
                 time.sleep(2)
+            challenge = _detect_naver_login_challenge(driver)
+            if challenge and not notified:
+                shot = _save_login_challenge_screenshot(driver, challenge)
+                extra = f" screenshot={shot}" if shot else ""
+                print(f"  -> {challenge}: visible Naver login challenge detected.{extra}")
+                print("  -> Complete it in the visible Chrome window; Selenium will keep waiting.")
+                notified = True
             cookies = {c["name"] for c in driver.get_cookies()}
             if "NID_AUT" in cookies or "NID_SES" in cookies:
                 print("  -> 로그인 성공.")

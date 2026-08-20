@@ -36,6 +36,7 @@ cookies.txt
 
 # Diagnostic screenshots
 comment_*.png
+naver_login_*.png
 
 # Python
 __pycache__/
