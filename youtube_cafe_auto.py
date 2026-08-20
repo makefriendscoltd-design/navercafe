@@ -38,6 +38,8 @@ import time
 import glob
 import base64
 import configparser
+import hashlib
+import json
 import urllib.parse
 import urllib.request
 import traceback
@@ -101,6 +103,8 @@ from selenium.webdriver.common.action_chains import ActionChains
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
 COOKIES_FILE = os.path.join(SCRIPT_DIR, "cookies.txt")
+PUBLISHED_RECORD_FILE = os.path.join(SCRIPT_DIR, "published_posts.json")
+PUBLISH_LOCK_DIR = os.path.join(SCRIPT_DIR, ".publish_locks")
 
 # 전역 설정 변수
 NAVER_ID = ""
@@ -304,15 +308,24 @@ def load_or_create_config():
 def load_optional_config(config):
     """[CTA], [FORMATTING], [PROMPT], [CONTENT] 등 선택적 설정을 안전한 기본값과 함께 로드합니다."""
     result = {}
+    # 글을 올릴 게시판 이름 (글쓰기 화면 좌측 상단 드롭다운에 뜨는 그대로)
+    result['board_name'] = config.get('NAVER', 'board_name', fallback='').strip()
     # CTA
     result['cta_enabled'] = config.getboolean('CTA', 'enabled', fallback=False)
     result['cta_text'] = config.get('CTA', 'text', fallback='')
     result['cta_link_url'] = config.get('CTA', 'link_url', fallback='')
     result['cta_link_text'] = config.get('CTA', 'link_text', fallback='')
+    # 원본 출처 링크 (맨 하단)
+    result['source_label'] = config.get('CTA', 'source_label', fallback='▶ 원본 영상')
+    result['source_link_card'] = config.getboolean('CTA', 'source_link_card', fallback=False)
     # 서식
     result['bold_enabled'] = config.getboolean('FORMATTING', 'bold_enabled', fallback=True)
     result['highlight_enabled'] = config.getboolean('FORMATTING', 'highlight_enabled', fallback=True)
     result['highlight_color'] = config.get('FORMATTING', 'highlight_color', fallback='#FFFF00')
+    # 글씨체 (네이버 스마트에디터 툴바 기준. font_family가 비면 건드리지 않음)
+    result['font_family'] = config.get('FORMATTING', 'font_family', fallback='').strip()
+    result['font_size'] = config.get('FORMATTING', 'font_size', fallback='').strip()
+    result['font_apply_at_end'] = config.getboolean('FORMATTING', 'font_apply_at_end', fallback=True)
     # 커스텀 프롬프트
     result['custom_instructions'] = config.get('PROMPT', 'custom_instructions', fallback='')
     # 콘텐츠 길이
@@ -952,6 +965,129 @@ def generate_threads_post(source_text):
 # 8. 영상 프레임 추출
 # ===================================================================
 
+def _download_youtube_thumbnails(url, image_count=4):
+    """영상 다운로드가 막혔을 때 YouTube 공개 썸네일을 이미지 폴백으로 사용합니다."""
+    video_id = extract_video_id(url)
+    if not video_id:
+        return []
+
+    thumbnail_names = [
+        'maxresdefault.jpg',
+        'sddefault.jpg',
+        'hqdefault.jpg',
+        'mqdefault.jpg',
+        'default.jpg',
+    ]
+    image_paths = []
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    for name in thumbnail_names:
+        if len(image_paths) >= image_count:
+            break
+        thumb_url = f"https://i.ytimg.com/vi/{video_id}/{name}"
+        path = os.path.join(SCRIPT_DIR, f"frame_{len(image_paths) + 1}.jpg")
+        try:
+            req = urllib.request.Request(thumb_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = response.read()
+            if len(data) < 1024:
+                continue
+            with open(path, 'wb') as f:
+                f.write(data)
+            frame = cv2.imread(path)
+            if frame is None:
+                os.remove(path)
+                continue
+            image_paths.append(os.path.abspath(path))
+        except Exception as e:
+            print(f"     - 썸네일 폴백 실패({name}): {e}")
+
+    if image_paths:
+        print(f"  -> 영상 다운로드 대신 YouTube 썸네일 {len(image_paths)}장을 사용합니다.")
+    return image_paths
+
+
+def _capture_youtube_browser_frames(url, image_count=4):
+    """Capture distinct YouTube player frames when yt-dlp video download is blocked."""
+    if image_count <= 0:
+        return []
+
+    print(f"  -> yt-dlp 대체: 브라우저로 YouTube 장면 {image_count}장 캡처 시도")
+    options = webdriver.ChromeOptions()
+    options.add_argument("--window-size=1280,900")
+    options.add_argument("--mute-audio")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    driver = None
+    image_paths = []
+    try:
+        driver = webdriver.Chrome(options=options)
+        driver.get(url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "video"))
+        )
+        time.sleep(3)
+
+        try:
+            driver.execute_script("""
+                var btns = Array.from(document.querySelectorAll('button'));
+                var accept = btns.find(function(b) {
+                    return /동의|Accept|I agree/i.test((b.innerText || '').trim());
+                });
+                if (accept) accept.click();
+            """)
+            time.sleep(1)
+        except Exception:
+            pass
+
+        duration = driver.execute_script("""
+            var v = document.querySelector('video');
+            return v && isFinite(v.duration) ? v.duration : 0;
+        """) or 0
+        if duration <= 0:
+            duration = max(60, image_count * 20)
+
+        for i in range(1, image_count + 1):
+            ratio = i / (image_count + 1)
+            second = max(3, min(duration - 3, duration * ratio))
+            try:
+                driver.execute_script("""
+                    var v = document.querySelector('video');
+                    if (!v) return;
+                    v.muted = true;
+                    v.pause();
+                    v.currentTime = arguments[0];
+                """, second)
+                time.sleep(2)
+                video = driver.find_element(By.CSS_SELECTOR, "video")
+                path = os.path.join(SCRIPT_DIR, f"frame_{i}.jpg")
+                video.screenshot(path)
+                frame = cv2.imread(path)
+                if frame is None or frame.size == 0:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    continue
+                image_paths.append(os.path.abspath(path))
+                print(f"     - 브라우저 캡처 {i}/{image_count}: {int(second)}초")
+            except Exception as e:
+                print(f"     - 브라우저 캡처 실패({i}/{image_count}): {e}")
+    except Exception as e:
+        print(f"  -> 브라우저 장면 캡처 실패: {e}")
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    if image_paths:
+        print(f"  -> 브라우저 장면 캡처 완료: {len(image_paths)}장")
+    return image_paths
+
+
 def extract_frames(url, image_count=4):
     """유튜브 영상을 다운로드하고 균등 간격 지점에서 이미지를 캡처합니다."""
     print(f"[3/4] 유튜브 영상 다운로드 및 이미지({image_count}장) 캡처 중...")
@@ -963,26 +1099,46 @@ def extract_frames(url, image_count=4):
 
     download_success = False
     downloaded_filename = ""
-    for idx, fmt in enumerate(format_list):
+    errors = []
+    for cookie_label, cookie_opts in _cookie_configs():
         if download_success:
             break
-        print(f"  -> 포맷 '{fmt}' (으)로 다운로드 시도 중...")
-        current_filename = os.path.join(SCRIPT_DIR, f'temp_video_{idx}.mp4')
-        options = {
-            'format': fmt, 'outtmpl': current_filename,
-            'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
-        }
-        try:
-            with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.download([url])
-            download_success = True
-            downloaded_filename = current_filename
-        except Exception as e:
-            print(f"  -> 해당 포맷 실패: {e}. 다른 포맷으로 재시도합니다.")
+        print(f"  -> 쿠키 설정 '{cookie_label}'로 다운로드 시도")
+        for idx, fmt in enumerate(format_list):
+            if download_success:
+                break
+            print(f"     - 포맷 '{fmt}' 시도")
+            current_filename = os.path.join(SCRIPT_DIR, f'temp_video_{cookie_label}_{idx}.mp4')
+            options = {
+                'format': fmt, 'outtmpl': current_filename,
+                'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
+                # quiet만으로는 진행바가 stderr로 계속 찍혀 로그가 도배된다
+                'noprogress': True,
+                **cookie_opts,
+            }
+            try:
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    ydl.download([url])
+                if os.path.exists(current_filename) and os.path.getsize(current_filename) > 0:
+                    download_success = True
+                    downloaded_filename = current_filename
+                    print(f"  -> 영상 다운로드 성공: {cookie_label} / {fmt}")
+                else:
+                    errors.append(f"{cookie_label}/{fmt}: output file missing")
+            except Exception as e:
+                errors.append(f"{cookie_label}/{fmt}: {e}")
+                print(f"     - 실패: {e}")
 
     if not download_success:
         print("[오류] 모든 포맷으로 유튜브 영상 다운로드에 실패했습니다.")
-        return []
+        if errors:
+            print("  -> 마지막 실패 원인:")
+            for err in errors[-3:]:
+                print(f"     - {err}")
+        browser_frames = _capture_youtube_browser_frames(url, image_count)
+        if browser_frames:
+            return browser_frames
+        return _download_youtube_thumbnails(url, image_count)
 
     cap = cv2.VideoCapture(downloaded_filename)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -1035,13 +1191,14 @@ def extract_highlight_keywords(text):
 
 
 def _js_insert_text(driver, text):
-    """포커스된 contenteditable에 OS 포커스 없이 텍스트를 삽입합니다."""
-    driver.execute_script("document.execCommand('insertText', false, arguments[0]);", text)
-    time.sleep(0.1)
+    """클립보드 + ActionChains Ctrl+V로 텍스트 삽입 (OS 포커스 불필요)."""
+    pyperclip.copy(text)
+    ActionChains(driver).key_down(Keys.CONTROL).send_keys('v').key_up(Keys.CONTROL).perform()
+    time.sleep(0.2)
 
 
 def paste_with_formatting(driver, text, formatting_config):
-    """[BOLD] 마커가 있으면 execCommand bold로 적용하며 JS로 삽입합니다."""
+    """[BOLD] 마커가 있으면 Ctrl+B로 볼드 적용하며 삽입합니다."""
     bold_enabled = formatting_config.get('bold_enabled', False)
 
     if not bold_enabled or '[BOLD]' not in text:
@@ -1056,10 +1213,10 @@ def paste_with_formatting(driver, text, formatting_config):
         bold_match = re.match(r'\[BOLD\](.*?)\[/BOLD\]', part)
         if bold_match:
             clean = bold_match.group(1)
-            driver.execute_script("document.execCommand('bold', false, null);")
+            ActionChains(driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
             time.sleep(0.1)
             _js_insert_text(driver, clean)
-            driver.execute_script("document.execCommand('bold', false, null);")
+            ActionChains(driver).key_down(Keys.CONTROL).send_keys('b').key_up(Keys.CONTROL).perform()
             time.sleep(0.1)
         else:
             _js_insert_text(driver, part)
@@ -1090,15 +1247,11 @@ def _is_cursor_inside_blockquote(driver):
 def _move_cursor_to_end(driver):
     """에디터 커서를 문서 최하단 + 인용구 밖으로 이동합니다."""
     try:
-        driver.execute_script("""
-            // 가장 바깥쪽 contenteditable(메인 에디터)을 찾는다
-            var allEditable = document.querySelectorAll('[contenteditable="true"]');
-            var editor = allEditable[0];
-            for (var i = 1; i < allEditable.length; i++) {
-                if (allEditable[i].contains(editor)) editor = allEditable[i];
-            }
+        driver.execute_script(_JS_SE_ROOT + """
+            var editor = __seRoot();
             if (!editor) return;
 
+            editor.focus();
             editor.scrollTop = editor.scrollHeight;
 
             // 마지막 섹션이 인용구면 그 다음에 빈 섹션 추가
@@ -1114,6 +1267,7 @@ def _move_cursor_to_end(driver):
                 editor.appendChild(newSection);
                 var span = newSection.querySelector('span');
                 if (span) {
+                    span.focus();
                     var r = document.createRange();
                     r.setStart(span, 0);
                     r.collapse(true);
@@ -1131,6 +1285,7 @@ def _move_cursor_to_end(driver):
                 var nextEl = lastQ.nextElementSibling;
                 if (nextEl) {
                     var para = nextEl.querySelector('.se-text-paragraph') || nextEl;
+                    para.focus();
                     var r2 = document.createRange();
                     r2.selectNodeContents(para);
                     r2.collapse(false);
@@ -1153,21 +1308,28 @@ def _move_cursor_to_end(driver):
         ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
     time.sleep(0.3)
 
-    # JS 탈출 후에도 인용구 안이면 ActionChains로 강제 탈출
+    # JS 커서 설정 후 WebElement 클릭으로 WebDriver 포커스 획득
+    try:
+        all_sections = driver.find_elements(By.CSS_SELECTOR, '.se-section')
+        for sec in reversed(all_sections):
+            cls = sec.get_attribute('class') or ''
+            if 'se-section-quotation' not in cls:
+                paras = sec.find_elements(By.CSS_SELECTOR, '.se-text-paragraph')
+                if paras:
+                    paras[-1].click()
+                    time.sleep(0.1)
+                    break
+    except Exception:
+        pass
+
+    # 아직 인용구 안이면 ActionChains로 강제 탈출
     if _is_cursor_inside_blockquote(driver):
         ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
         time.sleep(0.2)
         ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
         time.sleep(0.2)
         ActionChains(driver).send_keys(Keys.RETURN).perform()
-        time.sleep(0.2)
-        ActionChains(driver).send_keys(Keys.RETURN).perform()
         time.sleep(0.3)
-        if _is_cursor_inside_blockquote(driver):
-            ActionChains(driver).key_down(Keys.CONTROL).send_keys(Keys.END).key_up(Keys.CONTROL).perform()
-            time.sleep(0.2)
-            ActionChains(driver).send_keys(Keys.RETURN).perform()
-            time.sleep(0.3)
 
 
 def insert_blockquote(driver, heading_text):
@@ -1210,65 +1372,57 @@ def insert_blockquote(driver, heading_text):
     except Exception:
         pass
 
-    # (5) 새로 생긴 인용구의 본문(content) 영역 클릭 (이전 것이 아닌 새것만)
+    # (5) 새로 생긴 인용구의 본문 영역을 WebElement 클릭으로 포커스
     try:
-        driver.execute_script(f"""
-            var quotes = document.querySelectorAll('.se-section-quotation');
-            if (quotes.length > {quote_count_before}) {{
-                var newQuote = quotes[quotes.length - 1];
-                var contentPara = newQuote.querySelector(
-                    '.se-quotation-content .se-text-paragraph'
-                );
-                if (contentPara) {{
-                    contentPara.click();
-                }} else {{
-                    var firstPara = newQuote.querySelector('.se-text-paragraph');
-                    if (firstPara) firstPara.click();
-                }}
-            }}
-        """)
         time.sleep(0.5)
+        new_quotes = driver.find_elements(By.CSS_SELECTOR, '.se-section-quotation')
+        if len(new_quotes) > quote_count_before:
+            new_quote = new_quotes[-1]
+            paras = new_quote.find_elements(
+                By.CSS_SELECTOR, '.se-quotation-content .se-text-paragraph')
+            if not paras:
+                paras = new_quote.find_elements(By.CSS_SELECTOR, '.se-text-paragraph')
+            if paras:
+                paras[0].click()
+                time.sleep(0.3)
     except Exception:
         pass
 
-    # (6) 소제목 삽입 (OS 포커스 불필요)
+    # (6) 소제목 삽입
     _js_insert_text(driver, heading_text)
     time.sleep(0.8)
 
-    # (7) 인용구 탈출 — 3단 전략
-    time.sleep(0.2)
-
-    # 전략 A: 인용구 다음 섹션을 ActionChains로 클릭
+    # (7) 인용구 탈출 — JS로 인용구 뒤에 새 텍스트 섹션 삽입 후 WebElement 클릭
+    escaped = False
     try:
         quotes = driver.find_elements(By.CSS_SELECTOR, '.se-section-quotation')
         if len(quotes) > quote_count_before:
             last_q = quotes[-1]
-            next_sec = driver.execute_script("return arguments[0].nextElementSibling;", last_q)
-            if next_sec:
-                ActionChains(driver).move_to_element(next_sec).click().perform()
-            else:
-                # 다음 섹션이 없으면 인용구 아래 50px 위치 클릭
-                ActionChains(driver).move_to_element_with_offset(
-                    last_q, 10, last_q.size['height'] // 2 + 30).click().perform()
-    except Exception:
-        pass
-    time.sleep(0.4)
+            # 인용구 다음 텍스트 섹션을 찾거나 새로 DOM에 삽입
+            target_para = driver.execute_script("""
+                var lastQ = arguments[0];
+                var next = lastQ.nextElementSibling;
+                if (next && !next.classList.contains('se-section-quotation')) {
+                    return next.querySelector('.se-text-paragraph') || next;
+                }
+                var newSec = document.createElement('div');
+                newSec.className = 'se-section se-section-text se-l-default';
+                newSec.innerHTML =
+                    '<div class="se-module se-module-text">' +
+                    '<p class="se-text-paragraph se-text-paragraph-align-">' +
+                    '<span class="se-ff-system se-fs15">​</span></p></div>';
+                lastQ.parentNode.insertBefore(newSec, lastQ.nextSibling);
+                return newSec.querySelector('.se-text-paragraph');
+            """, last_q)
+            if target_para:
+                target_para.click()
+                time.sleep(0.3)
+                escaped = not _is_cursor_inside_blockquote(driver)
+    except Exception as e:
+        print(f"  -> 인용구 탈출 전략 A 실패: {e}")
 
-    # 전략 B: 아직 인용구 안이면 ActionChains 방향키로 탈출
-    if _is_cursor_inside_blockquote(driver):
-        ActionChains(driver).send_keys(Keys.END).perform()
-        time.sleep(0.1)
-        ActionChains(driver).send_keys(Keys.ARROW_DOWN * 5).perform()
-        time.sleep(0.3)
-
-    # 전략 C: JS로 새 섹션 생성 후 커서 이동
-    if _is_cursor_inside_blockquote(driver):
+    if not escaped and _is_cursor_inside_blockquote(driver):
         _move_cursor_to_end(driver)
-        time.sleep(0.3)
-
-    # 최후 수단: Enter 두 번
-    if _is_cursor_inside_blockquote(driver):
-        ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
         time.sleep(0.3)
 
     print(f"  -> 인용구 삽입 완료: '{heading_text}'")
@@ -1346,7 +1500,9 @@ def apply_highlight_js(driver, keywords, color):
 
         js_code = f"""
         (function() {{
-            var editor = document.querySelector('[contenteditable="true"]');
+            var editor = document.querySelector('.se-components-wrap')
+                      || document.querySelector('.se-content')
+                      || document.querySelector('.se-container');
             if (!editor) return 'no editor';
             var walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, null, false);
             var found = 0;
@@ -1385,12 +1541,1143 @@ def apply_highlight_js(driver, keywords, color):
 
 
 # ===================================================================
+# 9-2. 글씨체(폰트/크기) 적용
+# ===================================================================
+
+# 스마트에디터 본문 루트를 찾는 JS 조각.
+#
+# ★ 중요: 이 에디터에는 contenteditable 이 '숨겨진 입력 프록시' 하나뿐이고
+#   (클래스 없는 17x790 빈 DIV) 그건 본문이 아니다. 실제 본문은
+#   .se-content > section.se-canvas > article.se-components-wrap 아래에 있다.
+#   예전 코드가 contenteditable 을 본문으로 착각해서 전체선택/폰트/이미지 개수가
+#   전부 조용히 실패했다.
+_JS_SE_ROOT = """
+function __seRoot() {
+    return document.querySelector('.se-components-wrap')
+        || document.querySelector('.se-content')
+        || document.querySelector('.se-container')
+        || null;
+}
+"""
+
+
+def _se_root_present(driver):
+    """본문 루트를 찾을 수 있는지 확인한다."""
+    try:
+        return bool(driver.execute_script(_JS_SE_ROOT + "return !!__seRoot();"))
+    except Exception:
+        return False
+
+
+def _dump_toolbar(driver, tag):
+    """폰트 지정 실패 시 툴바 HTML을 파일로 덤프합니다 (셀렉터 수정용)."""
+    try:
+        html = driver.execute_script("""
+            var tb = document.querySelector('[class*="se-toolbar"]')
+                  || document.querySelector('[class*="toolbar"]');
+            return tb ? tb.outerHTML : '(toolbar not found)';
+        """)
+        path = os.path.join(SCRIPT_DIR, f'editor_toolbar_dump_{tag}.html')
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(html or '')
+        print(f"  -> [디버그] 툴바 HTML 덤프: {path}")
+    except Exception as e:
+        print(f"  -> [디버그] 툴바 덤프 실패: {e}")
+
+
+def _native_click(driver, el):
+    """실제 마우스 클릭으로 누른다.
+
+    JS의 el.click()은 mousedown 을 발생시키지 않는다. 스마트에디터 툴바는
+    mousedown 에서 본문 선택 영역을 보존하므로, JS 클릭으로 누르면
+    '전체 선택'이 풀린 채 서식이 적용되어 아무 효과가 없다.
+    """
+    try:
+        el.click()
+        return True
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception:
+            return False
+
+
+def _open_toolbar_dropdown(driver, kind):
+    """툴바의 글꼴('font') 또는 글자크기('size') 드롭다운을 엽니다."""
+    js = """
+    var kind = arguments[0];
+    var sel = (kind === 'font')
+        ? '.se-font-family-toolbar-button'
+        : '.se-font-size-code-toolbar-button';
+    var el = document.querySelector(sel);
+    if (el) {
+        var r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return el;
+    }
+    // 클래스가 바뀐 경우를 대비한 폭넓은 탐색
+    var pats = (kind === 'font')
+        ? ['font-family', 'fontfamily', 'fontname']
+        : ['font-size', 'fontsize'];
+    var cands = document.querySelectorAll('button, a[role="button"], [role="combobox"]');
+    for (var i = 0; i < cands.length; i++) {
+        var c = cands[i];
+        var sig = ((c.className || '') + ' ' +
+                   (c.getAttribute('data-log') || '')).toLowerCase();
+        for (var j = 0; j < pats.length; j++) {
+            if (sig.indexOf(pats[j]) !== -1) {
+                var rr = c.getBoundingClientRect();
+                if (rr.width > 0 && rr.height > 0) return c;
+            }
+        }
+    }
+    return null;
+    """
+    try:
+        el = driver.execute_script(js, kind)
+        if el is None:
+            return None
+        return _native_click(driver, el)
+    except Exception as e:
+        print(f"  -> 드롭다운 열기 실패({kind}): {e}")
+        return None
+
+
+def _pick_dropdown_option(driver, label):
+    """열려 있는 드롭다운에서 항목을 클릭하고, 실제로 선택됐는지까지 확인합니다.
+
+    스마트에디터 옵션 버튼은 라벨 텍스트가 **두 번 반복**된다.
+        <button data-value="nanumsquareneo">나눔스퀘어 네오나눔스퀘어 네오</button>
+        <button data-value="fs15">1515선택됨</button>
+    그래서 텍스트 완전일치로 찾으면 버튼은 못 찾고 안쪽 <span>을 클릭하게 되는데,
+    span 클릭은 핸들러가 안 걸려서 '눌렀지만 아무 일도 안 일어나는' 상태가 된다.
+    반드시 data-value 를 가진 button 만 클릭한다.
+    """
+    js = """
+    var want = String(arguments[0]).replace(/\\s+/g, '');
+    var btns = document.querySelectorAll('button[data-value]');
+    for (var i = 0; i < btns.length; i++) {
+        var el = btns[i];
+        var r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;          // 닫힌 드롭다운
+        var dv = (el.getAttribute('data-value') || '');
+        var t = (el.textContent || '').replace(/\\s+/g, '').replace(/선택됨$/, '');
+        // 라벨이 두 번 반복되므로 앞 절반도 후보로 본다
+        var half = (t.length % 2 === 0) ? t.slice(0, t.length / 2) : t;
+        if (t === want || half === want || dv === want || dv === 'fs' + want) {
+            return el;
+        }
+    }
+    return null;
+    """
+    try:
+        el = driver.execute_script(js, label)
+        if el is None:
+            return None
+        dv = el.get_attribute('data-value')
+        # JS 클릭이 아니라 실제 마우스 클릭 — 선택 영역이 보존돼야 서식이 먹는다
+        return dv if _native_click(driver, el) else None
+    except Exception as e:
+        print(f"  -> 드롭다운 항목 선택 실패('{label}'): {e}")
+        return None
+
+
+def _font_class_stats(driver):
+    """본문 span 의 실제 서식 클래스 분포를 센다.
+
+    스마트에디터는 글자에 se-ff-<글꼴값> / se-fs<크기> 클래스를 붙인다.
+    툴바 라벨이 아니라 이 분포가 '진짜로 적용됐는지'의 근거다.
+    """
+    try:
+        return driver.execute_script(_JS_SE_ROOT + """
+            var ed = __seRoot();
+            if (!ed) return null;
+            var ff = {}, fs = {};
+            ed.querySelectorAll('span').forEach(function(s) {
+                var t = (s.textContent || '').trim();
+                if (!t) return;                       // 빈 span 은 세지 않는다
+                (s.className || '').split(/\\s+/).forEach(function(c) {
+                    if (c.indexOf('se-ff-') === 0) ff[c] = (ff[c] || 0) + 1;
+                    else if (/^se-fs\\d+$/.test(c)) fs[c] = (fs[c] || 0) + 1;
+                });
+            });
+            return {ff: ff, fs: fs};
+        """)
+    except Exception:
+        return None
+
+
+def _close_editor_flyouts(driver):
+    """에디터 위에 떠 있는 레이어를 닫는다.
+
+    '글감 검색'(se-flayer-unified-search) 같은 패널이 열려 있으면 본문을 덮어서
+    문단 클릭이 전부 가로채인다 → 전체선택·커서이동·인용구 탈출이 통째로 실패한다.
+    ESC 로 먼저 닫아보고, 그래도 남아 있는 것만 숨긴다.
+    """
+    try:
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        time.sleep(0.3)
+    except Exception:
+        pass
+    try:
+        hidden = driver.execute_script("""
+            var names = [];
+            document.querySelectorAll('[class*="se-flayer"]').forEach(function(el) {
+                var r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0) {
+                    el.style.display = 'none';
+                    names.push((el.className || '').toString().slice(0, 40));
+                }
+            });
+            return names;
+        """)
+        if hidden:
+            print(f"  -> 에디터 위 레이어 {len(hidden)}개 닫음: {hidden}")
+    except Exception:
+        pass
+
+
+def _selectall_editor_body(driver):
+    """본문 전체를 선택한다.
+
+    ★ 반드시 '실제 마우스 클릭 + 실제 Ctrl+A' 여야 한다.
+      JS Range 로 만든 선택은 스마트에디터가 자기 선택으로 인정하지 않아서
+      서식이 하나도 안 붙는다 (버튼은 눌리고 툴바 표시도 바뀌는데 글자는 그대로).
+
+    ※ window.getSelection() 은 0 을 돌려준다 — 에디터가 자체 선택 모델을 쓰기
+      때문이며, 선택 실패가 아니다. 성공 여부는 결과 클래스로만 판정할 것.
+    """
+    _close_editor_flyouts(driver)   # 덮고 있는 패널부터 치운다
+    try:
+        paras = driver.find_elements(By.CSS_SELECTOR, '.se-text-paragraph')
+        if not paras:
+            print("  -> [주의] 본문 문단(.se-text-paragraph)을 못 찾음")
+            return 0
+
+        # 문단끼리 겹쳐 있어 클릭이 가로채이는 경우가 있다.
+        # 뒤에서부터 여러 후보를 시도하고, 그래도 안 되면 JS 포커스로 폴백한다.
+        clicked = False
+        for p in list(reversed(paras))[:6]:
+            try:
+                if not p.is_displayed():
+                    continue
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", p)
+                time.sleep(0.3)
+                p.click()
+                clicked = True
+                break
+            except Exception:
+                continue
+
+        if not clicked:
+            # 클릭이 전부 막히면 JS 로 포커스만 준다.
+            # (선택 자체는 이어지는 실제 Ctrl+A 가 만든다)
+            try:
+                driver.execute_script("""
+                    var ps = document.querySelectorAll('.se-text-paragraph');
+                    if (ps.length) ps[ps.length - 1].focus();
+                """)
+                print("  -> 문단 클릭이 모두 막혀 JS 포커스로 대체")
+            except Exception:
+                pass
+
+        time.sleep(0.4)
+        ActionChains(driver).key_down(Keys.CONTROL).send_keys('a') \
+                            .key_up(Keys.CONTROL).perform()
+        time.sleep(0.5)
+        return len(paras)
+    except Exception as e:
+        print(f"  -> [주의] 본문 전체 선택 실패: {str(e)[:100]}")
+        return 0
+
+
+def _current_toolbar_label(driver, kind):
+    """툴바 토글 버튼에 현재 표시된 값(=적용된 글꼴/크기)을 읽는다."""
+    sel = ('.se-font-family-toolbar-button' if kind == 'font'
+           else '.se-font-size-code-toolbar-button')
+    try:
+        return driver.execute_script("""
+            var el = document.querySelector(arguments[0]);
+            if (!el) return null;
+            var t = (el.textContent || '').replace(/\\s+/g, '');
+            return t.replace(/서체변경$/, '').replace(/글자크기변경$/, '');
+        """, sel)
+    except Exception:
+        return None
+
+
+def apply_editor_font(driver, family, size, select_all=False, tag='start'):
+    """에디터 글씨체/크기를 지정합니다.
+
+    select_all=False → 지금부터 입력되는 텍스트에 적용 (본문 쓰기 직전에 호출)
+    select_all=True  → 본문 전체를 선택해 일괄 적용 (글 다 쓴 뒤 호출)
+
+    붙여넣기(Ctrl+V)로 본문을 넣으면 입력 전에 잡아둔 서식이 풀린다.
+    그래서 '다 쓴 뒤 전체 선택 → 일괄 적용'이 실제로 효과를 내는 경로다.
+    """
+    if not family and not size:
+        return
+
+    where = '전체 선택 후 일괄' if select_all else '입력 전 기본값'
+    print(f"  -> 글씨체 적용({where}): {family or '(유지)'} / {size or '(유지)'}")
+
+    try:
+        for kind, want in (('font', family), ('size', size)):
+            if not want:
+                continue
+            name = '글꼴' if kind == 'font' else '글자크기'
+
+            # 전체선택이 클릭 가로채기로 실패할 때가 있어 최대 3회 시도한다.
+            attempts = 3 if select_all else 1
+            for n_try in range(1, attempts + 1):
+                # 서식은 '선택된 범위'에 적용된다. 항목을 고를 때마다 선택이
+                # 풀릴 수 있으므로 글꼴/크기 각각 직전에 다시 전체 선택한다.
+                if select_all:
+                    _close_editor_flyouts(driver)
+                    _selectall_editor_body(driver)
+                    time.sleep(0.3)
+
+                picked = None
+                if _open_toolbar_dropdown(driver, kind):
+                    time.sleep(0.6)
+                    picked = _pick_dropdown_option(driver, want)
+                    time.sleep(0.6)
+
+                shown = (_current_toolbar_label(driver, kind) or '')
+
+                if not select_all:
+                    # 입력 전 단계에서는 본문이 비어 있어 클래스로 검증할 수 없다
+                    print(f"  -> {name} 선택: {picked or '실패'} (툴바 '{shown}')")
+                    break
+
+                # ★ 진짜 검증: 본문 span 의 실제 클래스 분포를 본다
+                stats = _font_class_stats(driver) or {'ff': {}, 'fs': {}}
+                if kind == 'font':
+                    buckets = stats['ff']
+                    key = f"se-ff-{picked}" if picked else None
+                else:
+                    buckets = stats['fs']
+                    key = f"se-fs{want}"
+
+                total = sum(buckets.values())
+                hit = buckets.get(key, 0) if key else 0
+
+                if total and hit == total:
+                    print(f"  -> {name} 적용 확인: {want} — 본문 {total}개 span 전부 {key}")
+                    break
+                if hit:
+                    others = {k: v for k, v in buckets.items() if k != key}
+                    print(f"  -> [부분적용] {name} {hit}/{total} 만 {key}. 나머지: {others}")
+                    break   # 인용구가 자체 서체를 고수하는 정상 케이스
+                if n_try < attempts:
+                    print(f"  -> [{n_try}/{attempts}] {name} 적용 안 됨. 다시 시도...")
+                    time.sleep(1.0)
+                    continue
+
+                print(f"  -> [실패] {name} '{want}' 본문에 안 붙음 "
+                      f"(클릭={picked!r}, 툴바='{shown}', 실제 분포={buckets})")
+                _dump_toolbar(driver, tag)
+
+    except Exception as e:
+        print(f"  -> 글씨체 적용 중 예외(무시하고 계속): {e}")
+    finally:
+        # 전체 선택 상태를 반드시 푼다 — 선택된 채로 키 입력이 들어가면 본문이 통째로 날아감
+        if select_all:
+            try:
+                driver.execute_script("window.getSelection().removeAllRanges();")
+            except Exception:
+                pass
+            _move_cursor_to_end(driver)
+
+
+def _count_editor_images(driver):
+    """에디터 본문에 들어간 이미지 개수. 셀 수 없으면 -1 (절대 None 아님).
+
+    파일 선택 레이어가 떠 있는 동안 execute_script 가 undefined 를 돌려줄 때가
+    있어서, 숫자가 아니면 무조건 -1 로 눌러 담는다.
+    """
+    try:
+        n = driver.execute_script(_JS_SE_ROOT + """
+            var ed = __seRoot();
+            if (!ed) return -1;
+            // .se-section-image 만 센다. .se-image-resource 를 같이 세면
+            // 이미지 1장이 2로 잡혀 개수가 두 배로 보고된다.
+            var c = ed.querySelectorAll('.se-section-image').length;
+            return (typeof c === 'number') ? c : -1;
+        """)
+        return int(n) if isinstance(n, (int, float)) else -1
+    except Exception:
+        return -1
+
+
+def _suppress_native_file_dialog(driver):
+    """파일 input 의 click() 을 가로채 OS '열기' 대화상자가 뜨지 않게 한다.
+
+    '사진' 툴바 버튼을 누르면 에디터가 내부적으로 input.click() 을 호출해
+    네이티브 파일 선택 창을 띄운다. 그 창은 브라우저의 자바스크립트 실행을
+    통째로 멈춰세우기 때문에, 셀레니움이 아무것도 못 하고 화면에 창만 남는다.
+    여기서 file input 의 click 만 무력화하고 그 엘리먼트를 잡아둔다.
+    """
+    try:
+        driver.execute_script("""
+            if (!window.__seFileClickPatched) {
+                window.__seFileClickPatched = true;
+                var orig = HTMLInputElement.prototype.click;
+                window.__seOrigInputClick = orig;
+                HTMLInputElement.prototype.click = function() {
+                    if (this.type === 'file') {
+                        window.__seLastFileInput = this;   // 창은 띄우지 않고 잡아만 둔다
+                        return;
+                    }
+                    return orig.apply(this, arguments);
+                };
+            }
+            window.__seLastFileInput = null;
+        """)
+        return True
+    except Exception as e:
+        print(f"  -> [주의] 파일 대화상자 차단 실패: {str(e)[:80]}")
+        return False
+
+
+def _find_file_input(driver):
+    """업로드용 file input 을 찾는다 (클릭으로 가로챈 것 우선)."""
+    try:
+        el = driver.execute_script("return window.__seLastFileInput || null;")
+        if el:
+            return el
+    except Exception:
+        pass
+    inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+    return inputs[-1] if inputs else None
+
+
+def upload_image(driver, img_abs, attempts=2, wait=20):
+    """이미지를 업로드하고 실제로 본문에 들어갔는지 확인한다.
+
+    OS 파일 대화상자를 띄우지 않는다 — 그게 뜨면 JS가 멈춰서 복구가 안 된다.
+    """
+    name = os.path.basename(img_abs)
+    before = _count_editor_images(driver)
+
+    for n in range(1, attempts + 1):
+        try:
+            _suppress_native_file_dialog(driver)
+
+            # 이미 DOM에 input 이 있으면 버튼을 아예 누르지 않는다
+            fi = _find_file_input(driver)
+            if fi is None:
+                try:
+                    driver.find_element(By.CSS_SELECTOR, ".se-image-toolbar-button").click()
+                except Exception:
+                    driver.find_element(
+                        By.XPATH,
+                        "//button[contains(@class, 'image') or "
+                        ".//span[contains(text(), '사진')]]"
+                    ).click()
+                time.sleep(1.0)
+                fi = _find_file_input(driver)
+
+            if fi is None:
+                print(f"  -> [{n}/{attempts}] file input을 못 찾음 ({name}). 재시도...")
+                time.sleep(1.5)
+                continue
+
+            driver.execute_script(
+                "arguments[0].style.cssText='display:block!important;"
+                "opacity:0.01!important;position:fixed;top:0;left:0;"
+                "width:1px;height:1px;';", fi)
+            fi.send_keys(img_abs)
+        except Exception as e:
+            print(f"  -> [{n}/{attempts}] 업로드 시도 실패 ({name}): {str(e)[:100]}")
+            time.sleep(1.5)
+            continue
+
+        # 본문에 실제로 반영될 때까지 기다린다
+        for _ in range(wait):
+            time.sleep(1)
+            now = _count_editor_images(driver)
+            if now < 0:
+                continue                      # 지금은 셀 수 없음 — 다음 초에 다시
+            if now > before or (before < 0 and now > 0):
+                print(f"  -> 이미지 업로드 확인: {name} (본문 이미지 {now}장)")
+                return True
+
+        print(f"  -> [{n}/{attempts}] {name} 이 본문에 안 들어갔음. 재시도...")
+
+    print(f"  -> [실패] 이미지 업로드 포기: {name}")
+    return False
+
+
+def select_board(driver, board_name):
+    """글을 올릴 게시판(카테고리)을 고른다.
+
+    글쓰기 화면은 기본이 '게시판을 선택해 주세요.' 상태다. 이걸 안 고르면
+    발행이 막히거나 의도치 않은 게시판으로 올라간다.
+    목록이 길어 화면 밖에 있는 항목은 스크롤해서 클릭한다.
+    """
+    if not board_name:
+        return True
+
+    want = board_name.replace(' ', '')
+    print(f"  -> 게시판 선택: {board_name}")
+
+    # 1) 게시판 드롭다운 열기 (첫 번째 FormSelectButton = 게시판, 두 번째는 말머리)
+    try:
+        trigger = driver.execute_script("""
+            var boxes = document.querySelectorAll('.FormSelectButton');
+            if (!boxes.length) return null;
+            return boxes[0].querySelector('button');
+        """)
+        if trigger is None:
+            print("  -> [실패] 게시판 선택 버튼을 못 찾았습니다.")
+            return False
+        _native_click(driver, trigger)
+        time.sleep(1.0)
+    except Exception as e:
+        print(f"  -> [실패] 게시판 드롭다운 열기: {str(e)[:100]}")
+        return False
+
+    # 2) 목록에서 이름이 일치하는 항목 찾기 (보이지 않아도 찾는다)
+    try:
+        opt = driver.execute_script("""
+            var want = arguments[0];
+            var opts = document.querySelectorAll('button.option, li.item button');
+            for (var i = 0; i < opts.length; i++) {
+                var t = (opts[i].textContent || '').replace(/\\s+/g, '');
+                if (t === want) return opts[i];
+            }
+            return null;
+        """, want)
+    except Exception as e:
+        print(f"  -> [실패] 게시판 목록 탐색: {str(e)[:100]}")
+        return False
+
+    if opt is None:
+        names = []
+        try:
+            names = driver.execute_script("""
+                var out = [];
+                document.querySelectorAll('button.option').forEach(function(b){
+                    out.push((b.textContent||'').trim());
+                });
+                return out;
+            """)
+        except Exception:
+            pass
+        print(f"  -> [실패] '{board_name}' 게시판이 목록에 없습니다.")
+        if names:
+            print(f"  -> 선택 가능한 게시판: {names}")
+        return False
+
+    # 3) 화면 안으로 스크롤한 뒤 실제 클릭
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", opt)
+        time.sleep(0.4)
+        _native_click(driver, opt)
+        time.sleep(1.0)
+    except Exception as e:
+        print(f"  -> [실패] 게시판 항목 클릭: {str(e)[:100]}")
+        return False
+
+    # 4) 실제로 바뀌었는지 확인
+    try:
+        label = driver.execute_script("""
+            var boxes = document.querySelectorAll('.FormSelectButton');
+            if (!boxes.length) return '';
+            var b = boxes[0].querySelector('button');
+            return b ? (b.textContent || '').trim() : '';
+        """)
+    except Exception:
+        label = ''
+
+    if label.replace(' ', '') == want:
+        print(f"  -> 게시판 확인: {label}")
+        return True
+
+    print(f"  -> [실패] 게시판이 바뀌지 않았습니다 (현재 '{label}')")
+    return False
+
+
+def publish_post(driver, wait=20):
+    """글을 실제로 발행(등록)한다.
+
+    ★ '임시등록' 을 절대 누르지 않는다. 예전 폴백은 class 에 register 가 들어간
+      아무 버튼이나 눌렀는데, 임시저장 버튼 클래스에도 register 가 들어가서
+      발행하려다 임시저장될 수 있었다.
+    """
+    _close_editor_flyouts(driver)
+    before_url = driver.current_url
+
+    js = """
+    var cands = document.querySelectorAll('button, a, [role="button"]');
+    for (var i = 0; i < cands.length; i++) {
+        var el = cands[i];
+        var t = (el.textContent || '').replace(/\\s+/g, '');
+        // '등록' 정확히 일치만. '임시등록'/'임시저장'/'저장' 은 제외.
+        if (t !== '등록') continue;
+        var r = el.getBoundingClientRect();
+        if (r.width > 0 && r.height > 0) return el;
+    }
+    return null;
+    """
+    try:
+        el = driver.execute_script(js)
+    except Exception as e:
+        print(f"  -> 발행 버튼 검색 실패: {str(e)[:100]}")
+        el = None
+
+    if el is None:
+        print("  -> [실패] '등록' 버튼을 찾지 못했습니다.")
+        _dump_toolbar(driver, 'publish')
+        return False
+
+    if not _native_click(driver, el):
+        print("  -> [실패] '등록' 버튼 클릭 실패")
+        return False
+
+    print("  -> '등록' 클릭. 발행 확인 대기 중...")
+    for _ in range(wait):
+        time.sleep(1)
+        try:
+            now = driver.current_url
+        except Exception:
+            continue
+        # 글쓰기 화면을 벗어나면 발행된 것
+        if 'write' not in now and now != before_url:
+            print(f"  -> 발행 확인: {now}")
+            return now
+
+    print(f"  -> [주의] 발행 여부를 확인하지 못했습니다 (URL 그대로: {driver.current_url})")
+    return False
+
+
+def _publish_source_key(source_url):
+    if not source_url:
+        return ""
+    try:
+        video_id = extract_video_id(source_url)
+    except Exception:
+        video_id = None
+    if video_id:
+        return f"youtube:{video_id}"
+    return "url:" + source_url.strip().lower()
+
+
+def _publish_record_id(source_key):
+    return hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:24]
+
+
+def _load_published_records():
+    try:
+        with open(PUBLISHED_RECORD_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        print(f"  -> [warning] could not read published record file: {e}")
+        return {}
+
+
+def _save_published_records(records):
+    tmp_path = PUBLISHED_RECORD_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_path, PUBLISHED_RECORD_FILE)
+
+
+def _begin_publish_guard(source_url):
+    source_key = _publish_source_key(source_url)
+    if not source_key:
+        return {"enabled": False}
+
+    record_id = _publish_record_id(source_key)
+    records = _load_published_records()
+    existing = records.get(record_id)
+    if existing:
+        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print(f"  -> 기존 글: {existing.get('article_url', '')}")
+        return None
+
+    os.makedirs(PUBLISH_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(PUBLISH_LOCK_DIR, record_id + ".lock")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            age = time.time() - os.path.getmtime(lock_path)
+            if age > 6 * 60 * 60:
+                os.remove(lock_path)
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            else:
+                print("[중단] 같은 원본 URL의 카페 발행 작업이 이미 진행 중입니다.")
+                print(f"  -> lock: {lock_path}")
+                return None
+        except FileExistsError:
+            print("[중단] 같은 원본 URL의 카페 발행 작업이 이미 진행 중입니다.")
+            return None
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"pid={os.getpid()}\n")
+        f.write(f"time={time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"source={source_key}\n")
+
+    records = _load_published_records()
+    existing = records.get(record_id)
+    if existing:
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
+        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print(f"  -> 기존 글: {existing.get('article_url', '')}")
+        return None
+
+    return {
+        "enabled": True,
+        "record_id": record_id,
+        "source_key": source_key,
+        "source_url": source_url,
+        "lock_path": lock_path,
+    }
+
+
+def _mark_published_source(publish_guard, title, article_url):
+    if not publish_guard or not publish_guard.get("enabled"):
+        return
+    records = _load_published_records()
+    records[publish_guard["record_id"]] = {
+        "source_key": publish_guard["source_key"],
+        "source_url": publish_guard["source_url"],
+        "title": title,
+        "article_url": article_url,
+        "published_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    _save_published_records(records)
+
+
+def _release_publish_guard(publish_guard):
+    if not publish_guard or not publish_guard.get("enabled"):
+        return
+    try:
+        os.remove(publish_guard["lock_path"])
+    except OSError:
+        pass
+
+
+def save_as_draft(driver):
+    """작성 중인 글을 임시저장한다.
+
+    '등록' 옆의 '저장'(임시저장) 버튼을 누른다. 셀렉터가 확실치 않아
+    텍스트 기반으로 넓게 찾고, 실패하면 툴바를 덤프해 원인을 남긴다.
+    """
+    print("  -> 임시저장 중...")
+    js = """
+    var cands = document.querySelectorAll('button, a, [role="button"]');
+    for (var i = 0; i < cands.length; i++) {
+        var el = cands[i];
+        var t = (el.textContent || '').replace(/\\s+/g, '');
+        var cls = (el.className || '') + ' ' + (el.getAttribute('data-log') || '');
+        // '임시등록'/'임시저장'/'저장' — 단 '등록'(발행)은 절대 누르지 않는다
+        var isDraft = (t === '임시저장' || t === '임시등록' || t === '저장'
+                       || /save|temp|draft/i.test(cls));
+        var isPublish = (t === '등록' || /register|publish/i.test(cls));
+        if (isDraft && !isPublish) {
+            var r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { el.click(); return t || cls; }
+        }
+    }
+    return null;
+    """
+    try:
+        hit = driver.execute_script(js)
+    except Exception as e:
+        print(f"  -> [주의] 임시저장 버튼 검색 실패: {e}")
+        hit = None
+
+    if hit:
+        print(f"  -> 임시저장 버튼 클릭: '{hit}'")
+        time.sleep(3)
+        # 확인 레이어가 뜨면 닫아준다
+        try:
+            driver.execute_script("""
+                var b = document.querySelector('.btn_confirm, .se-popup-button-confirm');
+                if (b) b.click();
+            """)
+        except Exception:
+            pass
+        return True
+
+    print("  -> [주의] 임시저장 버튼을 찾지 못했습니다. 창에서 직접 눌러주세요.")
+    _dump_toolbar(driver, 'draft')
+    return False
+
+
+def insert_link_block(driver, url, as_card=True, wait=4):
+    """URL을 붙여넣어 네이버 자동 링크(as_card=True면 미리보기 카드)로 만듭니다."""
+    if not url:
+        return
+    _js_insert_text(driver, url)
+    time.sleep(0.3)
+    if as_card:
+        # 줄 끝에서 Enter → 네이버가 OG 카드로 자동 변환
+        ActionChains(driver).send_keys(Keys.RETURN).perform()
+        time.sleep(wait)
+    else:
+        # 스페이스 → 카드 없이 하이퍼링크만
+        ActionChains(driver).send_keys(Keys.SPACE).perform()
+        time.sleep(0.5)
+
+
+# ===================================================================
+# 9-3. 브라우저 / 네이버 로그인
+# ===================================================================
+
+# 댓글봇(chrome_profile_commentbot)과 반드시 분리한다.
+# 같은 user-data-dir 를 두 프로세스가 잡으면 프로필이 잠겨 드라이버 생성이 실패한다.
+PUBLISHER_PROFILE_DIR = os.path.join(SCRIPT_DIR, 'chrome_profile_publisher')
+
+# 창 없이 돌릴지 여부. 진입점에서 --headless 로 켠다.
+PUBLISHER_HEADLESS = False
+
+
+def _kill_orphan_publisher_chrome():
+    """발행용 프로필을 점유 중인 고아 크롬만 종료한다 (자가치유).
+
+    비정상 종료로 남은 크롬이 프로필을 잠그면 다음 실행이 통째로 죽는다.
+    ※ 사용자의 일반 크롬은 건드리지 않는다 — publisher 프로필 프로세스만.
+    """
+    if os.name != 'nt':
+        return
+    import subprocess
+    profile_name = os.path.basename(PUBLISHER_PROFILE_DIR)
+    ps = (
+        "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*" + profile_name + "*' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force "
+        "-ErrorAction SilentlyContinue }"
+    )
+    try:
+        subprocess.run(
+            ['powershell', '-NoProfile', '-Command', ps],
+            timeout=20, capture_output=True,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+    except Exception as e:
+        print(f"  -> [경고] 고아 크롬 정리 실패(무시하고 진행): {e}")
+
+
+def make_publisher_driver():
+    """발행 전용 프로필로 Chrome 드라이버를 만든다.
+
+    프로필 폴더에 네이버 세션 쿠키가 남으므로, 최초 1회 로그인 후에는
+    재로그인도 캡챠도 거의 없다. (댓글봇이 몇 달째 쓰는 것과 같은 방식)
+
+    ※ 좀비 크롬 정리는 '드라이버 생성이 실패했을 때만' 한다.
+      크롬은 종료할 때 쿠키를 디스크에 flush 하는데, 시작할 때마다 선제적으로
+      강제 종료하면 직전 실행에서 만든 로그인 세션이 저장되기 전에 날아가서
+      매번 다시 로그인해야 한다.
+    """
+    def _build():
+        options = webdriver.ChromeOptions()
+        options.add_argument("--window-size=1100,900")
+        if PUBLISHER_HEADLESS:
+            # ★ 쓰지 말 것 (2026-08 실측): 헤드리스 크롬은 시스템 클립보드를
+            #   읽지 못해 pyperclip + Ctrl+V 로 넣는 본문이 통째로 누락된다.
+            #   창 모드 31개 span vs 헤드리스 18개 (인용구만 들어가고 본문 소실).
+            #   플래그는 나중에 크롬/네이버가 바뀌면 재검증하려고 남겨둔 것.
+            options.add_argument("--headless=new")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+        options.add_argument(f"--user-data-dir={PUBLISHER_PROFILE_DIR}")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
+        return webdriver.Chrome(options=options)
+
+    try:
+        driver = _build()
+    except Exception as e:
+        print(f"  -> 드라이버 생성 실패({str(e)[:80]}). 프로필 점유 크롬 정리 후 재시도...")
+        _kill_orphan_publisher_chrome()
+        time.sleep(2)
+        driver = _build()
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});"
+        })
+    except Exception:
+        pass
+    return driver
+
+
+NAVER_SESSION_FILE = os.path.join(SCRIPT_DIR, 'naver_session.json')
+
+
+def _save_naver_session(driver):
+    """네이버 로그인 쿠키를 파일로 박제한다.
+
+    '로그인 상태 유지'를 켜지 못하면 NID_AUT/NID_SES 가 만료 없는 세션 쿠키로
+    발급된다. 세션 쿠키는 크롬이 닫히는 순간 사라지므로 프로필에 아무것도
+    남지 않고, 실행할 때마다 사람이 다시 로그인해야 한다.
+    네이버 DOM(체크박스 셀렉터)에 기대지 말고 직접 만료를 붙여 저장한다.
+    """
+    try:
+        cookies = [c for c in driver.get_cookies() if 'naver' in (c.get('domain') or '')]
+        if not any(c.get('name') in ('NID_AUT', 'NID_SES') for c in cookies):
+            return False
+        expiry = int(time.time()) + 60 * 60 * 24 * 30   # 30일
+        for c in cookies:
+            c.pop('sameSite', None)          # add_cookie 가 거부하는 값이 섞여 온다
+            if not c.get('expiry'):
+                c['expiry'] = expiry
+        with open(NAVER_SESSION_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cookies, f)
+        print(f"  -> 로그인 세션을 파일로 저장했습니다 ({len(cookies)}개 쿠키, 30일).")
+        return True
+    except Exception as e:
+        print(f"  -> [주의] 세션 파일 저장 실패: {e}")
+        return False
+
+
+def _restore_naver_session(driver):
+    """저장해둔 쿠키를 주입해 로그인 없이 세션을 되살린다."""
+    if not os.path.exists(NAVER_SESSION_FILE):
+        return False
+    try:
+        with open(NAVER_SESSION_FILE, encoding='utf-8') as f:
+            cookies = json.load(f)
+    except Exception:
+        return False
+    try:
+        driver.get("https://www.naver.com")   # 도메인을 맞춰야 add_cookie 가 먹는다
+        time.sleep(1)
+        added = 0
+        for c in cookies:
+            try:
+                driver.add_cookie(c)
+                added += 1
+            except Exception:
+                pass
+        if not added:
+            return False
+        driver.get("https://www.naver.com")
+        time.sleep(2)
+        names = {c["name"] for c in driver.get_cookies()}
+        return bool({"NID_AUT", "NID_SES"} & names) or _logged_in_ui_visible(driver)
+    except Exception:
+        return False
+
+
+def _logged_in_ui_visible(driver):
+    """현재 떠 있는 페이지에서 로그인 흔적을 찾는다. 페이지를 이동하지 않는다."""
+    try:
+        return bool(driver.execute_script("""
+            var text = (document.body && document.body.innerText) || '';
+            if (/로그아웃|내정보/.test(text)) return true;
+            return !!document.querySelector(
+                'a[href*="nid.naver.com/user2/help/myInfo"], ' +
+                'a[href*="nid.naver.com/nidlogin.logout"]'
+            );
+        """))
+    except Exception:
+        return False
+
+
+def _naver_session_alive(driver):
+    """NID cookies first, then visible logged-in Naver UI.
+
+    naver.com 으로 이동해서 확인하므로 '로그인 전 1회 점검'에만 쓴다.
+    사람이 로그인하는 동안 반복 호출하면 입력 화면을 계속 날려버린다.
+    """
+    try:
+        driver.get("https://www.naver.com")
+        time.sleep(2)
+        cookies = {c["name"] for c in driver.get_cookies()}
+        if "NID_AUT" in cookies or "NID_SES" in cookies:
+            return True
+        return _logged_in_ui_visible(driver)
+    except Exception:
+        return False
+
+
+def _handle_naver_device_confirm(driver):
+    """Continue past Naver's new-device confirmation without registration."""
+    try:
+        return bool(driver.execute_script("""
+            var text = (document.body && document.body.innerText) || '';
+            var onConfirm = location.href.indexOf('deviceConfirm') >= 0
+                || text.indexOf('새로운 기기') >= 0
+                || text.indexOf('자주 사용하는 기기') >= 0;
+            if (!onConfirm) return false;
+
+            var nodes = Array.from(document.querySelectorAll('a, button, input[type="button"], input[type="submit"]'));
+            for (var i = 0; i < nodes.length; i++) {
+                var el = nodes[i];
+                var label = (el.innerText || el.textContent || el.value || '').replace(/\\s+/g, '');
+                if (label === '등록안함' || label === '등록하지않음' || label === '나중에') {
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        """))
+    except Exception:
+        return False
+
+
+def _detect_naver_login_challenge(driver):
+    """Return a specific visible Naver login blocker, if any."""
+    try:
+        return driver.execute_script(r"""
+            const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ');
+            const href = location.href || '';
+            const selectors = [
+                '#captcha, [id*="captcha" i], [class*="captcha" i], [name*="captcha" i]',
+                'iframe[src*="captcha" i], img[src*="captcha" i]'
+            ];
+            if (selectors.some((sel) => document.querySelector(sel))) return 'CAPTCHA_REQUIRED';
+            if (/captcha|자동입력|보안문자|문자를 입력|이미지에 보이는|스팸 방지/i.test(text + ' ' + href)) {
+                return 'CAPTCHA_REQUIRED';
+            }
+            if (/2단계|2차|OTP|인증번호|본인 확인|휴대전화|휴대폰|보안 인증|추가 인증/i.test(text + ' ' + href)) {
+                return 'SECOND_FACTOR_REQUIRED';
+            }
+            if (/새로운 기기|자주 사용하는 기기|등록안함|등록하지 않음/i.test(text + ' ' + href)) {
+                return 'DEVICE_CONFIRM_REQUIRED';
+            }
+            return '';
+        """) or ""
+    except Exception:
+        return ""
+
+
+def _save_login_challenge_screenshot(driver, reason):
+    try:
+        path = os.path.join(SCRIPT_DIR, f"naver_login_{reason.lower()}_{int(time.time())}.png")
+        driver.save_screenshot(path)
+        print(f"  -> login challenge screenshot: {path}")
+        return path
+    except Exception:
+        return ""
+
+
+def ensure_naver_login(driver, wait_minutes=5):
+    """로그인 상태를 보장한다.
+
+    반환값: 이번에 '새로' 로그인했으면 True, 저장된 세션을 쓴 거면 False.
+    호출자는 True 일 때 브라우저를 한 번 깨끗이 닫아 쿠키를 디스크에 flush 해야 한다.
+
+    로그인 버튼 셀렉터에 의존하지 않는다 — 네이버가 자주 바꾼다.
+    """
+    if _naver_session_alive(driver):
+        print("  -> 저장된 세션으로 이미 로그인됨 (캡챠 불필요).")
+        return False
+
+    if _restore_naver_session(driver):
+        print("  -> 저장해둔 쿠키로 세션을 복구했습니다 (재로그인 불필요).")
+        return False
+
+    print("  -> 로그인 세션이 없습니다. 로그인 페이지로 이동합니다.")
+    driver.get("https://nid.naver.com/nidlogin.login")
+    time.sleep(2)
+
+    # 아이디/비밀번호는 채워준다 (send_keys는 봇 감지되므로 클립보드 붙여넣기)
+    for sel, val in (("#id", NAVER_ID), ("#pw", NAVER_PW)):
+        try:
+            el = driver.find_element(By.CSS_SELECTOR, sel)
+            pyperclip.copy(val)
+            el.click()
+            el.send_keys(Keys.CONTROL, 'v')
+            time.sleep(0.5)
+        except Exception:
+            print(f"  -> [주의] {sel} 입력란을 찾지 못했습니다. 직접 입력해주세요.")
+
+    # '로그인 상태 유지' — 다음 실행부터 로그인 자체를 건너뛰게 해준다
+    try:
+        driver.execute_script("""
+            var k = document.querySelector('#keep, input[id="keep"], .keep_check input');
+            if (k && !k.checked) { (k.closest('label') || k).click(); }
+        """)
+    except Exception:
+        pass
+
+    # 로그인 버튼은 셀렉터가 자주 바뀌므로 텍스트/타입으로 폭넓게 찾는다
+    try:
+        clicked = driver.execute_script("""
+            var el = document.querySelector('#log\\\\.login, button[type="submit"], .btn_login');
+            if (!el) {
+                var all = document.querySelectorAll('button, a, input[type="submit"]');
+                for (var i = 0; i < all.length; i++) {
+                    var t = (all[i].textContent || all[i].value || '').trim();
+                    if (t === '로그인') { el = all[i]; break; }
+                }
+            }
+            if (el) { el.click(); return true; }
+            return false;
+        """)
+        if not clicked:
+            print("  -> [주의] 로그인 버튼을 못 찾았습니다. 창에서 직접 눌러주세요.")
+    except Exception as e:
+        print(f"  -> [주의] 로그인 버튼 클릭 실패: {e}. 창에서 직접 눌러주세요.")
+
+    print(f"  -> 로그인 완료를 기다립니다 (최대 {wait_minutes}분). "
+          "캡챠/2차 인증이 뜨면 창에서 직접 처리해주세요.")
+    # 대기 중에는 절대 페이지를 이동시키지 않는다.
+    # _naver_session_alive() 는 첫 줄에서 naver.com 으로 driver.get() 을 하므로,
+    # 대기 루프에서 부르면 사람이 캡챠/2차 인증을 입력하는 도중에 매번 화면을
+    # 날려버려 로그인을 영영 끝낼 수 없다. 쿠키와 현재 DOM 만 본다.
+    started = time.time()
+    deadline = started + wait_minutes * 60
+    notified = False
+    while time.time() < deadline:
+        try:
+            if _handle_naver_device_confirm(driver):
+                print("  -> 새 기기 확인 화면에서 '등록안함'을 자동 선택했습니다.")
+                time.sleep(2)
+            challenge = _detect_naver_login_challenge(driver)
+            if challenge and not notified:
+                shot = _save_login_challenge_screenshot(driver, challenge)
+                extra = f" screenshot={shot}" if shot else ""
+                print(f"  -> {challenge}: visible Naver login challenge detected.{extra}")
+                print("  -> Complete it in the visible Chrome window; Selenium will keep waiting.")
+                notified = True
+            cookies = {c["name"] for c in driver.get_cookies()}
+            if "NID_AUT" in cookies or "NID_SES" in cookies:
+                print("  -> 로그인 성공.")
+                _save_naver_session(driver)   # quit() 전에 박제해야 살아남는다
+                return True
+            if _logged_in_ui_visible(driver):
+                print("  -> 로그인 UI 확인 완료.")
+                _save_naver_session(driver)
+                return True
+        except Exception:
+            pass
+        if not notified and time.time() - started > 20:
+            print("  -> 아직 로그인 대기 중입니다... (창에서 직접 완료해주세요)")
+            notified = True
+        time.sleep(2)
+
+    raise Exception(f"로그인 실패: {wait_minutes}분 내에 로그인이 완료되지 않았습니다.")
+
+
+# ===================================================================
 # 10. 네이버 카페 포스팅
 # ===================================================================
 
-def post_to_naver_cafe(title, body, image_paths, optional_config):
+def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=None,
+                       draft=False):
     """Selenium으로 네이버 카페에 글을 자동 등록합니다 (OS 포커스 불필요)."""
     print("[4/4] 네이버 카페 포스팅 시작...")
+    if not image_paths:
+        print("[중단] 카페 이미지가 0장이라 임시등록/발행을 하지 않습니다.")
+        return False
+
+    publish_guard = _begin_publish_guard(source_url)
+    if publish_guard is None:
+        return False
 
     # 본문에서 하이라이트 키워드 추출 (마커 제거)
     highlight_keywords = []
@@ -1399,51 +2686,23 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
         if highlight_keywords:
             print(f"  -> 하이라이트 대상 키워드: {highlight_keywords}")
 
-    options = webdriver.ChromeOptions()
-    options.add_argument("--window-size=1000,750")
-    driver = webdriver.Chrome(options=options)
-
     try:
+        driver = make_publisher_driver()
+
         # ── 1단계: 네이버 로그인 ──
-        driver.get("https://nid.naver.com/nidlogin.login")
-        time.sleep(2)
-
-        pyperclip.copy(NAVER_ID)
-        driver.find_element(By.CSS_SELECTOR, "#id").click()
-        driver.find_element(By.CSS_SELECTOR, "#id").send_keys(Keys.CONTROL, 'v')
-        time.sleep(1)
-
-        pyperclip.copy(NAVER_PW)
-        driver.find_element(By.CSS_SELECTOR, "#pw").click()
-        driver.find_element(By.CSS_SELECTOR, "#pw").send_keys(Keys.CONTROL, 'v')
-        time.sleep(1)
-
-        driver.find_element(By.CSS_SELECTOR, "#log\\.login").click()
-        time.sleep(3)
-
-        # 로그인 성공 여부 확인 — 캡챠/2차 인증이 뜨면 수동 처리 대기
-        login_ok = False
-        for _ in range(60):  # 최대 60초 대기
-            current = driver.current_url
-            if 'nidlogin' not in current and 'login' not in current.split('/')[-1]:
-                login_ok = True
-                break
-            time.sleep(1)
-
-        if not login_ok:
-            print("  -> [주의] 로그인 페이지에서 벗어나지 못했습니다. 캡챠/보안인증을 직접 완료해주세요.")
-            # 추가 60초 대기
-            for _ in range(60):
-                current = driver.current_url
-                if 'nidlogin' not in current and 'login' not in current.split('/')[-1]:
-                    login_ok = True
-                    break
-                time.sleep(1)
-
-        if not login_ok:
-            raise Exception("로그인 실패: 2분 내에 로그인이 완료되지 않았습니다.")
-
-        print("  -> 로그인 성공. 카페로 이동합니다.")
+        if ensure_naver_login(driver):
+            # 크롬은 '정상 종료'할 때 쿠키를 디스크에 쓴다. 여기서 한 번 깨끗이
+            # 닫아주지 않으면, 다음 실행 전에 크롬이 강제종료될 경우 방금 만든
+            # 로그인 세션이 통째로 날아가 매번 다시 로그인하게 된다.
+            # 예전에는 여기서 driver.quit() 으로 쿠키 flush 를 노렸지만,
+            # NID 쿠키가 세션 쿠키라 창을 닫는 순간 사라져 매번 재로그인하게 됐다.
+            # 지금은 ensure_naver_login 이 로그인 직후 파일로 박제하므로
+            # 창을 닫을 필요가 없다. 그대로 이어서 글을 쓴다.
+            if os.path.exists(NAVER_SESSION_FILE):
+                print("  -> 세션 파일 저장 확인. 다음 실행부터는 로그인을 건너뜁니다.")
+            else:
+                print("  -> [주의] 세션이 저장되지 않았습니다. 다음 실행에서 "
+                      "다시 로그인해야 할 수 있습니다.")
 
         # ── 2단계: 카페 글쓰기 페이지 진입 ──
         decoded_url = urllib.parse.unquote(CAFE_URL)
@@ -1635,6 +2894,13 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
             print(f"  -> 페이지 소스 (앞 2000자):\n{page_src}")
             raise Exception("글쓰기 에디터의 제목 입력란(.textarea_input)을 찾을 수 없습니다.")
 
+        # ── 게시판(카테고리) 선택 ── 제목보다 먼저. 안 고르면 발행이 막힌다.
+        board = optional_config.get('board_name', '')
+        if board and not select_board(driver, board):
+            raise Exception(
+                f"게시판 '{board}' 를 선택하지 못했습니다. "
+                "config.ini 의 [NAVER] board_name 을 확인하세요.")
+
         title_input = driver.find_element(By.CSS_SELECTOR, ".textarea_input")
         title_input.send_keys(title)
         time.sleep(1)
@@ -1647,6 +2913,15 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
         # 에디터 본문 영역 활성화
         time.sleep(0.5)
 
+        # 본문 입력 전에 글씨체를 먼저 지정해두면 이후 입력이 그 서식을 따라간다
+        apply_editor_font(
+            driver,
+            optional_config.get('font_family', ''),
+            optional_config.get('font_size', ''),
+            select_all=False, tag='start'
+        )
+
+        failed_images = []
         for i, chunk in enumerate(chunks):
             chunk = chunk.strip()
             if chunk:
@@ -1660,40 +2935,17 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
                     time.sleep(0.3)
 
                 img_abs = os.path.abspath(image_paths[i])
-                upload_ok = False
-
-                # 숨겨진 file input 직접 사용 (OS 다이얼로그 우회)
+                # 검증+재시도 포함. 실패해도 글 전체를 죽이지는 않는다.
+                # (구버전의 pyautogui 폴백은 제거했다 — 창이 포커스를 잃은 상태에서
+                #  엉뚱한 프로그램에 경로를 붙여넣고 엔터를 치는 위험한 동작이었다)
                 try:
-                    file_inputs = driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
-                    if file_inputs:
-                        fi = file_inputs[0]
-                        driver.execute_script(
-                            "arguments[0].style.cssText='display:block!important;"
-                            "opacity:0.01!important;position:fixed;top:0;left:0;"
-                            "width:1px;height:1px;';", fi)
-                        fi.send_keys(img_abs)
-                        upload_ok = True
-                        print(f"  -> 이미지 직접 업로드: {os.path.basename(img_abs)}")
-                        time.sleep(5)
-                        driver.execute_script("arguments[0].style.cssText='';", fi)
+                    ok = upload_image(driver, img_abs)
                 except Exception as e:
-                    print(f"  -> 직접 파일 입력 실패: {e}")
-
-                if not upload_ok:
-                    # Fallback: 툴바 버튼 → OS 파일 다이얼로그
-                    try:
-                        driver.find_element(By.CSS_SELECTOR, ".se-image-toolbar-button").click()
-                    except Exception:
-                        driver.find_element(
-                            By.XPATH,
-                            "//button[contains(@class, 'image') or .//span[contains(text(), '사진')]]"
-                        ).click()
-                    time.sleep(3)
-                    pyperclip.copy(img_abs)
-                    pyautogui.hotkey('ctrl', 'v')
-                    time.sleep(1)
-                    pyautogui.press('enter')
-                    time.sleep(5)
+                    print(f"  -> 이미지 처리 중 예외({os.path.basename(img_abs)}): "
+                          f"{str(e)[:120]}")
+                    ok = False
+                if not ok:
+                    failed_images.append(os.path.basename(img_abs))
 
                 _move_cursor_to_end(driver)
                 ActionChains(driver).send_keys(Keys.RETURN).perform()
@@ -1716,31 +2968,72 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
                     ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
                     time.sleep(0.3)
 
-                if cta_link_text and cta_link_url:
-                    _js_insert_text(driver, f"{cta_link_text}\n{cta_link_url}")
-                    time.sleep(0.5)
-                elif cta_link_url:
-                    _js_insert_text(driver, cta_link_url)
-                    time.sleep(0.5)
+                if cta_link_url:
+                    if cta_link_text:
+                        _js_insert_text(driver, cta_link_text)
+                        ActionChains(driver).send_keys(Keys.RETURN).perform()
+                        time.sleep(0.3)
+                    # URL 뒤에 Enter → 네이버가 미리보기 카드로 자동 변환
+                    insert_link_block(driver, cta_link_url, as_card=True)
 
                 time.sleep(1)
 
-        # ── 6단계: 하이라이트 적용 (JS) ──
+        # ── 5.5단계: 맨 하단 원본 영상 링크 ──
+        if source_url:
+            print("  -> 원본 영상 링크 삽입 중...")
+            _move_cursor_to_end(driver)
+            ActionChains(driver).send_keys(Keys.RETURN * 2).perform()
+            time.sleep(0.3)
+
+            label = optional_config.get('source_label', '▶ 원본 영상')
+            if label:
+                _js_insert_text(driver, label)
+                ActionChains(driver).send_keys(Keys.RETURN).perform()
+                time.sleep(0.3)
+
+            insert_link_block(
+                driver, source_url,
+                as_card=optional_config.get('source_link_card', False)
+            )
+
+        # ── 6단계: 글씨체 일괄 재적용 ──
+        if optional_config.get('font_apply_at_end', True) and (
+                optional_config.get('font_family') or optional_config.get('font_size')):
+            apply_editor_font(
+                driver,
+                optional_config.get('font_family', ''),
+                optional_config.get('font_size', ''),
+                select_all=True, tag='end'
+            )
+
+        # ── 7단계: 하이라이트 적용 (JS) ──
         if highlight_keywords and optional_config.get('highlight_enabled'):
             print("  -> 하이라이트 서식 적용 중...")
             apply_highlight_js(driver, highlight_keywords, optional_config.get('highlight_color', '#FFFF00'))
 
-        # ── 7단계: 등록 ──
+        # ── 8단계: 임시저장 또는 등록 ──
+        if failed_images:
+            print(f"\n  ** [경고] 이미지 {len(failed_images)}장이 본문에 안 들어갔습니다: "
+                  f"{', '.join(failed_images)}")
+            print("  ** 임시저장본에서 직접 확인하고 필요하면 수동으로 넣어주세요.\n")
+        else:
+            total = _count_editor_images(driver)
+            shown = total if total >= 0 else '확인불가'
+            print(f"  -> 본문 이미지 최종 {shown}장 (요청 {len(image_paths)}장)")
+
+        if draft:
+            save_as_draft(driver)
+            print("\n임시저장 완료. 카페에서 내용 확인하고 직접 발행하세요.")
+            print("브라우저는 열어둡니다. 확인 끝나면 창을 닫으세요.")
+            return
+
         print("  -> 전체공개/퍼가기 여부는 카페 게시판 기본 설정을 따릅니다.")
-        try:
-            driver.find_element(By.CSS_SELECTOR, "button.btn_register").click()
-        except Exception:
-            driver.find_element(
-                By.XPATH,
-                "//*[contains(text(), '등록') and not(contains(text(), '임시'))]"
-                " | //*[contains(@class, 'register') or contains(@class, 'publish')]"
-            ).click()
-        time.sleep(3)
+        article_url = publish_post(driver)
+        if not article_url:
+            print("\n  ** [경고] 발행 버튼을 누르지 못했습니다. 글은 에디터에 그대로 있으니")
+            print("  ** 창에서 직접 '등록'을 눌러주세요. 브라우저는 열어둡니다.")
+            return
+        _mark_published_source(publish_guard, title, article_url)
 
         driver.close()
         driver.switch_to.window(driver.window_handles[0])
@@ -1760,6 +3053,8 @@ def post_to_naver_cafe(title, body, image_paths, optional_config):
         )
         root.destroy()
         time.sleep(300)
+    finally:
+        _release_publish_guard(publish_guard)
 
 
 # ===================================================================

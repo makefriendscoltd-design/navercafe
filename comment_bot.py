@@ -494,8 +494,8 @@ def _member_join_rows(driver):
         "if(x)o.push(x);}return o;") or []
     out = []
     for x in texts:
-        if not re.match(r"^.+?\([A-Za-z0-9_\-]{2,40}\)", x):
-            continue  # 멤버 행(별명(아이디)) 아니면 스킵
+        if not re.match(r"^.+?\([A-Za-z0-9_\-*]{2,40}\)", x):
+            continue  # 멤버 행(별명(아이디)) 아니면 스킵 — 아이디는 dlgu**** 식으로 마스킹될 수 있음
         m = _MEMBER_DATE_RE.search(x)
         if m:
             out.append(datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3))))

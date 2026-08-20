@@ -3,20 +3,40 @@ config.ini
 
 # Comment bot state & dedicated Chrome profile (cookies/session)
 comment_bot_seen.json
+comment_bot_events.json
+comment_bot_heartbeat.txt
+comment_bot_lastreport.json
+comment_bot_watch.lock
+comment_bot_weekly.json
 chrome_profile_commentbot/
 comment_bot.log
+
+# Cafe publisher: dedicated Chrome profile (naver session cookies)
+chrome_profile_publisher/
+
+# Publisher artifacts (generated per run)
+last_manuscript.txt
+last_body_preview.txt
+editor_toolbar_dump_*.html
+published_posts.json
+.publish_locks/
 
 # Member extractor: session profile, exported personal data, diagnostic logs
 chrome_profile_extractor/
 members.csv
 extract_*.log
 backfill_*.log
+backfill_*.out
+startup_*.out
+startup_*.err
+*.bak_*
 
 # Sensitive: exported browser cookies
 cookies.txt
 
 # Diagnostic screenshots
 comment_*.png
+naver_login_*.png
 
 # Python
 __pycache__/
@@ -36,3 +56,6 @@ nul
 .idea/
 .DS_Store
 Thumbs.db
+
+# 네이버 로그인 쿠키 박제본 (인증정보)
+naver_session.json
