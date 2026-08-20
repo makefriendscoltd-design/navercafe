@@ -86,99 +86,101 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
 
     try:
         async with NotebookLMClient.from_storage(profile=profile or None) as client:
-            # 0.7.3의 AuthTokens에는 account_email이 있지만 최신 main의
-            # get_account_email() 메서드는 아직 PyPI 0.7.3에 없다.
-            email = getattr(client.auth, 'account_email', None)
-            log(f"  -> 노트북LM 계정: {email or '(확인 실패)'}")
-
             created = False
-            if notebook_id:
-                try:
-                    nb = await client.notebooks.get(notebook_id)
-                except NotebookNotFoundError:
-                    raise NotebookLMError(
-                        f"notebook_id '{notebook_id}' 를 찾을 수 없습니다.\n"
-                        "  config.ini의 [NOTEBOOKLM] notebook_id 를 확인하거나 비워두세요.")
-                log(f"  -> 기존 노트북 사용: {nb.title} ({nb.id})")
-            else:
-                vid = _video_id(youtube_url) or 'video'
-                title = f"{title_prefix} {datetime.now():%Y-%m-%d} {vid}".strip()
-                nb = await client.notebooks.create(title)
-                created = True
-                log(f"  -> 새 노트북 생성: {title} ({nb.id})")
-
-            # add_url은 중복 검사를 하지 않는다. 같은 영상을 다시 돌리면
-            # 소스가 계속 쌓여서 계정 상한(무료 50개)에 닿으므로 먼저 확인한다.
+            nb = None
             src = None
             reused = False
-            vid = _video_id(youtube_url)
-            if vid:
-                for s in await client.sources.list(nb.id):
-                    if _video_id(s.url or '') == vid:
-                        src = s
-                        reused = True
-                        break
+            try:
+                # 0.7.3의 AuthTokens에는 account_email이 있지만 최신 main의
+                # get_account_email() 메서드는 아직 PyPI 0.7.3에 없다.
+                email = getattr(client.auth, 'account_email', None)
+                log(f"  -> 노트북LM 계정: {email or '(확인 실패)'}")
 
-            if reused:
-                log(f"  -> 이미 등록된 영상 재사용: {src.title or src.id}")
-                if src.status != SourceStatus.READY:
-                    src = await client.sources.wait_until_ready(
-                        nb.id, src.id, timeout=wait_timeout)
-            else:
-                log(f"  -> 영상 소스 추가 중 (최대 {int(wait_timeout)}초 대기)...")
-                src = await client.sources.add_url(
-                    nb.id, youtube_url, wait=True, wait_timeout=wait_timeout)
-                log(f"  -> 소스 준비 완료: {src.title or src.id}")
-
-            # 기존 노트북을 재사용할 때 이번 영상만 참조하도록 범위를 묶는다.
-            # 안 묶으면 노트북에 쌓인 과거 소스까지 답변에 섞인다.
-            source_ids = [src.id] if scope_to_new_source else None
-            if source_ids:
-                log("  -> 이번 영상 소스만 참조하도록 범위 지정")
-
-            log("  -> 원고 생성 요청 중...")
-            res = await client.chat.ask(nb.id, prompt, source_ids=source_ids)
-            answer = (res.answer or '').strip()
-
-            # 노트북LM이 '## 소제목' 지시를 무시하고 밋밋한 문단만 뱉을 때가 있다.
-            # 그대로 두면 인용구 블록이 하나도 안 생기므로 한 번만 다시 시킨다.
-            if retry_if_no_heading and _heading_count(answer) < 2:
-                log(f"  -> [재시도] 소제목이 {_heading_count(answer)}개뿐. 형식 강조해서 다시 요청")
-                strict = (prompt + "\n\n(반드시 지킬 것) 소제목은 줄 맨 앞에 '## '를 붙여 "
-                                   "마크다운 헤딩으로 출력해라. 소제목 4~6개는 필수다.")
-                res2 = await client.chat.ask(nb.id, strict, source_ids=source_ids)
-                answer2 = (res2.answer or '').strip()
-                if _heading_count(answer2) > _heading_count(answer):
-                    answer = answer2
-                    log(f"  -> 재시도 성공: 소제목 {_heading_count(answer)}개")
+                if notebook_id:
+                    try:
+                        nb = await client.notebooks.get(notebook_id)
+                    except NotebookNotFoundError:
+                        raise NotebookLMError(
+                            f"notebook_id '{notebook_id}' 를 찾을 수 없습니다.\n"
+                            "  config.ini의 [NOTEBOOKLM] notebook_id 를 확인하거나 비워두세요.")
+                    log(f"  -> 기존 노트북 사용: {nb.title} ({nb.id})")
                 else:
-                    log("  -> [주의] 재시도해도 소제목 없음. 소제목 없이 진행합니다.")
+                    vid = _video_id(youtube_url) or 'video'
+                    title = f"{title_prefix} {datetime.now():%Y-%m-%d} {vid}".strip()
+                    nb = await client.notebooks.create(title)
+                    created = True
+                    log(f"  -> 새 노트북 생성: {title} ({nb.id})")
 
-            if created and delete_after:
-                try:
-                    await client.notebooks.delete(nb.id)
-                    log("  -> 임시 노트북 삭제 완료")
-                except Exception as e:
-                    log(f"  -> [주의] 임시 노트북 삭제 실패: {e}")
-            elif not created and delete_source_after and not reused:
-                # 기존 노트북 재사용 시 소스가 무한정 쌓이는 걸 막는다.
-                # 원래 있던 소스(reused)는 내가 만든 게 아니므로 절대 건드리지 않는다.
-                try:
-                    await client.sources.delete(nb.id, src.id)
-                    log("  -> 추가했던 영상 소스 정리 완료")
-                except Exception as e:
-                    log(f"  -> [주의] 소스 정리 실패(수동 삭제 필요): {e}")
+                # add_url은 중복 검사를 하지 않는다. 같은 영상을 다시 돌리면
+                # 소스가 계속 쌓여서 계정 상한(무료 50개)에 닿으므로 먼저 확인한다.
+                vid = _video_id(youtube_url)
+                if vid:
+                    for candidate in await client.sources.list(nb.id):
+                        if _video_id(candidate.url or '') == vid:
+                            src = candidate
+                            reused = True
+                            break
 
-            if not answer:
-                raise NotebookLMError("노트북LM이 빈 응답을 반환했습니다.")
+                if reused:
+                    log(f"  -> 이미 등록된 영상 재사용: {src.title or src.id}")
+                    if src.status != SourceStatus.READY:
+                        src = await client.sources.wait_until_ready(
+                            nb.id, src.id, timeout=wait_timeout)
+                else:
+                    log(f"  -> 영상 소스 추가 중 (최대 {int(wait_timeout)}초 대기)...")
+                    src = await client.sources.add_url(
+                        nb.id, youtube_url, wait=True, wait_timeout=wait_timeout)
+                    log(f"  -> 소스 준비 완료: {src.title or src.id}")
 
-            return answer, nb.id
+                # 기존 노트북을 재사용할 때 이번 영상만 참조하도록 범위를 묶는다.
+                # 안 묶으면 노트북에 쌓인 과거 소스까지 답변에 섞인다.
+                source_ids = [src.id] if scope_to_new_source else None
+                if source_ids:
+                    log("  -> 이번 영상 소스만 참조하도록 범위 지정")
+
+                log("  -> 원고 생성 요청 중...")
+                res = await client.chat.ask(nb.id, prompt, source_ids=source_ids)
+                answer = (res.answer or '').strip()
+
+                # 노트북LM이 '## 소제목' 지시를 무시하고 밋밋한 문단만 뱉을 때가 있다.
+                # 그대로 두면 인용구 블록이 하나도 안 생기므로 한 번만 다시 시킨다.
+                if retry_if_no_heading and _heading_count(answer) < 2:
+                    log(f"  -> [재시도] 소제목이 {_heading_count(answer)}개뿐. 형식 강조해서 다시 요청")
+                    strict = (prompt + "\n\n(반드시 지킬 것) 소제목은 줄 맨 앞에 '## '를 붙여 "
+                                       "마크다운 헤딩으로 출력해라. 소제목 4~6개는 필수다.")
+                    res2 = await client.chat.ask(nb.id, strict, source_ids=source_ids)
+                    answer2 = (res2.answer or '').strip()
+                    if _heading_count(answer2) > _heading_count(answer):
+                        answer = answer2
+                        log(f"  -> 재시도 성공: 소제목 {_heading_count(answer)}개")
+                    else:
+                        log("  -> [주의] 재시도해도 소제목 없음. 소제목 없이 진행합니다.")
+
+                if not answer:
+                    raise NotebookLMError("노트북LM이 빈 응답을 반환했습니다.")
+
+                return answer, nb.id
+            finally:
+                if created and delete_after and nb is not None:
+                    try:
+                        await client.notebooks.delete(nb.id)
+                        log("  -> 임시 노트북 삭제 완료")
+                    except Exception as e:
+                        log(f"  -> [주의] 임시 노트북 삭제 실패: {e}")
+                elif (not created and delete_source_after and not reused
+                      and nb is not None and src is not None):
+                    # 기존 노트북 재사용 시 이번에 만든 소스만 정리한다.
+                    try:
+                        await client.sources.delete(nb.id, src.id)
+                        log("  -> 추가했던 영상 소스 정리 완료")
+                    except Exception as e:
+                        log(f"  -> [주의] 소스 정리 실패(수동 삭제 필요): {e}")
 
     except AuthError as e:
         raise NotebookLMError(
             f"노트북LM 인증 실패: {e}\n"
             "  터미널에서 아래를 한 번 실행하세요:\n"
-            "    notebooklm login --browser-cookies chrome\n"
+            "    notebooklm login --browser-cookies edge --include-domains youtube\n"
             "  (안 되면)  notebooklm login") from e
 
 
