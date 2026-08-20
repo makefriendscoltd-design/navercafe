@@ -19,6 +19,7 @@ from publisher_contract import (
     write_result,
 )
 from publisher_notify import send_verified_article
+from youtube_cafe_auto import _parse_json3
 
 
 class Reference5854ContractTests(unittest.TestCase):
@@ -117,6 +118,20 @@ class ResultAndNotificationTests(unittest.TestCase):
         request = call.call_args.args[0]
         self.assertIn(b"message_thread_id=77", request.data)
         self.assertIn(b"chat_id=-100123", request.data)
+
+    def test_json3_caption_parser_keeps_text_and_deduplicates_adjacent_events(self):
+        payload = {
+            "events": [
+                {"segs": [{"utf8": "첫 문장"}]},
+                {"segs": [{"utf8": "첫 문장"}]},
+                {"segs": [{"utf8": "둘째"}, {"utf8": " 문장"}]},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "caption.json3")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False)
+            self.assertEqual(_parse_json3(path), "첫 문장 둘째 문장")
 
 
 if __name__ == "__main__":

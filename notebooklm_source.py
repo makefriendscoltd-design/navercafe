@@ -75,7 +75,8 @@ def _heading_count(text):
 
 async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
                        scope_to_new_source, wait_timeout, delete_after,
-                       delete_source_after, retry_if_no_heading, profile, log):
+                       delete_source_after, retry_if_no_heading, profile, log,
+                       source_text=None):
     try:
         from notebooklm import NotebookLMClient, SourceStatus
         from notebooklm.exceptions import AuthError, NotebookNotFoundError
@@ -111,17 +112,27 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
                     created = True
                     log(f"  -> 새 노트북 생성: {title} ({nb.id})")
 
+                vid = _video_id(youtube_url)
                 # add_url은 중복 검사를 하지 않는다. 같은 영상을 다시 돌리면
                 # 소스가 계속 쌓여서 계정 상한(무료 50개)에 닿으므로 먼저 확인한다.
-                vid = _video_id(youtube_url)
-                if vid:
+                if vid and not source_text:
                     for candidate in await client.sources.list(nb.id):
                         if _video_id(candidate.url or '') == vid:
                             src = candidate
                             reused = True
                             break
 
-                if reused:
+                if source_text:
+                    log(f"  -> 자동자막 텍스트 소스 추가 중 ({len(source_text)}자)...")
+                    src = await client.sources.add_text(
+                        nb.id,
+                        f"YouTube transcript {vid or 'video'}",
+                        source_text,
+                        wait=True,
+                        wait_timeout=wait_timeout,
+                    )
+                    log(f"  -> 텍스트 소스 준비 완료: {src.title or src.id}")
+                elif reused:
                     log(f"  -> 이미 등록된 영상 재사용: {src.title or src.id}")
                     if src.status != SourceStatus.READY:
                         src = await client.sources.wait_until_ready(
@@ -211,6 +222,44 @@ def fetch_manuscript(youtube_url, cfg, log=print, template=None):
         cfg.get('profile', ''),
         log,
     ))
+
+    return _finish_manuscript(answer, cfg, log)
+
+
+def fetch_manuscript_from_text(youtube_url, source_text, cfg, log=print, template=None):
+    """YouTube 자동자막 텍스트를 NotebookLM 소스로 넣어 원고를 생성합니다."""
+    if not youtube_url or not (source_text or '').strip():
+        raise NotebookLMError("노트북LM 텍스트 소스에 URL과 자동자막이 필요합니다.")
+
+    template = template or cfg.get('template', '')
+    if template == 'reference-5854':
+        prompt = cfg.get('reference_prompt') or REFERENCE_5854_PROMPT
+        retry_if_no_heading = False
+    else:
+        prompt = cfg.get('prompt') or DEFAULT_PROMPT
+        retry_if_no_heading = cfg.get('retry_if_no_heading', True)
+
+    log("[노트북LM] 자동자막 텍스트 폴백 시작...")
+    answer, _ = asyncio.run(_fetch_async(
+        youtube_url,
+        prompt,
+        cfg.get('notebook_id', ''),
+        cfg.get('notebook_title_prefix', '[자동]'),
+        cfg.get('scope_to_new_source', True),
+        float(cfg.get('source_wait_timeout', 300)),
+        cfg.get('delete_after', False),
+        cfg.get('delete_source_after', False),
+        retry_if_no_heading,
+        cfg.get('profile', ''),
+        log,
+        source_text=(source_text or '').strip(),
+    ))
+
+    return _finish_manuscript(answer, cfg, log)
+
+
+def _finish_manuscript(answer, cfg, log):
+    """NotebookLM 응답의 각주·홍보 꼬리를 공통 정리합니다."""
 
     answer = _strip_citations(answer)
     log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")

@@ -889,8 +889,21 @@ def main(argv=None):
 
         # ── 0. 원고가 비었으면 NotebookLM에서 가져온다 ──
         if not manuscript:
-            manuscript = nlm.fetch_manuscript(
-                notebook_url, nlm_cfg, template=template)
+            try:
+                manuscript = nlm.fetch_manuscript(
+                    notebook_url, nlm_cfg, template=template)
+            except Exception as source_error:
+                video_id = auto.extract_video_id(notebook_url)
+                if not video_id:
+                    raise
+                print(f"  -> URL 소스 추가 실패, 자동자막 텍스트 폴백: {source_error}")
+                transcript = auto.get_transcript(video_id, allow_audio_ai=False)
+                if not transcript:
+                    raise PublisherContractError(
+                        "NotebookLM URL 소스와 무료 자동자막 추출이 모두 실패했습니다."
+                    ) from source_error
+                manuscript = nlm.fetch_manuscript_from_text(
+                    notebook_url, transcript, nlm_cfg, template=template)
             with open(os.path.join(SCRIPT_DIR, 'last_manuscript.txt'), 'w',
                       encoding='utf-8') as f:
                 f.write(manuscript)

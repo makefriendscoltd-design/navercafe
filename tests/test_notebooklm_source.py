@@ -37,6 +37,21 @@ class NotebookLMTemplateTests(unittest.TestCase):
         self.assertIn("정확히 5개", nlm.REFERENCE_5854_PROMPT)
         self.assertIn("영상에 없는 내용은", nlm.REFERENCE_5854_PROMPT)
 
+    def test_text_fallback_passes_transcript_as_notebook_source(self):
+        manuscript = "\n\n[[SCENE]]\n\n".join(f"구간 {i}" for i in range(1, 7))
+        fake_fetch = mock.AsyncMock(return_value=(manuscript, "notebook-id"))
+        cfg = {"strip_promo": False}
+
+        with mock.patch.object(nlm, "_fetch_async", fake_fetch):
+            result = nlm.fetch_manuscript_from_text(
+                "https://youtu.be/abcdefghijk", "자동자막 원문", cfg,
+                log=lambda _message: None,
+                template="reference-5854",
+            )
+
+        self.assertEqual(result, manuscript)
+        self.assertEqual(fake_fetch.call_args.kwargs["source_text"], "자동자막 원문")
+
     def test_temporary_notebook_is_deleted_when_source_add_fails(self):
         deleted = []
 

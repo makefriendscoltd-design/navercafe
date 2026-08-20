@@ -631,6 +631,24 @@ def _parse_srt(srt_path):
     return ' '.join(text_parts)
 
 
+def _parse_json3(json_path):
+    """YouTube json3 자동자막을 중복 공백 없이 평문으로 변환합니다."""
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+    except Exception:
+        return ''
+
+    text_parts = []
+    for event in payload.get('events') or []:
+        segments = event.get('segs') or []
+        text = ''.join(str(segment.get('utf8') or '') for segment in segments)
+        text = re.sub(r'\s+', ' ', text).strip()
+        if text and (not text_parts or text != text_parts[-1]):
+            text_parts.append(text)
+    return ' '.join(text_parts)
+
+
 def parse_subtitle_file(path):
     """업로드된 자막 파일(.vtt/.srt/.txt)을 텍스트로 변환합니다."""
     ext = os.path.splitext(path)[1].lower()
@@ -638,6 +656,8 @@ def parse_subtitle_file(path):
         return _parse_vtt(path)
     elif ext == '.srt':
         return _parse_srt(path)
+    elif ext == '.json3':
+        return _parse_json3(path)
     else:
         try:
             with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -646,7 +666,7 @@ def parse_subtitle_file(path):
             return ''
 
 
-def get_transcript(video_id):
+def get_transcript(video_id, allow_audio_ai=True):
     """유튜브 영상의 자막을 텍스트로 추출합니다.
     공개/일부공개: YouTubeTranscriptApi 사용.
     회원전용 등 실패 시: yt-dlp + 브라우저 쿠키로 재시도.
@@ -672,7 +692,8 @@ def get_transcript(video_id):
             ydl_opts = {
                 'writesubtitles': True,
                 'writeautomaticsub': True,
-                'subtitleslangs': ['ko', 'en'],
+                'subtitleslangs': ['ko-orig', 'ko', 'en'],
+                'subtitlesformat': 'json3/vtt',
                 'skip_download': True,
                 'quiet': True,
                 'no_warnings': True,
@@ -682,10 +703,12 @@ def get_transcript(video_id):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([url])
 
-            for lang in ['ko', 'en', 'ko-orig']:
-                sub_file = f"{sub_base}.{lang}.vtt"
-                if os.path.exists(sub_file):
-                    text = _parse_vtt(sub_file)
+            for lang in ['ko-orig', 'ko', 'en']:
+                for extension in ['json3', 'vtt']:
+                    sub_file = f"{sub_base}.{lang}.{extension}"
+                    if not os.path.exists(sub_file):
+                        continue
+                    text = parse_subtitle_file(sub_file)
                     try:
                         os.remove(sub_file)
                     except Exception:
@@ -697,13 +720,17 @@ def get_transcript(video_id):
             print(f"  -> yt-dlp({label}) 실패: {e}")
             continue
 
-    for f in glob.glob(f"{sub_base}*.vtt"):
+    for f in glob.glob(f"{sub_base}*.vtt") + glob.glob(f"{sub_base}*.json3"):
         try:
             os.remove(f)
         except Exception:
             pass
 
     # 3차: 오디오 다운로드 + Gemini 음성 변환
+    if not allow_audio_ai:
+        print("  -> 안전 모드: 유료 오디오 AI 변환은 실행하지 않습니다.")
+        return None
+
     print("  -> 오디오 다운로드 + Gemini 음성 변환 시도...")
     for label, cookie_opts in _cookie_configs():
         audio_path = None
