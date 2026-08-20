@@ -52,8 +52,9 @@ REFERENCE_5854_PROMPT = """이 영상 내용만 근거로 네이버 카페에 �
 문체와 내용:
 - 존댓말의 담백한 구어체로 짧고 명확하게 쓸 것
 - 영상에 나온 구체적인 숫자, 도구명, 회사명, 사례를 살릴 것
+- 자동자막의 발음 오인식을 그대로 옮기지 말 것. 문맥상 해당할 때는 나민수, 메이크패밀리, AI맥스, Qwen3-TTS, Codex, VOX, 적립금 표기를 사용할 것
 - 영상에 없는 내용은 추측하거나 지어내지 말 것
-- 구독, 외부 커뮤니티 가입, 제휴 링크 등 영상 제작자의 홍보 문구는 제외할 것
+- 구독, 후기 보상, 판매 가격, 외부 커뮤니티 가입, 제휴 링크 등 영상 제작자의 홍보 문구는 제외할 것
 - 이모지와 해시태그를 쓰지 말 것
 
 설명이나 코드 블록 없이 본문과 [[SCENE]] 마커만 출력해줘."""
@@ -262,6 +263,7 @@ def _finish_manuscript(answer, cfg, log):
     """NotebookLM 응답의 각주·홍보 꼬리를 공통 정리합니다."""
 
     answer = _strip_citations(answer)
+    answer = _normalize_known_terms(answer, log=log)
     log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
 
     if cfg.get('strip_promo', True):
@@ -271,6 +273,27 @@ def _finish_manuscript(answer, cfg, log):
             log(f"  -> 홍보 제거 후 {len(answer)}자 ({before - len(answer)}자 삭감)")
 
     return answer
+
+
+_KNOWN_TERM_REPLACEMENTS = (
+    (re.compile(r'다민수'), '나민수'),
+    (re.compile(r'맥패밀리'), '메이크패밀리'),
+    (re.compile(r'(?<![A-Za-z0-9])QN[\s-]?3(?![A-Za-z0-9])', re.IGNORECASE), 'Qwen3-TTS'),
+    (re.compile(r'복스\s*스타일|복스타일'), 'VOX 스타일'),
+    (re.compile(r'정립금'), '적립금'),
+)
+
+
+def _normalize_known_terms(text, log=print):
+    """강의 자동자막에서 반복 확인된 고유명사 오인식을 교정합니다."""
+    changed = []
+    for pattern, replacement in _KNOWN_TERM_REPLACEMENTS:
+        text, count = pattern.subn(replacement, text)
+        if count:
+            changed.append(f"{replacement} {count}건")
+    if changed:
+        log(f"  -> 자동자막 고유명사 교정: {', '.join(changed)}")
+    return text
 
 
 _SOURCE_BLOCK = re.compile(
@@ -324,6 +347,11 @@ _PROMO_SIGNALS = re.compile(
     r'무료로\s*받아|무료로\s*다운|아래\s*링크|링크에서\s*(?:받|다운|확인)|'
     r'구독(?:하고|해\s*주|자|을\s*눌)|채널을?\s*구독|'
     r'그의\s*(?:강의|코스|프로그램)|유료\s*(?:강의|코스|프로그램)에?\s*(?:등록|참여)|'
+    r'후기.{0,40}(?:무료|보상|적립금|\d+\s*만\s*원)|'
+    r'예약\s*판매|선착순\s*판매|구매자.{0,40}(?:인상|\d+\s*(?:천|만)\s*원)|'
+    r'결제마다.{0,30}(?:인상|\d+\s*(?:천|만)\s*원)|가격.{0,20}인상|'
+    r'전자책.{0,40}(?:구매|가격|\d+\s*만\s*원)|'
+    r'(?:SNS|네이버\s*카페).{0,30}(?:적립금|\d+\s*만\s*원)|'
     r'할인\s*코드|프로모션\s*코드|제휴\s*링크|'
     r'school\.com|skool\.com|patreon|gumroad|discord\.gg)',
     re.IGNORECASE)

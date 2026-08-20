@@ -36,6 +36,32 @@ class NotebookLMTemplateTests(unittest.TestCase):
         self.assertIn("정확히 6개의 텍스트 구간", nlm.REFERENCE_5854_PROMPT)
         self.assertIn("정확히 5개", nlm.REFERENCE_5854_PROMPT)
         self.assertIn("영상에 없는 내용은", nlm.REFERENCE_5854_PROMPT)
+        self.assertIn("Qwen3-TTS", nlm.REFERENCE_5854_PROMPT)
+        self.assertIn("후기 보상", nlm.REFERENCE_5854_PROMPT)
+
+    def test_known_caption_terms_are_normalized(self):
+        raw = "맥패밀리의 다민수 대표가 QN3와 복스 스타일을 소개하고 정립금을 안내했습니다."
+        result = nlm._normalize_known_terms(raw, log=lambda _message: None)
+
+        self.assertEqual(
+            result,
+            "메이크패밀리의 나민수 대표가 Qwen3-TTS와 VOX 스타일을 소개하고 적립금을 안내했습니다.",
+        )
+
+    def test_reference_promo_pricing_and_rewards_are_removed(self):
+        text = (
+            "PDF 원고를 전자책으로 조판하고 판매 상세 페이지를 만드는 시스템을 공개했습니다.\n\n"
+            "후기 작성자에게 노션 자료를 무료로 제공합니다. "
+            "전자책을 9만 9천 원에 선착순 판매합니다. "
+            "네이버 카페 후기에는 적립금 1만 원을 드립니다."
+        )
+
+        result = nlm.strip_promo_tail(text, log=lambda _message: None)
+
+        self.assertEqual(
+            result,
+            "PDF 원고를 전자책으로 조판하고 판매 상세 페이지를 만드는 시스템을 공개했습니다.",
+        )
 
     def test_text_fallback_passes_transcript_as_notebook_source(self):
         manuscript = "\n\n[[SCENE]]\n\n".join(f"구간 {i}" for i in range(1, 7))
