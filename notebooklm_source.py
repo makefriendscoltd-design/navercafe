@@ -224,7 +224,10 @@ def fetch_manuscript(youtube_url, cfg, log=print, template=None):
         log,
     ))
 
-    return _finish_manuscript(answer, cfg, log)
+    return _finish_manuscript(
+        answer, cfg, log,
+        expected_scene_markers=5 if template == 'reference-5854' else None,
+    )
 
 
 def fetch_manuscript_from_text(youtube_url, source_text, cfg, log=print, template=None):
@@ -256,21 +259,28 @@ def fetch_manuscript_from_text(youtube_url, source_text, cfg, log=print, templat
         source_text=(source_text or '').strip(),
     ))
 
-    return _finish_manuscript(answer, cfg, log)
+    return _finish_manuscript(
+        answer, cfg, log,
+        expected_scene_markers=5 if template == 'reference-5854' else None,
+    )
 
 
-def _finish_manuscript(answer, cfg, log):
+def _finish_manuscript(answer, cfg, log, expected_scene_markers=None):
     """NotebookLM 응답의 각주·홍보 꼬리를 공통 정리합니다."""
 
     answer = _strip_citations(answer)
     answer = _normalize_known_terms(answer, log=log)
-    log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
 
     if cfg.get('strip_promo', True):
         before = len(answer)
         answer = strip_promo_tail(answer, log=log)
         if len(answer) != before:
             log(f"  -> 홍보 제거 후 {len(answer)}자 ({before - len(answer)}자 삭감)")
+
+    if expected_scene_markers is not None:
+        answer = _ensure_scene_markers(answer, expected_scene_markers, log=log)
+
+    log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
 
     return answer
 
@@ -294,6 +304,75 @@ def _normalize_known_terms(text, log=print):
     if changed:
         log(f"  -> 자동자막 고유명사 교정: {', '.join(changed)}")
     return text
+
+
+_SCENE_MARKER = '[[SCENE]]'
+
+
+def _text_signature(text):
+    return re.sub(r'\s+', '', (text or '').replace(_SCENE_MARKER, ''))
+
+
+def _split_scene_section(section):
+    """가운데에 가까운 문장/문단 경계에서 한 구간을 둘로 나눕니다."""
+    midpoint = len(section) / 2
+    candidates = [
+        match.end()
+        for match in re.finditer(r'[.!?](?:["”’])?(?=\s|$)', section)
+        if section[:match.end()].strip() and section[match.end():].strip()
+    ]
+    if not candidates:
+        candidates = [
+            match.end()
+            for match in re.finditer(r'\n\s*\n|\n|\s+', section)
+            if section[:match.end()].strip() and section[match.end():].strip()
+        ]
+    if not candidates:
+        return None
+    split_at = min(candidates, key=lambda value: abs(value - midpoint))
+    return section[:split_at].strip(), section[split_at:].strip()
+
+
+def _ensure_scene_markers(text, expected, log=print):
+    """장면 마커 수를 본문 무손실로 맞춰 6구간/5이미지 계약을 안정화합니다."""
+    current = (text or '').count(_SCENE_MARKER)
+    if current == expected:
+        return text
+
+    original_signature = _text_signature(text)
+    sections = [
+        section.strip()
+        for section in re.split(r'\s*\[\[SCENE\]\]\s*', (text or '').strip())
+        if section.strip()
+    ]
+    wanted_sections = expected + 1
+
+    while len(sections) < wanted_sections:
+        split = None
+        for index in sorted(range(len(sections)), key=lambda idx: len(sections[idx]), reverse=True):
+            candidate = _split_scene_section(sections[index])
+            if candidate:
+                split = (index, candidate)
+                break
+        if split is None:
+            raise NotebookLMError(
+                f"장면 구분 마커를 {expected}개로 복구할 문장 경계가 없습니다."
+            )
+        index, (left, right) = split
+        sections[index:index + 1] = [left, right]
+
+    while len(sections) > wanted_sections:
+        index = min(
+            range(len(sections) - 1),
+            key=lambda idx: len(sections[idx]) + len(sections[idx + 1]),
+        )
+        sections[index:index + 2] = [f"{sections[index]} {sections[index + 1]}".strip()]
+
+    repaired = f"\n\n{_SCENE_MARKER}\n\n".join(sections)
+    if repaired.count(_SCENE_MARKER) != expected or _text_signature(repaired) != original_signature:
+        raise NotebookLMError("장면 구분 마커 자동 복구 중 본문 무손실 검증에 실패했습니다.")
+    log(f"  -> 장면 구분 마커 자동 복구: {current}개 -> {expected}개")
+    return repaired
 
 
 _SOURCE_BLOCK = re.compile(

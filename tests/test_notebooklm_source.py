@@ -63,6 +63,22 @@ class NotebookLMTemplateTests(unittest.TestCase):
             "PDF 원고를 전자책으로 조판하고 판매 상세 페이지를 만드는 시스템을 공개했습니다.",
         )
 
+    def test_missing_scene_marker_is_repaired_without_changing_text(self):
+        sections = [
+            "첫 문장입니다. 둘째 문장도 있습니다.",
+            "세 번째 구간입니다.",
+            "네 번째 구간입니다.",
+            "다섯 번째 구간입니다.",
+            "여섯 번째가 빠진 출력입니다.",
+        ]
+        raw = "\n\n[[SCENE]]\n\n".join(sections)
+
+        result = nlm._ensure_scene_markers(raw, 5, log=lambda _message: None)
+
+        self.assertEqual(result.count("[[SCENE]]"), 5)
+        self.assertEqual(nlm._text_signature(result), nlm._text_signature(raw))
+        self.assertEqual(len(result.split("[[SCENE]]")), 6)
+
     def test_text_fallback_passes_transcript_as_notebook_source(self):
         manuscript = "\n\n[[SCENE]]\n\n".join(f"구간 {i}" for i in range(1, 7))
         fake_fetch = mock.AsyncMock(return_value=(manuscript, "notebook-id"))
