@@ -39,6 +39,26 @@ DEFAULT_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴
 제목이나 머리말 없이 본문만 출력해줘."""
 
 
+REFERENCE_5854_PROMPT = """이 영상 내용만 근거로 네이버 카페에 올릴 한국어 정리글을 작성해줘.
+
+반드시 지킬 출력 형식:
+- 제목, 머리말, 소제목, 마크다운 헤딩, 불릿, 번호 목록을 쓰지 말 것
+- 본문을 정확히 6개의 텍스트 구간으로 나눌 것
+- 앞의 5개 구간 뒤에는 각각 독립된 한 줄로 [[SCENE]]을 넣을 것
+- 따라서 [[SCENE]]은 정확히 5개이고, 마지막 6번째 구간 뒤에는 넣지 말 것
+- 각 구간은 1~3개의 자연스러운 문단으로 구성할 것
+- 전체 분량은 한국어 1800~2600자
+
+문체와 내용:
+- 존댓말의 담백한 구어체로 짧고 명확하게 쓸 것
+- 영상에 나온 구체적인 숫자, 도구명, 회사명, 사례를 살릴 것
+- 영상에 없는 내용은 추측하거나 지어내지 말 것
+- 구독, 외부 커뮤니티 가입, 제휴 링크 등 영상 제작자의 홍보 문구는 제외할 것
+- 이모지와 해시태그를 쓰지 말 것
+
+설명이나 코드 블록 없이 본문과 [[SCENE]] 마커만 출력해줘."""
+
+
 class NotebookLMError(RuntimeError):
     pass
 
@@ -58,7 +78,7 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
                        delete_source_after, retry_if_no_heading, profile, log):
     try:
         from notebooklm import NotebookLMClient, SourceStatus
-        from notebooklm.exceptions import AuthError
+        from notebooklm.exceptions import AuthError, NotebookNotFoundError
     except ImportError as e:
         raise NotebookLMError(
             "notebooklm-py 가 설치되어 있지 않습니다.\n"
@@ -66,13 +86,16 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
 
     try:
         async with NotebookLMClient.from_storage(profile=profile or None) as client:
-            email = await client.get_account_email()
+            # 0.7.3의 AuthTokens에는 account_email이 있지만 최신 main의
+            # get_account_email() 메서드는 아직 PyPI 0.7.3에 없다.
+            email = getattr(client.auth, 'account_email', None)
             log(f"  -> 노트북LM 계정: {email or '(확인 실패)'}")
 
             created = False
             if notebook_id:
-                nb = await client.notebooks.get_or_none(notebook_id)
-                if nb is None:
+                try:
+                    nb = await client.notebooks.get(notebook_id)
+                except NotebookNotFoundError:
                     raise NotebookLMError(
                         f"notebook_id '{notebook_id}' 를 찾을 수 없습니다.\n"
                         "  config.ini의 [NOTEBOOKLM] notebook_id 를 확인하거나 비워두세요.")
@@ -159,22 +182,30 @@ async def _fetch_async(youtube_url, prompt, notebook_id, title_prefix,
             "  (안 되면)  notebooklm login") from e
 
 
-def fetch_manuscript(youtube_url, cfg, log=print):
+def fetch_manuscript(youtube_url, cfg, log=print, template=None):
     """유튜브 URL → 노트북LM 원고 텍스트. 실패하면 NotebookLMError."""
     if not youtube_url:
         raise NotebookLMError("유튜브 링크가 없습니다.")
 
+    template = template or cfg.get('template', '')
+    if template == 'reference-5854':
+        prompt = cfg.get('reference_prompt') or REFERENCE_5854_PROMPT
+        retry_if_no_heading = False
+    else:
+        prompt = cfg.get('prompt') or DEFAULT_PROMPT
+        retry_if_no_heading = cfg.get('retry_if_no_heading', True)
+
     log("[노트북LM] 원고 생성 시작...")
     answer, nb_id = asyncio.run(_fetch_async(
         youtube_url,
-        cfg.get('prompt') or DEFAULT_PROMPT,
+        prompt,
         cfg.get('notebook_id', ''),
         cfg.get('notebook_title_prefix', '[자동]'),
         cfg.get('scope_to_new_source', True),
         float(cfg.get('source_wait_timeout', 300)),
         cfg.get('delete_after', False),
         cfg.get('delete_source_after', False),
-        cfg.get('retry_if_no_heading', True),
+        retry_if_no_heading,
         cfg.get('profile', ''),
         log,
     ))
@@ -338,6 +369,8 @@ def load_config(config):
                                                  fallback=True),
         'profile': config.get('NOTEBOOKLM', 'profile', fallback='').strip(),
         'prompt': config.get('NOTEBOOKLM', 'prompt', fallback='').strip(),
+        'reference_prompt': config.get('NOTEBOOKLM', 'reference_prompt', fallback='').strip(),
+        'template': config.get('NOTEBOOKLM', 'template', fallback='').strip(),
     }
 
 

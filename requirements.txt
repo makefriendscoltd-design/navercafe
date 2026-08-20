@@ -1,6 +1,7 @@
 beautifulsoup4
 fastapi
 google-genai
+notebooklm-py[browser]==0.7.3
 opencv-python
 pyautogui
 pyperclip

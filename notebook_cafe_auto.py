@@ -37,6 +37,19 @@ import threading
 
 import youtube_cafe_auto as auto
 import notebooklm_source as nlm
+import publisher_notify
+from publisher_contract import (
+    REFERENCE_IMAGE_COUNT,
+    REFERENCE_TEMPLATE,
+    REFERENCE_TEXT_GROUP_COUNT,
+    SCENE_MARKER,
+    PublisherContractError,
+    assert_cafe_target,
+    build_reference_5854_body,
+    reference_body_without_markers,
+    validate_reference_5854_body,
+    write_result,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PREVIEW_PATH = os.path.join(SCRIPT_DIR, 'last_body_preview.txt')
@@ -46,7 +59,7 @@ PREVIEW_PATH = os.path.join(SCRIPT_DIR, 'last_body_preview.txt')
 # 1. 원문 보존 검증
 # ===================================================================
 
-_MARKER_RE = re.compile(r'\[(?:/?BOLD|/?HIGHLIGHT|/?BLOCKQUOTE|IMAGE_HERE)\]')
+_MARKER_RE = re.compile(r'\[(?:/?BOLD|/?HIGHLIGHT|/?BLOCKQUOTE|IMAGE_HERE)\]|\[\[SCENE\]\]')
 
 
 def _canon(text):
@@ -350,6 +363,39 @@ def build_body_safe(manuscript, image_count):
     return '\n\n'.join(parts)
 
 
+def build_template_body(manuscript, image_count, optional_config,
+                        template='', use_ai_keywords=True):
+    if template != REFERENCE_TEMPLATE:
+        return build_body(
+            manuscript, image_count, optional_config,
+            use_ai_keywords=use_ai_keywords)
+
+    print(f"[본문 조립] {REFERENCE_TEMPLATE} 기준글 구조 적용 중...")
+    body = build_reference_5854_body(manuscript, image_count)
+    shape = validate_reference_5854_body(body, image_count)
+    original = re.sub(r'\s+', '', manuscript.replace(SCENE_MARKER, ''))
+    if reference_body_without_markers(body) != original:
+        raise PublisherContractError("기준글 템플릿 조립 중 원고가 변형되었습니다.")
+    print(f"  -> 텍스트 {shape['textGroupCount']}구간 / 이미지 {shape['imageMarkerCount']}장")
+    print("  -> [검증] 소제목·인용구 없이 원문 무손실 확인 OK")
+    return body
+
+
+def apply_template_options(optional_config, template):
+    result = dict(optional_config)
+    if template == REFERENCE_TEMPLATE:
+        # 기준글 5854: 본문/이미지 교차 + 맨 끝 원본 영상 OG 카드만 사용한다.
+        result.update({
+            'bold_enabled': False,
+            'highlight_enabled': False,
+            'cta_enabled': False,
+            'board_name': '',
+            'source_label': '',
+            'source_link_card': True,
+        })
+    return result
+
+
 # ===================================================================
 # 6. 제목
 # ===================================================================
@@ -610,6 +656,10 @@ USAGE = """사용법:
   python notebook_cafe_auto.py "<링크>" --images 3      이미지 장수 지정
   python notebook_cafe_auto.py "<링크>" --file 원고.txt  원고를 파일로 주기(노트북LM 건너뜀)
   python notebook_cafe_auto.py "<링크>" --no-keywords   AI 볼드/음영 끄기
+  python notebook_cafe_auto.py "<링크>" --template reference-5854 --images 5
+  python notebook_cafe_auto.py "<링크>" --video-file C:\\path\\live.mp4 --result result.json
+  python notebook_cafe_auto.py "<링크>" --notebook-url "<원본라이브링크>"
+  python notebook_cafe_auto.py "<링크>" --publish --notify   검증 성공 뒤 텔레그램 알림
 """
 
 
@@ -618,7 +668,10 @@ def parse_args(argv, default_image_count):
     # draft=True 가 기본. 임시저장해두고 눈으로 확인한 뒤 카페에서 발행한다.
     args = {'url': '', 'title': '', 'image_count': default_image_count,
             'manuscript': '', 'dry_run': False, 'use_ai_keywords': True,
-            'draft': True, 'headless': False}
+            'draft': True, 'headless': False, 'template': '',
+            'video_file': '', 'result_path': '', 'notify': False,
+            'notebook_url': '', 'source_date': '', 'kind': '',
+            'unattended': False, 'expected_club_id': '', 'expected_menu_id': ''}
 
     rest = []
     i = 0
@@ -637,6 +690,10 @@ def parse_args(argv, default_image_count):
             args['draft'] = True
         elif a == '--no-keywords':
             args['use_ai_keywords'] = False
+        elif a == '--notify':
+            args['notify'] = True
+        elif a == '--unattended':
+            args['unattended'] = True
         elif a == '--title' and i + 1 < len(argv):
             i += 1
             args['title'] = argv[i]
@@ -648,6 +705,30 @@ def parse_args(argv, default_image_count):
             i += 1
             with open(argv[i], 'r', encoding='utf-8') as f:
                 args['manuscript'] = f.read().strip()
+        elif a == '--template' and i + 1 < len(argv):
+            i += 1
+            args['template'] = argv[i]
+        elif a == '--video-file' and i + 1 < len(argv):
+            i += 1
+            args['video_file'] = argv[i]
+        elif a == '--result' and i + 1 < len(argv):
+            i += 1
+            args['result_path'] = argv[i]
+        elif a == '--notebook-url' and i + 1 < len(argv):
+            i += 1
+            args['notebook_url'] = argv[i]
+        elif a == '--source-date' and i + 1 < len(argv):
+            i += 1
+            args['source_date'] = argv[i]
+        elif a == '--kind' and i + 1 < len(argv):
+            i += 1
+            args['kind'] = argv[i]
+        elif a == '--expected-club-id' and i + 1 < len(argv):
+            i += 1
+            args['expected_club_id'] = argv[i]
+        elif a == '--expected-menu-id' and i + 1 < len(argv):
+            i += 1
+            args['expected_menu_id'] = argv[i]
         elif a.startswith('-'):
             print(f"알 수 없는 옵션: {a}\n\n{USAGE}")
             sys.exit(1)
@@ -658,6 +739,13 @@ def parse_args(argv, default_image_count):
     if rest:
         args['url'] = rest[0]
 
+    if args['template'] and args['template'] != REFERENCE_TEMPLATE:
+        print(f"지원하지 않는 템플릿: {args['template']}")
+        sys.exit(1)
+    if args['kind'] and args['kind'] not in ('ai', 'business'):
+        print("--kind 는 ai 또는 business 여야 합니다.")
+        sys.exit(1)
+
     if not args['url'] and not args['manuscript']:
         return None
     return args
@@ -667,109 +755,268 @@ def parse_args(argv, default_image_count):
 # 9. 메인
 # ===================================================================
 
+def _finish(inputs, payload):
+    result = write_result((inputs or {}).get('result_path'), payload)
+    print("PUBLISHER_RESULT=" + json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return result
+
+
+def _notify_verified_result(config, source_url, title, post_result, result):
+    record = auto.get_published_record(source_url) or {}
+    prior_notification = record.get('notification') or {}
+    if prior_notification.get('ok'):
+        result['notification'] = {
+            "ok": True,
+            "status": "already-sent",
+            "messageId": prior_notification.get('messageId'),
+        }
+        print('[텔레그램] 이미 전송된 글이라 중복 알림을 건너뜁니다.')
+        return result
+    if prior_notification.get('status') == 'sending':
+        result.update({
+            "ok": False,
+            "status": "published-verified-notification-unknown",
+            "stage": "telegram-notify",
+            "error": "이전 텔레그램 전송의 성공 여부를 확인할 수 없어 중복 방지를 위해 자동 재전송하지 않습니다.",
+            "notification": {"ok": False, "status": "unknown"},
+        })
+        print('[텔레그램] 이전 전송 결과가 불명확해 자동 재전송을 중단합니다.')
+        return result
+
+    try:
+        publisher_notify.validate_notification_config(config)
+        if not auto.mark_publish_notification(
+                source_url, {"ok": False, "status": "sending"}):
+            raise RuntimeError("텔레그램 전송 전 중복 방지 상태를 저장하지 못했습니다.")
+        notification = publisher_notify.send_verified_article(
+            config, title, post_result['articleUrl'])
+        auto.mark_publish_notification(source_url, notification)
+        result['notification'] = notification
+        result['naverOrTelegramWrites'] = True
+        print('[텔레그램] 카페 글 링크 알림 전송 완료')
+    except Exception as e:
+        result.update({
+            "ok": False,
+            "status": "published-verified-notification-error",
+            "stage": "telegram-notify",
+            "error": str(e),
+            "notification": {"ok": False, "status": "error"},
+        })
+    return result
+
+
 def main(argv=None):
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    # 결과 파일 경로를 설정 로드보다 먼저 알아야 설정/인증 오류도 구조화할 수 있다.
+    inputs = parse_args(raw_argv, REFERENCE_IMAGE_COUNT)
     config = auto.load_or_create_config()
     auto.NAVER_ID = config['NAVER']['id']
     auto.NAVER_PW = config['NAVER']['pw']
     auto.CAFE_URL = config['NAVER']['cafe_url']
-    auto.GEMINI_API_KEY = config['GEMINI']['api_key']
+    auto.GEMINI_API_KEY = config.get('GEMINI', 'api_key', fallback='')
     optional_config = auto.load_optional_config(config)
     nlm_cfg = nlm.load_config(config)
 
-    default_count = optional_config.get('image_count', 5)
-    inputs = parse_args(argv if argv is not None else sys.argv[1:], default_count)
-
     if inputs is None:
-        # 인자가 없으면 기존처럼 창을 띄운다
-        inputs = ask_inputs(default_count, nlm_cfg)
+        inputs = ask_inputs(optional_config.get('image_count', 5), nlm_cfg)
     if not inputs:
         print('입력이 취소되었습니다.')
-        return
+        return {"ok": False, "status": "cancelled", "stage": "input"}
 
-    manuscript = inputs['manuscript']
+    # GUI 입력과 구버전 호출에도 새 필드의 안전한 기본값을 보장한다.
+    defaults = {
+        'template': '', 'video_file': '', 'result_path': '', 'notify': False,
+        'notebook_url': '', 'source_date': '', 'kind': '', 'unattended': False,
+        'headless': False, 'expected_club_id': '', 'expected_menu_id': '',
+    }
+    for key, value in defaults.items():
+        inputs.setdefault(key, value)
+
     url = inputs['url']
+    template = inputs['template']
+    base = {
+        "sourceDate": inputs.get('source_date') or None,
+        "kind": inputs.get('kind') or None,
+        "template": template or "default",
+        "sourceUrl": url or None,
+        "naverOrTelegramWrites": False,
+    }
 
-    # ── 0. 원고가 비었으면 노트북LM에서 가져온다 ──
-    if not manuscript:
-        try:
-            manuscript = nlm.fetch_manuscript(url, nlm_cfg)
-        except Exception as e:
-            print(f'\n[중단] 노트북LM에서 원고를 가져오지 못했습니다.\n{e}')
-            print('\n원고 칸에 직접 붙여넣고 다시 실행하면 그대로 발행됩니다.')
-            return
-        with open(os.path.join(SCRIPT_DIR, 'last_manuscript.txt'), 'w',
-                  encoding='utf-8') as f:
-            f.write(manuscript)
+    try:
+        target_board = assert_cafe_target(
+            auto.CAFE_URL,
+            inputs.get('expected_club_id'),
+            inputs.get('expected_menu_id'))
+        if inputs.get('expected_club_id') or inputs.get('expected_menu_id'):
+            print(f"[게시판 확인] cafe={target_board['clubId']} menu={target_board['menuId']}")
+        if inputs.get('notify') and (inputs['dry_run'] or inputs['draft']):
+            raise PublisherContractError("--notify는 --publish 모드에서만 사용할 수 있습니다.")
+        existing_record = (auto.get_published_record(url)
+                           if url and not inputs['dry_run'] and not inputs['draft'] else None)
+        if inputs.get('unattended') and not (inputs.get('title') or existing_record):
+            raise PublisherContractError("무인 실행에는 유료/대화형 제목 생성을 막기 위해 --title이 필요합니다.")
 
-    # ── 1. 유튜브 장면 캡처 ──
-    # 장수는 고정값이 아니라 원고의 소제목 섹션 수에서 뽑는다 (섹션마다 1장).
-    if not inputs.get('image_count_explicit'):
-        n_sec = count_sections(manuscript)
-        if n_sec:
-            inputs['image_count'] = n_sec
-            print(f"[이미지] 소제목 섹션 {n_sec}개 → {n_sec}장 캡처")
-        else:
-            print(f"[이미지] 소제목이 없어 기본값 {inputs['image_count']}장 사용")
+        # 발행 뒤 검증/알림 단계에서 실패한 재시도는 원고 생성과 이미지 추출도
+        # 반복하지 않는다. 저장된 URL의 기존 글만 읽고 필요한 다음 단계만 수행한다.
+        if existing_record:
+            title = inputs.get('title') or existing_record.get('title') or '제목 없음'
+            post_result = auto.post_to_naver_cafe(
+                title, '', [], apply_template_options(optional_config, template),
+                source_url=url,
+                draft=False,
+                unattended=inputs.get('unattended', False),
+                keep_browser_open=False,
+                verify_images=(REFERENCE_IMAGE_COUNT if template == REFERENCE_TEMPLATE else 1),
+                verify_text_groups=(REFERENCE_TEXT_GROUP_COUNT
+                                    if template == REFERENCE_TEMPLATE else None),
+                verify_og_links=(1 if template == REFERENCE_TEMPLATE else None),
+                require_all_images=True,
+                verify_exact_images=(template == REFERENCE_TEMPLATE),
+            )
+            result = {
+                **base,
+                **post_result,
+                "title": title,
+                "naverOrTelegramWrites": False,
+                "resumedFromPublishedRecord": True,
+            }
+            if inputs.get('notify') and post_result.get('status') == 'published-verified':
+                result = _notify_verified_result(config, url, title, post_result, result)
+            return _finish(inputs, result)
 
-    image_paths = []
-    if inputs['image_count'] > 0 and not url:
-        print('[주의] 유튜브 링크가 없어 장면 캡처를 건너뜁니다.')
-    elif inputs['image_count'] > 0:
-        image_paths = auto.extract_frames(url, inputs['image_count'])
+        manuscript = inputs['manuscript']
+        notebook_url = inputs.get('notebook_url') or url
+
+        # ── 0. 원고가 비었으면 NotebookLM에서 가져온다 ──
+        if not manuscript:
+            manuscript = nlm.fetch_manuscript(
+                notebook_url, nlm_cfg, template=template)
+            with open(os.path.join(SCRIPT_DIR, 'last_manuscript.txt'), 'w',
+                      encoding='utf-8') as f:
+                f.write(manuscript)
+
+        # ── 1. 이미지 수와 장면 캡처 ──
+        if template == REFERENCE_TEMPLATE:
+            inputs['image_count'] = REFERENCE_IMAGE_COUNT
+            inputs['image_count_explicit'] = True
+            print(f"[이미지] 기준글 포맷 고정값 {REFERENCE_IMAGE_COUNT}장")
+        elif not inputs.get('image_count_explicit'):
+            n_sec = count_sections(manuscript)
+            inputs['image_count'] = n_sec or optional_config.get('image_count', 5)
+            if n_sec:
+                print(f"[이미지] 소제목 섹션 {n_sec}개 → {n_sec}장 캡처")
+            else:
+                print(f"[이미지] 소제목이 없어 기본값 {inputs['image_count']}장 사용")
+
+        image_paths = []
+        if inputs['image_count'] > 0 and not (url or inputs.get('video_file')):
+            print('[주의] 영상 링크/파일이 없어 장면 캡처를 건너뜁니다.')
+        elif inputs['image_count'] > 0:
+            image_paths = auto.extract_frames(
+                notebook_url, inputs['image_count'], video_file=inputs.get('video_file'),
+                allow_thumbnails=(template != REFERENCE_TEMPLATE))
+        print(f"  -> 캡처된 이미지: {len(image_paths)}장")
+
+        if template == REFERENCE_TEMPLATE and len(image_paths) != REFERENCE_IMAGE_COUNT:
+            raise PublisherContractError(
+                f"기준글 포맷은 이미지 {REFERENCE_IMAGE_COUNT}장이 모두 준비돼야 합니다 "
+                f"(현재 {len(image_paths)}장).")
+
+        # ── 2. 본문 조립 ──
+        optional_config = apply_template_options(optional_config, template)
+        body = build_template_body(
+            manuscript, len(image_paths), optional_config, template,
+            use_ai_keywords=inputs['use_ai_keywords'])
+
+        # ── 3. 제목 ──
+        title = inputs['title'] or make_title(manuscript)
+        print(f"[제목] {title}")
+
+        # ── 4. 미리보기 저장 ──
+        with open(PREVIEW_PATH, 'w', encoding='utf-8') as f:
+            f.write(f"제목: {title}\n"
+                    f"템플릿: {template or 'default'}\n"
+                    f"이미지: {len(image_paths)}장\n"
+                    f"글씨체: {optional_config.get('font_family')} "
+                    f"{optional_config.get('font_size')}\n"
+                    f"원본 링크: {url}\n"
+                    f"{'=' * 60}\n{body}\n")
+        print(f"[미리보기] {PREVIEW_PATH}")
+
+        if inputs['dry_run']:
+            print('\n' + '=' * 60)
+            print(body)
+            print('=' * 60)
+            print('\n드라이런 모드입니다. 카페와 텔레그램에는 쓰지 않았습니다.')
+            return _finish(inputs, {
+                **base,
+                "ok": True,
+                "status": "dry-run-complete",
+                "stage": "preview",
+                "title": title,
+                "imageCount": len(image_paths),
+                "previewPath": os.path.abspath(PREVIEW_PATH),
+                "framePaths": [os.path.abspath(path) for path in image_paths],
+            })
+
+        # ── 5. 카페 임시저장/발행 ──
+        if inputs.get('headless'):
+            raise PublisherContractError(
+                "헤드리스 발행은 본문 누락이 재현되어 안전상 금지되어 있습니다.")
         if not image_paths:
-            print('[주의] 장면 캡처에 실패했습니다. 이미지 없이 글만 발행합니다.')
-    print(f"  -> 캡처된 이미지: {len(image_paths)}장")
+            raise PublisherContractError("카페 이미지가 0장이라 저장/발행을 중단합니다.")
 
-    # ── 2. 본문 조립 ──
-    body = build_body(manuscript, len(image_paths), optional_config,
-                      use_ai_keywords=inputs['use_ai_keywords'])
+        print('[모드] ' + ('임시저장' if inputs['draft'] else '바로 발행'))
+        post_result = auto.post_to_naver_cafe(
+            title, body, image_paths, optional_config,
+            source_url=url,
+            draft=inputs['draft'],
+            unattended=inputs.get('unattended', False),
+            keep_browser_open=not inputs.get('unattended', False) and inputs['draft'],
+            verify_images=(REFERENCE_IMAGE_COUNT if template == REFERENCE_TEMPLATE
+                           else len(image_paths)),
+            verify_text_groups=(REFERENCE_TEXT_GROUP_COUNT
+                                if template == REFERENCE_TEMPLATE else None),
+            verify_og_links=(1 if template == REFERENCE_TEMPLATE else None),
+            require_all_images=True,
+            verify_exact_images=(template == REFERENCE_TEMPLATE),
+        )
+        result = {
+            **base,
+            **post_result,
+            "title": title,
+            "imageCount": len(image_paths),
+            "previewPath": os.path.abspath(PREVIEW_PATH),
+            "naverOrTelegramWrites": bool(post_result.get('status') in (
+                'draft-saved', 'published-unverified', 'published-verified')),
+        }
 
-    # ── 3. 제목 ──
-    title = inputs['title'] or make_title(manuscript)
-    print(f"[제목] {title}")
+        # ── 6. 검증된 발행 글만 Telegram으로 한 번 알림 ──
+        if (not inputs['draft'] and inputs.get('notify') and
+                post_result.get('status') == 'published-verified'):
+            result = _notify_verified_result(config, url, title, post_result, result)
 
-    # ── 4. 미리보기 저장 ──
-    with open(PREVIEW_PATH, 'w', encoding='utf-8') as f:
-        f.write(f"제목: {title}\n"
-                f"이미지: {len(image_paths)}장\n"
-                f"글씨체: {optional_config.get('font_family')} "
-                f"{optional_config.get('font_size')}\n"
-                f"원본 링크: {url}\n"
-                f"{'=' * 60}\n{body}\n")
-    print(f"[미리보기] {PREVIEW_PATH}")
+        if result.get('ok') or result.get('articleUrl'):
+            auto.cleanup_temp_files()
+            print('[정리] 카페 발행용 임시 이미지가 삭제되었습니다.')
+        return _finish(inputs, result)
 
-    if inputs['dry_run']:
-        print('\n' + '=' * 60)
-        print(body)
-        print('=' * 60)
-        print('\n드라이런 모드입니다. 카페에는 올리지 않았습니다.')
-        return
-
-    # ── 5. 카페 발행 (기본은 임시저장) ──
-    if inputs.get('headless'):
-        auto.PUBLISHER_HEADLESS = True
-        print('[모드] 헤드리스 (창 없이 실행)')
-        print('  ** [경고] 헤드리스는 2026-08 검증 결과 본문이 누락된다.')
-        print('  ** 클립보드(Ctrl+V) 붙여넣기가 헤드리스 크롬에서 동작하지 않아')
-        print('  ** 본문 문단 대부분이 빈 채로 저장된다. 발행에 쓰지 말 것.')
-
-    print('[모드] ' + ('임시저장 (확인 후 카페에서 직접 발행)' if inputs['draft']
-                     else '바로 발행'))
-    if not image_paths:
-        print('[중단] 카페 이미지가 0장이라 임시저장/발행을 하지 않습니다.')
-        auto.cleanup_temp_files()
-        return
-    auto.post_to_naver_cafe(title, body, image_paths, optional_config,
-                            source_url=url, draft=inputs['draft'])
-
-    # ── 6. 정리 ──
-    auto.cleanup_temp_files()
-    print('[정리] 임시 파일이 삭제되었습니다.')
+    except Exception as e:
+        print(f"\n[중단] {e}")
+        return _finish(inputs, {
+            **base,
+            "ok": False,
+            "status": "error",
+            "stage": "prepare",
+            "error": str(e),
+        })
 
 
 if __name__ == '__main__':
     try:
-        main()
+        outcome = main()
+        if outcome and not outcome.get('ok', False):
+            sys.exit(1)
     except KeyboardInterrupt:
         print('\n사용자가 중단했습니다.')
         sys.exit(1)

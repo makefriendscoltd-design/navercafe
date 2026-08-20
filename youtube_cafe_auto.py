@@ -1088,9 +1088,77 @@ def _capture_youtube_browser_frames(url, image_count=4):
     return image_paths
 
 
-def extract_frames(url, image_count=4):
-    """유튜브 영상을 다운로드하고 균등 간격 지점에서 이미지를 캡처합니다."""
+def _visual_frame_distance(left, right):
+    if left is None or right is None:
+        return 1.0
+    diff = cv2.absdiff(left, right)
+    return float(cv2.mean(diff)[0]) / 255.0
+
+
+def _representative_frames(video_path, image_count=4):
+    """Pick one sharp, exposed, visually distinct frame from each time segment."""
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if image_count <= 0 or total_frames <= 0:
+        cap.release()
+        return []
+
+    selected = []
+    selected_thumbs = []
+    # 오프닝/엔딩의 대기 화면은 피하고, 각 시간 구간에서 여러 후보를 비교한다.
+    timeline_start, timeline_end = 0.06, 0.94
+    for segment in range(image_count):
+        seg_start = timeline_start + (timeline_end - timeline_start) * segment / image_count
+        seg_end = timeline_start + (timeline_end - timeline_start) * (segment + 1) / image_count
+        candidates = []
+        for sample in range(7):
+            ratio = seg_start + (seg_end - seg_start) * (sample + 1) / 8.0
+            target_frame = min(total_frames - 1, max(0, int(total_frames * ratio)))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+            ok, frame = cap.read()
+            if not ok or frame is None or frame.size == 0:
+                continue
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            sharpness = min(float(cv2.Laplacian(gray, cv2.CV_64F).var()) / 900.0, 1.0)
+            mean, stddev = cv2.meanStdDev(gray)
+            brightness = float(mean[0][0])
+            contrast = min(float(stddev[0][0]) / 64.0, 1.0)
+            exposure = max(0.0, 1.0 - abs(brightness - 127.5) / 127.5)
+            thumb = cv2.resize(gray, (160, 90), interpolation=cv2.INTER_AREA)
+            diversity = (min(_visual_frame_distance(thumb, prior) for prior in selected_thumbs)
+                         if selected_thumbs else 1.0)
+            score = 0.50 * sharpness + 0.20 * contrast + 0.15 * exposure + 0.15 * diversity
+            candidates.append((score, ratio, frame, thumb))
+
+        if not candidates:
+            continue
+        _, ratio, frame, thumb = max(candidates, key=lambda item: item[0])
+        selected.append((ratio, frame))
+        selected_thumbs.append(thumb)
+
+    cap.release()
+    image_paths = []
+    for index, (ratio, frame) in enumerate(selected, start=1):
+        path = os.path.join(SCRIPT_DIR, f'frame_{index}.jpg')
+        if cv2.imwrite(path, frame):
+            image_paths.append(os.path.abspath(path))
+            print(f"     - 대표 장면 {index}/{image_count}: 영상 {ratio * 100:.1f}% 지점")
+    return image_paths
+
+
+def extract_frames(url, image_count=4, video_file=None, allow_thumbnails=True):
+    """Use a local source video first, otherwise download and select representative frames."""
     print(f"[3/4] 유튜브 영상 다운로드 및 이미지({image_count}장) 캡처 중...")
+    if video_file:
+        local_video = os.path.abspath(video_file)
+        if os.path.isfile(local_video) and os.path.getsize(local_video) > 0:
+            print(f"  -> 기존 다운로드 영상 사용: {local_video}")
+            frames = _representative_frames(local_video, image_count)
+            if frames:
+                return frames
+            print("  -> 기존 영상에서 장면을 추출하지 못해 URL 폴백을 시도합니다.")
+        else:
+            print(f"  -> 지정한 영상 파일을 찾지 못했습니다: {local_video}")
     format_list = [
         '18',
         'bestvideo[ext=mp4][height<=480]+bestaudio[ext=m4a]/best[ext=mp4][height<=480]',
@@ -1138,23 +1206,12 @@ def extract_frames(url, image_count=4):
         browser_frames = _capture_youtube_browser_frames(url, image_count)
         if browser_frames:
             return browser_frames
-        return _download_youtube_thumbnails(url, image_count)
+        if allow_thumbnails:
+            return _download_youtube_thumbnails(url, image_count)
+        print("  -> 기준글 포맷은 같은 썸네일 반복 사용을 허용하지 않습니다.")
+        return []
 
-    cap = cv2.VideoCapture(downloaded_filename)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    image_paths = []
-    if total_frames > 0:
-        for i in range(1, image_count + 1):
-            # 균등 간격: 10%, 30%, 50%, 70%, 90% ... 식으로 배분
-            ratio = i / (image_count + 1)
-            target_frame = int(total_frames * ratio)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-            ret, frame = cap.read()
-            if ret:
-                path = os.path.join(SCRIPT_DIR, f'frame_{i}.jpg')
-                cv2.imwrite(path, frame)
-                image_paths.append(os.path.abspath(path))
-    cap.release()
+    image_paths = _representative_frames(downloaded_filename, image_count)
 
     try:
         os.remove(downloaded_filename)
@@ -1911,6 +1968,34 @@ def _count_editor_images(driver):
         return -1
 
 
+def _editor_structure(driver):
+    """Count non-empty text groups and quotations in the current SmartEditor."""
+    try:
+        measured = driver.execute_script(_JS_SE_ROOT + """
+            var ed = __seRoot();
+            if (!ed) return null;
+            var textSections = Array.from(ed.querySelectorAll('.se-section-text'));
+            textSections = textSections.filter(function(section) {
+                return ((section.innerText || section.textContent || '')
+                    .replace(/\u200b/g, '').trim()).length > 0;
+            });
+            return {
+                textGroupCount: textSections.length,
+                quotationCount: ed.querySelectorAll('.se-section-quotation').length,
+                ogLinkCount: ed.querySelectorAll('.se-section-oglink').length
+            };
+        """)
+        if not isinstance(measured, dict):
+            return {"textGroupCount": -1, "quotationCount": -1, "ogLinkCount": -1}
+        return {
+            "textGroupCount": int(measured.get("textGroupCount", -1)),
+            "quotationCount": int(measured.get("quotationCount", -1)),
+            "ogLinkCount": int(measured.get("ogLinkCount", -1)),
+        }
+    except Exception:
+        return {"textGroupCount": -1, "quotationCount": -1, "ogLinkCount": -1}
+
+
 def _suppress_native_file_dialog(driver):
     """파일 input 의 click() 을 가로채 OS '열기' 대화상자가 뜨지 않게 한다.
 
@@ -2153,6 +2238,114 @@ def publish_post(driver, wait=20):
     return False
 
 
+def verify_published_article(driver, title, source_url, min_images=5,
+                             expected_text_groups=None, expected_og_links=None,
+                             exact_images=False, wait=20):
+    """Read the saved article back and verify the externally observable result."""
+    article_url = driver.current_url
+    for _ in range(wait):
+        try:
+            ready = driver.execute_script("return document.readyState") == "complete"
+            body_text = driver.execute_script(
+                "return (document.body && document.body.innerText) || '';"
+            )
+            if ready and body_text.strip():
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+
+    try:
+        measured = driver.execute_script("""
+            var text = (document.body && document.body.innerText) || '';
+            // OG 링크 카드의 썸네일은 제외하고 SmartEditor 이미지 섹션만 센다.
+            var images = Array.from(document.querySelectorAll(
+                '.se-section-image img, .se-module-image img'
+            )).filter(function(img) {
+                var w = img.naturalWidth || img.width || 0;
+                var h = img.naturalHeight || img.height || 0;
+                return w >= 200 && h >= 100 && !img.closest('.se-section-oglink, .se-module-oglink');
+            });
+            var textSections = Array.from(document.querySelectorAll('.se-section-text'));
+            if (!textSections.length) {
+                textSections = Array.from(document.querySelectorAll('.se-component.se-text'));
+            }
+            textSections = textSections.filter(function(section) {
+                return ((section.innerText || section.textContent || '').replace(/\u200b/g, '').trim()).length > 0;
+            });
+            var quoteSections = document.querySelectorAll(
+                '.se-section-quotation, .se-component.se-quotation'
+            );
+            var ogSections = document.querySelectorAll('.se-section-oglink');
+            if (!ogSections.length) {
+                ogSections = document.querySelectorAll('.se-component.se-oglink');
+            }
+            return {
+                text: text,
+                imageCount: images.length,
+                textGroupCount: textSections.length,
+                quotationCount: quoteSections.length,
+                ogLinkCount: ogSections.length,
+                html: document.documentElement.outerHTML
+            };
+        """) or {}
+    except Exception as e:
+        return {
+            "ok": False,
+            "articleUrl": article_url,
+            "titleOk": False,
+            "imageCount": 0,
+            "sourceLinkOk": False,
+            "error": f"게시글 DOM 확인 실패: {e}",
+        }
+
+    normalize = lambda value: re.sub(r'\s+', '', value or '')
+    text = measured.get("text", "")
+    html = measured.get("html", "")
+    image_count = int(measured.get("imageCount", 0) or 0)
+    text_group_count = int(measured.get("textGroupCount", 0) or 0)
+    quotation_count = int(measured.get("quotationCount", 0) or 0)
+    og_link_count = int(measured.get("ogLinkCount", 0) or 0)
+    video_id = extract_video_id(source_url) if source_url else None
+    source_ok = bool(source_url and (
+        (video_id and video_id in html) or source_url in html or source_url in text
+    ))
+    title_ok = bool(title and normalize(title) in normalize(text + " " + driver.title))
+    url_ok = bool(article_url and 'write' not in article_url.lower())
+    images_ok = (image_count == min_images if exact_images else image_count >= min_images)
+    text_structure_ok = (expected_text_groups is None or (
+        text_group_count == expected_text_groups and quotation_count == 0))
+    og_structure_ok = expected_og_links is None or og_link_count == expected_og_links
+    structure_ok = text_structure_ok and og_structure_ok
+    ok = title_ok and images_ok and source_ok and url_ok and structure_ok
+    result = {
+        "ok": ok,
+        "articleUrl": article_url,
+        "titleOk": title_ok,
+        "imageCount": image_count,
+        "requiredImageCount": min_images,
+        "exactImageCountRequired": exact_images,
+        "textGroupCount": text_group_count,
+        "expectedTextGroupCount": expected_text_groups,
+        "quotationCount": quotation_count,
+        "ogLinkCount": og_link_count,
+        "expectedOgLinkCount": expected_og_links,
+        "structureOk": structure_ok,
+        "sourceLinkOk": source_ok,
+        "articleUrlOk": url_ok,
+    }
+    if not ok:
+        failed = [name for name, passed in (
+            ("title", title_ok),
+            ("images", images_ok),
+            ("source-link", source_ok),
+            ("article-url", url_ok),
+            ("text-image-structure", structure_ok),
+        ) if not passed]
+        result["error"] = "게시글 재검증 실패: " + ", ".join(failed)
+    return result
+
+
 def _publish_source_key(source_url):
     if not source_url:
         return ""
@@ -2188,6 +2381,15 @@ def _save_published_records(records):
     os.replace(tmp_path, PUBLISHED_RECORD_FILE)
 
 
+def get_published_record(source_url):
+    """Return the durable record for a source URL, if it was already published."""
+    source_key = _publish_source_key(source_url)
+    if not source_key:
+        return None
+    record = _load_published_records().get(_publish_record_id(source_key))
+    return dict(record) if isinstance(record, dict) else None
+
+
 def _begin_publish_guard(source_url):
     source_key = _publish_source_key(source_url)
     if not source_key:
@@ -2197,9 +2399,16 @@ def _begin_publish_guard(source_url):
     records = _load_published_records()
     existing = records.get(record_id)
     if existing:
-        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print("[재개] 이미 발행한 원본 URL입니다. 새 글 대신 기존 글을 재검증합니다.")
         print(f"  -> 기존 글: {existing.get('article_url', '')}")
-        return None
+        return {
+            "enabled": False,
+            "existing": True,
+            "record_id": record_id,
+            "source_key": source_key,
+            "source_url": source_url,
+            "existing_record": dict(existing),
+        }
 
     os.makedirs(PUBLISH_LOCK_DIR, exist_ok=True)
     lock_path = os.path.join(PUBLISH_LOCK_DIR, record_id + ".lock")
@@ -2231,9 +2440,16 @@ def _begin_publish_guard(source_url):
             os.remove(lock_path)
         except OSError:
             pass
-        print("[중단] 이미 발행한 원본 URL이라 카페 중복 발행을 하지 않습니다.")
+        print("[재개] 다른 실행이 먼저 발행했습니다. 기존 글을 재검증합니다.")
         print(f"  -> 기존 글: {existing.get('article_url', '')}")
-        return None
+        return {
+            "enabled": False,
+            "existing": True,
+            "record_id": record_id,
+            "source_key": source_key,
+            "source_url": source_url,
+            "existing_record": dict(existing),
+        }
 
     return {
         "enabled": True,
@@ -2248,14 +2464,56 @@ def _mark_published_source(publish_guard, title, article_url):
     if not publish_guard or not publish_guard.get("enabled"):
         return
     records = _load_published_records()
+    previous = records.get(publish_guard["record_id"], {})
     records[publish_guard["record_id"]] = {
+        **previous,
         "source_key": publish_guard["source_key"],
         "source_url": publish_guard["source_url"],
         "title": title,
         "article_url": article_url,
-        "published_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "published_at": previous.get("published_at") or time.strftime("%Y-%m-%d %H:%M:%S"),
+        "verification": {
+            "ok": False,
+            "status": "pending",
+            "checked_at": None,
+        },
     }
     _save_published_records(records)
+
+
+def _mark_publish_verification(publish_guard, verification):
+    if not publish_guard or not publish_guard.get("record_id"):
+        return
+    records = _load_published_records()
+    record = records.get(publish_guard["record_id"])
+    if not isinstance(record, dict):
+        return
+    record["verification"] = {
+        **verification,
+        "status": "verified" if verification.get("ok") else "failed",
+        "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    records[publish_guard["record_id"]] = record
+    _save_published_records(records)
+
+
+def mark_publish_notification(source_url, notification):
+    """Persist notification success so a retry never sends the same message twice."""
+    source_key = _publish_source_key(source_url)
+    if not source_key:
+        return False
+    record_id = _publish_record_id(source_key)
+    records = _load_published_records()
+    record = records.get(record_id)
+    if not isinstance(record, dict):
+        return False
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    record["notification"] = {**notification, "updated_at": stamp}
+    if notification.get("ok"):
+        record["notification"]["sent_at"] = stamp
+    records[record_id] = record
+    _save_published_records(records)
+    return True
 
 
 def _release_publish_guard(publish_guard):
@@ -2668,16 +2926,31 @@ def ensure_naver_login(driver, wait_minutes=5):
 # ===================================================================
 
 def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=None,
-                       draft=False):
-    """Selenium으로 네이버 카페에 글을 자동 등록합니다 (OS 포커스 불필요)."""
+                       draft=False, unattended=False, keep_browser_open=None,
+                       verify_images=5, verify_text_groups=None, verify_og_links=None,
+                       require_all_images=True, verify_exact_images=False):
+    """Selenium으로 저장/발행하고 구조화된 결과를 반환합니다."""
     print("[4/4] 네이버 카페 포스팅 시작...")
-    if not image_paths:
-        print("[중단] 카페 이미지가 0장이라 임시등록/발행을 하지 않습니다.")
-        return False
-
     publish_guard = _begin_publish_guard(source_url)
     if publish_guard is None:
-        return False
+        return {
+            "ok": False,
+            "status": "busy",
+            "stage": "publish-guard",
+            "error": "같은 원본 URL의 카페 발행 작업이 이미 진행 중입니다.",
+        }
+    existing_record = publish_guard.get("existing_record")
+    if not existing_record and not image_paths:
+        print("[중단] 카페 이미지가 0장이라 임시등록/발행을 하지 않습니다.")
+        _release_publish_guard(publish_guard)
+        return {
+            "ok": False,
+            "status": "error",
+            "stage": "images",
+            "error": "카페 이미지가 0장입니다.",
+        }
+    if keep_browser_open is None:
+        keep_browser_open = bool(draft and not unattended)
 
     # 본문에서 하이라이트 키워드 추출 (마커 제거)
     highlight_keywords = []
@@ -2686,6 +2959,7 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
         if highlight_keywords:
             print(f"  -> 하이라이트 대상 키워드: {highlight_keywords}")
 
+    driver = None
     try:
         driver = make_publisher_driver()
 
@@ -2703,6 +2977,38 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
             else:
                 print("  -> [주의] 세션이 저장되지 않았습니다. 다음 실행에서 "
                       "다시 로그인해야 할 수 있습니다.")
+
+        # 발행 URL이 이미 저장된 재시도는 새 글을 만들지 않고 그 글만 읽어 검증한다.
+        if existing_record:
+            article_url = existing_record.get("article_url", "")
+            if not article_url:
+                return {
+                    "ok": False,
+                    "status": "published-unverified",
+                    "stage": "verify-existing",
+                    "error": "기존 발행 기록에 카페 글 URL이 없습니다.",
+                }
+            driver.get(article_url)
+            verification = verify_published_article(
+                driver,
+                existing_record.get("title") or title,
+                source_url,
+                min_images=verify_images,
+                expected_text_groups=verify_text_groups,
+                expected_og_links=verify_og_links,
+                exact_images=verify_exact_images,
+            )
+            _mark_publish_verification(publish_guard, verification)
+            return {
+                "ok": verification.get("ok", False),
+                "status": ("published-verified" if verification.get("ok")
+                           else "published-unverified"),
+                "stage": "verify-existing",
+                "articleUrl": article_url,
+                "verification": verification,
+                "reusedExistingArticle": True,
+                **({} if verification.get("ok") else {"error": verification.get("error")}),
+            }
 
         # ── 2단계: 카페 글쓰기 페이지 진입 ──
         decoded_url = urllib.parse.unquote(CAFE_URL)
@@ -3016,45 +3322,151 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
             print(f"\n  ** [경고] 이미지 {len(failed_images)}장이 본문에 안 들어갔습니다: "
                   f"{', '.join(failed_images)}")
             print("  ** 임시저장본에서 직접 확인하고 필요하면 수동으로 넣어주세요.\n")
+            if require_all_images:
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "stage": "image-upload",
+                    "error": f"이미지 {len(failed_images)}장 업로드 실패: "
+                             f"{', '.join(failed_images)}",
+                }
         else:
             total = _count_editor_images(driver)
             shown = total if total >= 0 else '확인불가'
             print(f"  -> 본문 이미지 최종 {shown}장 (요청 {len(image_paths)}장)")
+            image_count_bad = (
+                total != len(image_paths) if verify_exact_images
+                else total >= 0 and total < len(image_paths)
+            )
+            if require_all_images and image_count_bad:
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "stage": "image-verify-editor",
+                    "error": f"에디터 이미지 {total}장이 요청 {len(image_paths)}장과 일치하지 않습니다.",
+                }
+
+        editor_structure = _editor_structure(driver)
+        if verify_text_groups is not None or verify_og_links is not None:
+            structure_ok = (
+                (verify_text_groups is None or (
+                    editor_structure["textGroupCount"] == verify_text_groups and
+                    editor_structure["quotationCount"] == 0)) and
+                (verify_og_links is None or
+                 editor_structure["ogLinkCount"] == verify_og_links)
+            )
+            print(f"  -> 본문 구조: 텍스트 {editor_structure['textGroupCount']}구간 / "
+                  f"인용구 {editor_structure['quotationCount']}개 / "
+                  f"OG 링크 {editor_structure['ogLinkCount']}개")
+            if not structure_ok:
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "stage": "editor-structure",
+                    "error": f"기준글 구조가 아닙니다: 텍스트 "
+                             f"{editor_structure['textGroupCount']}구간, 인용구 "
+                             f"{editor_structure['quotationCount']}개, OG 링크 "
+                             f"{editor_structure['ogLinkCount']}개",
+                    "verification": {"ok": False, **editor_structure},
+                }
 
         if draft:
-            save_as_draft(driver)
+            saved = save_as_draft(driver)
+            if not saved:
+                return {
+                    "ok": False,
+                    "status": "error",
+                    "stage": "draft-save",
+                    "error": "임시저장 버튼을 확인하지 못했습니다.",
+                }
             print("\n임시저장 완료. 카페에서 내용 확인하고 직접 발행하세요.")
-            print("브라우저는 열어둡니다. 확인 끝나면 창을 닫으세요.")
-            return
+            if keep_browser_open:
+                print("브라우저는 열어둡니다. 확인 끝나면 창을 닫으세요.")
+            return {
+                "ok": True,
+                "status": "draft-saved",
+                "stage": "draft-save",
+                "articleUrl": None,
+                "verification": {
+                    "ok": True,
+                    "imageCount": _count_editor_images(driver),
+                    "requiredImageCount": len(image_paths),
+                    **editor_structure,
+                },
+            }
 
         print("  -> 전체공개/퍼가기 여부는 카페 게시판 기본 설정을 따릅니다.")
         article_url = publish_post(driver)
         if not article_url:
             print("\n  ** [경고] 발행 버튼을 누르지 못했습니다. 글은 에디터에 그대로 있으니")
             print("  ** 창에서 직접 '등록'을 눌러주세요. 브라우저는 열어둡니다.")
-            return
+            return {
+                "ok": False,
+                "status": "error",
+                "stage": "publish-click",
+                "error": "발행 버튼 클릭 후 카페 글 URL을 확인하지 못했습니다.",
+            }
+        # URL을 얻은 즉시 기록한다. 이후 검증이 실패해도 재시도는 이 글을 재검증하며
+        # 절대로 새 글을 한 편 더 만들지 않는다.
         _mark_published_source(publish_guard, title, article_url)
 
-        driver.close()
-        driver.switch_to.window(driver.window_handles[0])
-        print("\n완료! 네이버 카페에 글이 등록되었습니다.")
+        verification = verify_published_article(
+            driver, title, source_url, min_images=verify_images,
+            expected_text_groups=verify_text_groups,
+            expected_og_links=verify_og_links,
+            exact_images=verify_exact_images)
+        _mark_publish_verification(publish_guard, verification)
+        if not verification.get("ok"):
+            print(f"\n  ** [경고] 글은 발행됐지만 재검증에 실패했습니다: "
+                  f"{verification.get('error', '')}")
+            return {
+                "ok": False,
+                "status": "published-unverified",
+                "stage": "verify-published",
+                "articleUrl": article_url,
+                "verification": verification,
+                "error": verification.get("error", "게시글 재검증 실패"),
+            }
+
+        print("\n완료! 네이버 카페에 글이 등록되고 재검증되었습니다.")
+        return {
+            "ok": True,
+            "status": "published-verified",
+            "stage": "verify-published",
+            "articleUrl": article_url,
+            "verification": verification,
+            "reusedExistingArticle": False,
+        }
 
     except Exception as e:
         traceback.print_exc()
-        import tkinter as tk
-        from tkinter import messagebox
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-        messagebox.showerror(
-            'Selenium 에러 발생',
-            f'자동화 중 오류가 발생했습니다:\n{e}\n\n'
-            '확인을 누르면 브라우저가 5분간 유지됩니다.\n터미널 로그를 확인해주세요.'
-        )
-        root.destroy()
-        time.sleep(300)
+        if not unattended:
+            try:
+                import tkinter as tk
+                from tkinter import messagebox
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                messagebox.showerror(
+                    'Selenium 에러 발생',
+                    f'자동화 중 오류가 발생했습니다:\n{e}\n\n터미널 로그를 확인해주세요.'
+                )
+                root.destroy()
+            except Exception:
+                pass
+        return {
+            "ok": False,
+            "status": "error",
+            "stage": "naver-cafe",
+            "error": str(e),
+        }
     finally:
         _release_publish_guard(publish_guard)
+        if driver and not keep_browser_open:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 # ===================================================================
