@@ -39,14 +39,14 @@ Windows 설치·단위 테스트·의존성 import 확인을 한 번에 하려�
 .\install-publisher-windows.ps1
 ```
 
-`notebooklm-py`는 Google의 공식 소비자 API가 아닌 비공식 클라이언트라 UI/RPC 변경으로 깨질 수 있습니다. 이 저장소는 검증한 `0.7.3`을 고정합니다. 최초 1회 같은 Windows 계정에서 다음을 실행하고 브라우저 로그인을 완료합니다.
+`notebooklm-py`는 Google의 공식 소비자 API가 아닌 비공식 클라이언트라 UI/RPC 변경으로 깨질 수 있습니다. 이 저장소는 검증한 `0.7.3`과 Python 3.12를 고정합니다. 최초 1회 같은 Windows 계정에서 Edge의 기존 Google·YouTube 로그인 쿠키를 가져와 인증 파일을 만듭니다.
 
 ```powershell
-& 'C:\Users\likim\AppData\Local\Programs\Python\Python312\python.exe' -m notebooklm login
+& 'C:\Users\likim\AppData\Local\Programs\Python\Python312\python.exe' -m notebooklm login --browser-cookies edge --include-domains youtube
 & 'C:\Users\likim\AppData\Local\Programs\Python\Python312\python.exe' -m notebooklm auth check --test --json
 ```
 
-두 번째 명령은 `status=ok`와 `checks.token_fetch=true`가 모두 확인되어야 합니다.
+첫 명령은 쿠키 값이나 계정 이메일을 로그에 남기지 않는 운영 셸에서 실행합니다. 두 번째 명령은 `status=ok`와 `checks.token_fetch=true`가 모두 확인되어야 합니다. Edge 쿠키를 읽을 수 없을 때만 `-m notebooklm login --browser msedge`로 visible 로그인을 진행합니다.
 
 ## Configuration
 

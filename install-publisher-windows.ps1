@@ -20,7 +20,7 @@ try {
   & $Python -m unittest discover -s tests -v
   if ($LASTEXITCODE -ne 0) { throw "Cafe publisher unit tests failed." }
 
-  & $Python -c "import importlib.metadata as m; import notebook_cafe_auto; assert m.version('notebooklm-py') == '0.7.3'; print('Cafe publisher import probe: OK')"
+  & $Python -c "import importlib.metadata as m; import notebook_cafe_auto, rookiepy; assert m.version('notebooklm-py') == '0.7.3'; print('Cafe publisher import probe: OK')"
   if ($LASTEXITCODE -ne 0) { throw "Cafe publisher import probe failed." }
 
   if (-not (Test-Path (Join-Path $root "config.ini"))) {
@@ -32,5 +32,5 @@ try {
 }
 
 Write-Output "Cafe publisher install checks complete."
-Write-Output "Next: & `"$Python`" -m notebooklm login"
+Write-Output "Next: & `"$Python`" -m notebooklm login --browser-cookies edge --include-domains youtube"
 Write-Output "Then: & `"$Python`" -m notebooklm auth check --test --json"
