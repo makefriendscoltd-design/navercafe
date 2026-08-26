@@ -2269,7 +2269,8 @@ def publish_post(driver, wait=20):
 
 def verify_published_article(driver, title, source_url, min_images=5,
                              expected_text_groups=None, expected_og_links=None,
-                             exact_images=False, wait=20):
+                             exact_images=False, require_exact_source_link=False,
+                             wait=20):
     """Read the saved article back and verify the externally observable result."""
     article_url = driver.current_url
     for _ in range(wait):
@@ -2309,12 +2310,22 @@ def verify_published_article(driver, title, source_url, min_images=5,
             if (!ogSections.length) {
                 ogSections = document.querySelectorAll('.se-component.se-oglink');
             }
+            var sourceLinkHrefs = [];
+            var sourceRoot = document.querySelector('.se-main-container') || document;
+            sourceRoot.querySelectorAll('a[href], [data-href]').forEach(function(el) {
+                var attrHref = el.getAttribute('href');
+                var dataHref = el.getAttribute('data-href');
+                if (attrHref) sourceLinkHrefs.push(attrHref);
+                if (dataHref) sourceLinkHrefs.push(dataHref);
+                if (el.href) sourceLinkHrefs.push(el.href);
+            });
             return {
                 text: text,
                 imageCount: images.length,
                 textGroupCount: textSections.length,
                 quotationCount: quoteSections.length,
                 ogLinkCount: ogSections.length,
+                sourceLinkHrefs: Array.from(new Set(sourceLinkHrefs)),
                 html: document.documentElement.outerHTML
             };
         """) or {}
@@ -2335,10 +2346,16 @@ def verify_published_article(driver, title, source_url, min_images=5,
     text_group_count = int(measured.get("textGroupCount", 0) or 0)
     quotation_count = int(measured.get("quotationCount", 0) or 0)
     og_link_count = int(measured.get("ogLinkCount", 0) or 0)
+    source_link_hrefs = {
+        str(value) for value in (measured.get("sourceLinkHrefs") or []) if value
+    }
     video_id = extract_video_id(source_url) if source_url else None
-    source_ok = bool(source_url and (
-        (video_id and video_id in html) or source_url in html or source_url in text
-    ))
+    if require_exact_source_link:
+        source_ok = bool(source_url and source_url in source_link_hrefs)
+    else:
+        source_ok = bool(source_url and (
+            (video_id and video_id in html) or source_url in html or source_url in text
+        ))
     title_ok = bool(title and normalize(title) in normalize(text + " " + driver.title))
     url_ok = bool(article_url and 'write' not in article_url.lower())
     images_ok = (image_count == min_images if exact_images else image_count >= min_images)
@@ -2361,6 +2378,7 @@ def verify_published_article(driver, title, source_url, min_images=5,
         "expectedOgLinkCount": expected_og_links,
         "structureOk": structure_ok,
         "sourceLinkOk": source_ok,
+        "exactSourceLinkRequired": require_exact_source_link,
         "articleUrlOk": url_ok,
     }
     if not ok:
@@ -2957,7 +2975,8 @@ def ensure_naver_login(driver, wait_minutes=5):
 def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=None,
                        draft=False, unattended=False, keep_browser_open=None,
                        verify_images=5, verify_text_groups=None, verify_og_links=None,
-                       require_all_images=True, verify_exact_images=False):
+                       require_all_images=True, verify_exact_images=False,
+                       verify_exact_source_link=False):
     """Selenium으로 저장/발행하고 구조화된 결과를 반환합니다."""
     print("[4/4] 네이버 카페 포스팅 시작...")
     publish_guard = _begin_publish_guard(source_url)
@@ -3026,6 +3045,7 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
                 expected_text_groups=verify_text_groups,
                 expected_og_links=verify_og_links,
                 exact_images=verify_exact_images,
+                require_exact_source_link=verify_exact_source_link,
             )
             _mark_publish_verification(publish_guard, verification)
             return {
@@ -3443,7 +3463,8 @@ def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=Non
             driver, title, source_url, min_images=verify_images,
             expected_text_groups=verify_text_groups,
             expected_og_links=verify_og_links,
-            exact_images=verify_exact_images)
+            exact_images=verify_exact_images,
+            require_exact_source_link=verify_exact_source_link)
         _mark_publish_verification(publish_guard, verification)
         if not verification.get("ok"):
             print(f"\n  ** [경고] 글은 발행됐지만 재검증에 실패했습니다: "

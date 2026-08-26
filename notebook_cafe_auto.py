@@ -384,14 +384,16 @@ def build_template_body(manuscript, image_count, optional_config,
 def apply_template_options(optional_config, template):
     result = dict(optional_config)
     if template == REFERENCE_TEMPLATE:
-        # 기준글 5854: 본문/이미지 교차 + 맨 끝 원본 영상 OG 카드만 사용한다.
+        # 기준글 5854: 본문/이미지 교차 + 맨 끝 원본 회원용 영상의
+        # 직접 링크만 사용한다. 멤버십 라이브는 YouTube 임베드에서
+        # 재생이 막힐 수 있으므로 OG 카드로 변환하지 않는다.
         result.update({
             'bold_enabled': False,
             'highlight_enabled': False,
             'cta_enabled': False,
             'board_name': '',
             'source_label': '',
-            'source_link_card': True,
+            'source_link_card': False,
         })
     return result
 
@@ -869,7 +871,8 @@ def main(argv=None):
                 verify_images=(REFERENCE_IMAGE_COUNT if template == REFERENCE_TEMPLATE else 1),
                 verify_text_groups=(REFERENCE_TEXT_GROUP_COUNT
                                     if template == REFERENCE_TEMPLATE else None),
-                verify_og_links=(1 if template == REFERENCE_TEMPLATE else None),
+                verify_og_links=(0 if template == REFERENCE_TEMPLATE else None),
+                verify_exact_source_link=(template == REFERENCE_TEMPLATE),
                 require_all_images=True,
                 verify_exact_images=(template == REFERENCE_TEMPLATE),
             )
@@ -990,7 +993,8 @@ def main(argv=None):
                            else len(image_paths)),
             verify_text_groups=(REFERENCE_TEXT_GROUP_COUNT
                                 if template == REFERENCE_TEMPLATE else None),
-            verify_og_links=(1 if template == REFERENCE_TEMPLATE else None),
+            verify_og_links=(0 if template == REFERENCE_TEMPLATE else None),
+            verify_exact_source_link=(template == REFERENCE_TEMPLATE),
             require_all_images=True,
             verify_exact_images=(template == REFERENCE_TEMPLATE),
         )

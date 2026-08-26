@@ -84,7 +84,7 @@ telegram_thread_id = optional_topic_id
 python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID" --dry
 ```
 
-기준글 5854와 같은 `텍스트 6구간 + 장면 5장 + 마지막 YouTube OG 카드` 포맷으로, 기존 다운로드 영상을 재사용하고 결과 JSON을 남기기:
+기준글 5854와 같은 `텍스트 6구간 + 장면 5장 + 마지막 회원용 YouTube 직접 링크` 포맷으로, 기존 다운로드 영상을 재사용하고 결과 JSON을 남기기:
 
 ```powershell
 python notebook_cafe_auto.py "https://youtu.be/ORIGINAL_MEMBERS_ONLY_ID" `
@@ -108,7 +108,7 @@ python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID"
 python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID" --publish
 ```
 
-발행 글을 다시 읽어 제목·텍스트 6구간·이미지 5장·인용구 0개·원본 YouTube OG 카드 1개를 확인한 뒤 Telegram까지 전송:
+발행 글을 다시 읽어 제목·텍스트 6구간·이미지 5장·인용구 0개·YouTube OG 카드 0개·원본 회원용 URL의 정확한 `href`를 확인한 뒤 Telegram까지 전송:
 
 ```powershell
 python notebook_cafe_auto.py "https://youtu.be/VIDEO_ID" `
