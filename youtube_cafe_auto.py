@@ -2572,13 +2572,78 @@ def _release_publish_guard(publish_guard):
         pass
 
 
+def draft_saved_from_counts(before, after):
+    """'임시등록 N' 개수 변화로 저장 성공을 판정한다.
+
+    개수를 못 읽으면(None) 성공으로 치지 않는다. 버튼 클릭만으로 성공을
+    반환하던 탓에 2026-08-28 실행이 '임시저장 완료'로 잘못 보고됐고,
+    실제 카페 임시저장함은 0건이었다.
+    """
+    if after is None:
+        return False
+    if before is None:
+        return after > 0
+    return after > before
+
+
+def _draft_count(driver):
+    """화면에서 '임시등록 N' / '임시저장 N' 의 N 을 읽는다. 못 찾으면 None."""
+    try:
+        return driver.execute_script("""
+            var els = document.querySelectorAll('button, a, span, div, li');
+            for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || '').replace(/\\s+/g, '');
+                var m = t.match(/^(?:임시등록|임시저장|저장)(\\d+)$/);
+                if (m) return parseInt(m[1], 10);
+            }
+            return null;
+        """)
+    except Exception:
+        return None
+
+
+def _accept_native_alert(driver):
+    """네이티브 alert/confirm 이 떠 있으면 확인을 누르고 문구를 돌려준다."""
+    try:
+        alert = driver.switch_to.alert
+        text = alert.text or ""
+        alert.accept()
+        print(f"  -> 확인 대화상자 수락: {text[:60]}")
+        return text
+    except Exception:
+        return None
+
+
+def _click_confirm_layer(driver):
+    """DOM 확인 레이어를 누른다. 클래스가 자주 바뀌어 텍스트도 함께 본다."""
+    try:
+        return driver.execute_script("""
+            var sel = '.btn_confirm, .se-popup-button-confirm, .btn_ok, [class*="confirm"]';
+            var b = document.querySelector(sel);
+            if (b) { b.click(); return 'selector'; }
+            var els = document.querySelectorAll('button, a, [role="button"]');
+            for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || '').replace(/\\s+/g, '');
+                if (t === '확인' || t === '예') {
+                    var r = els[i].getBoundingClientRect();
+                    if (r.width > 0 && r.height > 0) { els[i].click(); return t; }
+                }
+            }
+            return null;
+        """)
+    except Exception:
+        return None
+
+
 def save_as_draft(driver):
-    """작성 중인 글을 임시저장한다.
+    """작성 중인 글을 임시저장하고, 실제로 저장됐는지 확인한다.
 
     '등록' 옆의 '저장'(임시저장) 버튼을 누른다. 셀렉터가 확실치 않아
     텍스트 기반으로 넓게 찾고, 실패하면 툴바를 덤프해 원인을 남긴다.
     """
     print("  -> 임시저장 중...")
+    before = _draft_count(driver)
+    print(f"  -> 임시저장함 현재 개수: {before if before is not None else '읽지 못함'}")
     js = """
     var cands = document.querySelectorAll('button, a, [role="button"]');
     for (var i = 0; i < cands.length; i++) {
@@ -2604,18 +2669,28 @@ def save_as_draft(driver):
 
     if hit:
         print(f"  -> 임시저장 버튼 클릭: '{hit}'")
+        time.sleep(2)
+        _accept_native_alert(driver)
+        layer = _click_confirm_layer(driver)
+        if layer:
+            print(f"  -> 확인 레이어 클릭: {layer}")
+            time.sleep(1)
+            _accept_native_alert(driver)
         time.sleep(3)
-        # 확인 레이어가 뜨면 닫아준다
-        try:
-            driver.execute_script("""
-                var b = document.querySelector('.btn_confirm, .se-popup-button-confirm');
-                if (b) b.click();
-            """)
-        except Exception:
-            pass
-        return True
+
+        after = _draft_count(driver)
+        print(f"  -> 임시저장함 저장 후 개수: {after if after is not None else '읽지 못함'}")
+        if draft_saved_from_counts(before, after):
+            return True
+
+        # 클릭은 됐는데 개수가 안 늘었다. 성공으로 보고하지 말고 증거를 남긴다.
+        print("  -> [주의] 임시저장 개수가 늘지 않았습니다. 저장되지 않은 것으로 봅니다.")
+        _save_login_challenge_screenshot(driver, "draft_not_saved")
+        _dump_toolbar(driver, 'draft_not_saved')
+        return False
 
     print("  -> [주의] 임시저장 버튼을 찾지 못했습니다. 창에서 직접 눌러주세요.")
+    _save_login_challenge_screenshot(driver, "draft_button_missing")
     _dump_toolbar(driver, 'draft')
     return False
 

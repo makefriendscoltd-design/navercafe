@@ -25,6 +25,7 @@ from notebook_cafe_auto import apply_template_options
 from youtube_cafe_auto import (
     _cookie_configs,
     _parse_json3,
+    draft_saved_from_counts,
     ensure_naver_login,
     verify_published_article,
 )
@@ -238,3 +239,21 @@ class NaverSessionPersistenceTests(unittest.TestCase):
                 mock.patch("youtube_cafe_auto._save_naver_session") as save:
             self.assertFalse(ensure_naver_login(object(), wait_minutes=1))
         save.assert_called_once()
+
+
+class DraftSaveVerificationTests(unittest.TestCase):
+    """버튼 클릭만으로 임시저장 성공을 보고하면 안 된다."""
+
+    def test_unreadable_count_is_never_a_success(self):
+        self.assertFalse(draft_saved_from_counts(None, None))
+        self.assertFalse(draft_saved_from_counts(3, None))
+
+    def test_success_requires_the_draft_count_to_grow(self):
+        self.assertTrue(draft_saved_from_counts(0, 1))
+        self.assertTrue(draft_saved_from_counts(2, 3))
+        self.assertFalse(draft_saved_from_counts(1, 1))
+        self.assertFalse(draft_saved_from_counts(2, 1))
+
+    def test_first_ever_draft_counts_when_no_baseline_was_readable(self):
+        self.assertTrue(draft_saved_from_counts(None, 1))
+        self.assertFalse(draft_saved_from_counts(None, 0))
