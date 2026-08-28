@@ -2877,12 +2877,17 @@ def ensure_naver_login(driver, wait_minutes=5):
 
     로그인 버튼 셀렉터에 의존하지 않는다 — 네이버가 자주 바꾼다.
     """
+    # 세션이 살아 있을 때마다 파일을 다시 박제한다.
+    # 이걸 안 하면 브라우저 프로필로만 로그인된 상태에서는 naver_session.json 이
+    # 영영 안 생기고, 프로필 쿠키가 만료되는 순간 무인 실행이 캡챠에서 죽는다.
     if _naver_session_alive(driver):
         print("  -> 저장된 세션으로 이미 로그인됨 (캡챠 불필요).")
+        _save_naver_session(driver)
         return False
 
     if _restore_naver_session(driver):
         print("  -> 저장해둔 쿠키로 세션을 복구했습니다 (재로그인 불필요).")
+        _save_naver_session(driver)   # 만료를 30일 뒤로 다시 밀어둔다
         return False
 
     print("  -> 로그인 세션이 없습니다. 로그인 페이지로 이동합니다.")

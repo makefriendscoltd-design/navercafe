@@ -25,6 +25,7 @@ from notebook_cafe_auto import apply_template_options
 from youtube_cafe_auto import (
     _cookie_configs,
     _parse_json3,
+    ensure_naver_login,
     verify_published_article,
 )
 
@@ -220,3 +221,20 @@ class ResultAndNotificationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NaverSessionPersistenceTests(unittest.TestCase):
+    """세션 파일을 갱신하지 않으면 무인 실행이 캡챠에서 죽는다."""
+
+    def test_live_profile_session_is_written_back_to_the_session_file(self):
+        with mock.patch("youtube_cafe_auto._naver_session_alive", return_value=True), \
+                mock.patch("youtube_cafe_auto._save_naver_session") as save:
+            self.assertFalse(ensure_naver_login(object(), wait_minutes=1))
+        save.assert_called_once()
+
+    def test_restored_session_refreshes_its_own_expiry(self):
+        with mock.patch("youtube_cafe_auto._naver_session_alive", return_value=False), \
+                mock.patch("youtube_cafe_auto._restore_naver_session", return_value=True), \
+                mock.patch("youtube_cafe_auto._save_naver_session") as save:
+            self.assertFalse(ensure_naver_login(object(), wait_minutes=1))
+        save.assert_called_once()
