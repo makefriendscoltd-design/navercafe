@@ -8,7 +8,7 @@
 #      python 자체가 내부 루프(N초마다 감시)를 돌므로 살아만 있으면 계속 동작한다.
 #      봇이 죽으면 최대 5분 안에 이 watchdog 이 다시 띄운다.
 $ErrorActionPreference = 'SilentlyContinue'
-$dir = 'D:\coding\ccidacafe'
+$dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $dir
 $logPath = Join-Path $dir 'comment_bot.log'
 
@@ -133,7 +133,6 @@ if (-not $py) { $py = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\pyt
 # 콘솔 창 없이 python 기동, 로그는 comment_bot.log 로 append.
 # (Selenium 이 띄우는 크롬 창은 봇 감지 회피상 보이게 뜨며, 이 프로세스와 별개)
 Start-Process -FilePath 'cmd.exe' `
-    -ArgumentList '/c', ('"' + $py + '" -u comment_bot.py >> comment_bot.log 2>&1') `
+    -ArgumentList '/c', ('set NAVERCAFE_BROWSER_BACKEND=selenium&& "' + $py + '" -u comment_bot.py >> comment_bot.log 2>&1') `
     -WorkingDirectory $dir -WindowStyle Hidden
 exit 0
-

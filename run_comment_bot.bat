@@ -1,5 +1,6 @@
 @echo off
-cd /d D:\coding\ccidacafe
+cd /d "%~dp0"
+set NAVERCAFE_BROWSER_BACKEND=selenium
 
 :loop
 echo [%date% %time%] === comment bot start === >> comment_bot.log

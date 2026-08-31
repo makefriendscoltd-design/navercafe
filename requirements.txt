@@ -1,0 +1,12 @@
+beautifulsoup4
+fastapi
+google-genai
+notebooklm-py[cookies]
+opencv-python
+Pillow
+playwright
+pytest
+python-multipart
+uvicorn
+youtube-transcript-api
+yt-dlp

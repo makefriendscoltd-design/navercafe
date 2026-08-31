@@ -245,8 +245,9 @@ input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--accent); }
     <div class="settings-section">
       <div class="section-head">네이버 계정</div>
       <div class="form-row col2">
-        <div><label>아이디</label><input type="text" id="naver_id"></div>
-        <div><label>비밀번호</label><input type="password" id="naver_pw"></div>
+        <div><label>브라우저</label><select id="browser_backend"><option value="aside">Aside (macOS 기본)</option><option value="selenium">Selenium fallback</option></select></div>
+        <div><label>아이디 (Selenium만)</label><input type="text" id="naver_id"></div>
+        <div><label>비밀번호 (Selenium만)</label><input type="password" id="naver_pw"></div>
       </div>
       <div class="form-row">
         <div><label>카페 게시판 URL</label><input type="text" id="naver_cafe_url"></div>
@@ -384,7 +385,7 @@ async function loadSettings() {
   const res = await fetch('/api/config');
   const cfg = await res.json();
   const fields = [
-    'naver_id', 'naver_pw', 'naver_cafe_url', 'gemini_api_key',
+    'browser_backend', 'naver_id', 'naver_pw', 'naver_cafe_url', 'gemini_api_key',
     'cta_enabled', 'cta_text', 'cta_link_url', 'cta_link_text',
     'formatting_bold_enabled', 'formatting_highlight_enabled', 'formatting_highlight_color',
     'prompt_custom_instructions',
@@ -402,6 +403,7 @@ async function loadSettings() {
 
 async function saveSettings() {
   const fields = {
+    browser_backend: 'browser_backend',
     naver_id: 'naver_id', naver_pw: 'naver_pw', naver_cafe_url: 'naver_cafe_url',
     gemini_api_key: 'gemini_api_key',
     cta_enabled: 'cta_enabled', cta_text: 'cta_text',
@@ -441,6 +443,7 @@ async function startRun() {
 
   // 설정에서 값 읽기
   const cfg_fields = {
+    browser_backend: 'browser_backend',
     naver_id: 'naver_id', naver_pw: 'naver_pw', cafe_url: 'naver_cafe_url',
     gemini_key: 'gemini_api_key',
     cta_enabled: 'cta_enabled', cta_text: 'cta_text',

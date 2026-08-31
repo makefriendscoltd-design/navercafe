@@ -22,6 +22,7 @@ try:
     from youtube_cafe_auto import DEFAULT_WRITING_STYLE
 except ImportError:
     DEFAULT_WRITING_STYLE = ""
+from aside_browser import aside_available
 
 # ===================================================================
 # 미리보기 다이얼로그
@@ -200,20 +201,30 @@ class CafeAutoApp:
         parent = self.settings_inner
 
         # ── 계정 정보 ──
-        acc_frame = ttk.LabelFrame(parent, text="네이버 계정 / API 키")
+        acc_frame = ttk.LabelFrame(parent, text="브라우저 / 네이버 / API 키")
         acc_frame.pack(fill='x', padx=4, pady=(0, 8))
 
+        self.var_browser_backend = tk.StringVar(value='aside' if aside_available() else 'selenium')
         self.var_naver_id = tk.StringVar()
         self.var_naver_pw = tk.StringVar()
         self.var_cafe_url = tk.StringVar()
         self.var_gemini_key = tk.StringVar()
 
+        ttk.Label(acc_frame, text="브라우저 백엔드").grid(row=0, column=0, sticky='w', padx=8, pady=3)
+        ttk.Combobox(
+            acc_frame, textvariable=self.var_browser_backend,
+            values=('aside', 'selenium'), state='readonly', width=18,
+        ).grid(row=0, column=1, sticky='w', padx=8, pady=3)
+        ttk.Label(
+            acc_frame, text="Aside는 브라우저 로그인 상태를 재사용합니다.", foreground='gray'
+        ).grid(row=0, column=2, sticky='w', padx=4, pady=3)
+
         for i, (label, var, show) in enumerate([
-            ("네이버 아이디", self.var_naver_id, None),
-            ("네이버 비밀번호", self.var_naver_pw, '●'),
+            ("네이버 아이디 (Selenium fallback만)", self.var_naver_id, None),
+            ("네이버 비밀번호 (Selenium fallback만)", self.var_naver_pw, '●'),
             ("카페 게시판 URL", self.var_cafe_url, None),
             ("Gemini API 키", self.var_gemini_key, '●'),
-        ]):
+        ], start=1):
             ttk.Label(acc_frame, text=label).grid(row=i, column=0, sticky='w', padx=8, pady=3)
             entry = ttk.Entry(acc_frame, textvariable=var, width=60)
             if show:
@@ -320,6 +331,9 @@ class CafeAutoApp:
         config = configparser.RawConfigParser()
         config.read(CONFIG_FILE, encoding='utf-8')
 
+        self.var_browser_backend.set(
+            config.get('BROWSER', 'backend', fallback=self.var_browser_backend.get())
+        )
         self.var_naver_id.set(config.get('NAVER', 'id', fallback=''))
         self.var_naver_pw.set(config.get('NAVER', 'pw', fallback=''))
         self.var_cafe_url.set(config.get('NAVER', 'cafe_url', fallback=''))
@@ -353,6 +367,7 @@ class CafeAutoApp:
             'cafe_url': self.var_cafe_url.get(),
         }
         config['GEMINI'] = {'api_key': self.var_gemini_key.get()}
+        config['BROWSER'] = {'backend': self.var_browser_backend.get() or 'aside'}
         config['CTA'] = {
             'enabled': str(self.var_cta_enabled.get()).lower(),
             'text': self.var_cta_text.get(),
@@ -421,9 +436,13 @@ class CafeAutoApp:
             return
 
         # 필수 설정 확인
-        if not self.var_naver_id.get() or not self.var_gemini_key.get():
+        missing = not self.var_cafe_url.get() or not self.var_gemini_key.get()
+        if self.var_browser_backend.get() == 'selenium':
+            missing = missing or not self.var_naver_id.get() or not self.var_naver_pw.get()
+        if missing:
             messagebox.showwarning("설정 필요",
-                                   "[설정] 탭에서 네이버 계정과 Gemini API 키를 입력한 뒤 저장하세요.",
+                                   "[설정] 탭에서 카페 URL과 Gemini API 키를 입력하세요. "
+                                   "Selenium fallback을 쓸 때만 네이버 계정도 필요합니다.",
                                    parent=self.root)
             self.notebook.select(self.tab_settings)
             return
@@ -448,6 +467,7 @@ class CafeAutoApp:
             'cafe_url': self.var_cafe_url.get(),
         }
         config['GEMINI'] = {'api_key': self.var_gemini_key.get()}
+        config['BROWSER'] = {'backend': self.var_browser_backend.get() or 'aside'}
         config['CTA'] = {
             'enabled': str(self.var_cta_enabled.get()).lower(),
             'text': self.var_cta_text.get(),
@@ -516,6 +536,8 @@ class CafeAutoApp:
                 'max_length': int(self.var_max_length.get() or 2500),
                 'max_paragraphs': int(self.var_max_paragraphs.get() or 6),
                 'image_count': int(self.var_image_count.get() or 6),
+                'browser_backend': self.var_browser_backend.get() or 'aside',
+                'aside_account': '',
             }
 
             image_count = optional_config['image_count']

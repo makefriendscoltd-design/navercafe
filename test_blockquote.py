@@ -2,14 +2,17 @@
 blockquote test v4 - Selenium-only text input (no pyautogui for paste)
 """
 import os, time, re, configparser, urllib.parse
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException
-import pyautogui, pyperclip
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException
+    import pyautogui, pyperclip
+except ImportError:
+    webdriver = None
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
@@ -234,4 +237,9 @@ def main():
         driver.quit()
 
 if __name__ == '__main__':
+    if webdriver is None:
+        raise SystemExit(
+            "이 파일은 Selenium fallback 전용입니다. "
+            "pip install -r requirements-selenium.txt 후 실행하세요."
+        )
     main()

@@ -5,7 +5,8 @@
 특정 게시판(예: 가입인사)을 N초마다 감시하여, 봇 시작 이후 새로 올라온 글에
 미리 지정한 여러 문구 중 하나를 랜덤으로 댓글로 작성한다.
 
-- 로그인 계정 / 카페 정보는 config.ini 의 [NAVER] 섹션을 재사용한다.
+- 기본 Aside 경로는 Aside 브라우저의 네이버 로그인 상태를 재사용한다.
+- Selenium fallback만 config.ini [NAVER] id/pw를 사용한다.
 - 봇 설정은 config.ini 의 [COMMENT_BOT] 섹션을 사용한다 (없으면 자동 생성).
 - 이미 처리한 글 ID 는 comment_bot_seen.json 에 저장하여 재시작해도 중복 댓글을 막는다.
 
@@ -29,6 +30,17 @@ import time
 import urllib.parse
 import urllib.request
 
+from aside_browser import (
+    AsideError,
+    AsideLoginRequired,
+    aside_available,
+    check_login as aside_check_login,
+    extract_naver_members as aside_extract_members,
+    fetch_naver_articles as aside_fetch_articles,
+    fetch_naver_stats as aside_fetch_stats,
+    write_naver_comment as aside_write_comment,
+)
+
 # Windows cp949 콘솔에서 em-dash/이모지 등 출력 시 크래시 방지 → stdout/stderr 를 utf-8 로
 for _stream in (sys.stdout, sys.stderr):
     try:
@@ -43,11 +55,8 @@ try:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.keys import Keys
     from selenium.webdriver.common.action_chains import ActionChains
-except ImportError as e:
-    print("[오류] 필요한 패키지가 없습니다. 아래 명령으로 설치하세요:")
-    print("  pip install selenium pyperclip")
-    print(f"  (상세: {e})")
-    sys.exit(1)
+except ImportError:
+    pyperclip = webdriver = By = Keys = ActionChains = None
 
 CONFIG_PATH = "config.ini"
 SEEN_PATH = "comment_bot_seen.json"
@@ -61,6 +70,16 @@ HEARTBEAT_PATH = os.path.abspath("comment_bot_heartbeat.txt")  # 매 폴링마�
 
 # 락 파일 핸들은 프로세스 수명 동안 열어둬야 잠금이 유지됨 (GC 방지용 전역 보관)
 _LOCK_FH = None
+BROWSER_BACKEND = "aside" if aside_available() else "selenium"
+
+
+class AsideDriver:
+    """Marker used by the existing orchestration loop for Aside high-level calls."""
+
+    is_aside = True
+
+    def quit(self):
+        return None
 
 
 def write_heartbeat():
@@ -354,11 +373,17 @@ def _kill_orphan_profile_chrome():
 
 
 def make_driver():
-    """전용 프로필을 사용하는 Chrome 드라이버를 생성한다.
+    """설정된 백엔드의 브라우저 핸들을 생성한다.
 
-    프로필 폴더에 쿠키/세션이 저장되므로, 첫 로그인 이후에는 재로그인/캡차가 거의 없다.
-    또한 자동화 탐지 우회 플래그로 캡차 발생 확률을 낮춘다.
+    Aside는 앱에서 선택된 로그인 프로필을 재사용하며 ChromeDriver를 만들지 않는다.
+    Selenium은 기존 Windows 운영을 위한 fallback으로만 남긴다.
     """
+    if BROWSER_BACKEND == "aside":
+        return AsideDriver()
+    if BROWSER_BACKEND != "selenium":
+        raise ValueError(f"지원하지 않는 브라우저 백엔드입니다: {BROWSER_BACKEND}")
+    if webdriver is None:
+        raise RuntimeError("Selenium fallback 패키지가 없습니다: pip install selenium pyperclip")
     # 이전 실행이 남긴 고아 크롬이 프로필을 잠그면 드라이버 생성이 실패하므로 먼저 정리한다.
     _kill_orphan_profile_chrome()
     options = webdriver.ChromeOptions()
@@ -456,6 +481,14 @@ def _stat_top_posts(driver, clubid, n=3, wait=9):
 def fetch_cafe_stats(driver, clubid, target_date):
     """어제(target_date) 카페 전체 통계: 방문자수 / 전체 조회수 / 조회수 TOP3."""
     ds = target_date.strftime("%Y.%m.%d.")  # 예: '2026.06.10.'
+    if isinstance(driver, AsideDriver):
+        result = aside_fetch_stats(str(clubid), ds)
+        return {
+            "date": ds,
+            "visitors": result.get("visitors"),
+            "views": result.get("views"),
+            "top": [tuple(row) for row in (result.get("top") or [])],
+        }
     base = f"https://cafe.stat.naver.com/cafe/{clubid}"
     visitors = _stat_daily_value(driver, f"{base}/visit/uv", ds)        # 순방문자수
     views = _stat_daily_value(driver, f"{base}/visit/cv", ds)            # 전체 조회수
@@ -529,6 +562,21 @@ def count_member_joins(driver, clubid, start_date, end_date):
     가입일이 start_date 이전으로 내려가면 즉시 중단(정렬이 내림차순이므로).
     반환: (총합, {date: count}).
     """
+    if isinstance(driver, AsideDriver):
+        result = aside_extract_members(
+            f"https://cafe.naver.com/ManageWholeMember.nhn?clubid={clubid}",
+            max_pages=400,
+        )
+        per_day = {}
+        for raw in result.get("join_dates") or []:
+            try:
+                joined = datetime.date.fromisoformat(raw)
+            except ValueError:
+                continue
+            if start_date <= joined <= end_date:
+                per_day[joined] = per_day.get(joined, 0) + 1
+        return sum(per_day.values()), per_day
+
     driver.get(f"https://cafe.naver.com/ManageWholeMember.nhn?clubid={clubid}")
     time.sleep(4)
     per_day = {}
@@ -562,6 +610,11 @@ def _format_weekly_growth(total, per_day, start_date, end_date):
 
 def is_logged_in(driver):
     """저장된 세션으로 이미 로그인되어 있는지 확인한다."""
+    if isinstance(driver, AsideDriver):
+        try:
+            return bool(aside_check_login("naver").get("logged_in"))
+        except AsideError:
+            return False
     try:
         driver.get("https://www.naver.com")
         time.sleep(2)
@@ -574,6 +627,14 @@ def is_logged_in(driver):
 
 def naver_login(driver, naver_id, naver_pw):
     """nid.naver.com 로그인. 저장된 세션이 있으면 건너뛰고, 캡챠/2차 인증 시 수동 처리를 기다린다."""
+    if isinstance(driver, AsideDriver):
+        state = aside_check_login("naver")
+        if state.get("logged_in"):
+            print("[로그인] Aside 브라우저의 네이버 로그인 상태를 재사용합니다.")
+            return True
+        # 비밀번호를 CLI로 전달하지 않는다. 사용자가 Aside에서 직접 로그인하도록 탭만 연다.
+        aside_check_login("naver", keep_login_tab=True)
+        raise AsideLoginRequired("Aside 브라우저에서 네이버 로그인이 필요합니다.")
     # 저장된 프로필로 이미 로그인되어 있으면 스킵
     if is_logged_in(driver):
         print("[로그인] 저장된 세션으로 이미 로그인됨 (캡차/재입력 불필요).")
@@ -633,6 +694,9 @@ def naver_login(driver, naver_id, naver_pw):
 # ===================================================================
 def fetch_article_ids(driver, board_url):
     """게시판 페이지를 열어 글 ID 목록을 반환한다. [(article_id, title), ...]"""
+    if isinstance(driver, AsideDriver):
+        items = aside_fetch_articles(board_url)
+        return [(str(item["id"]), item.get("title", "")) for item in items]
     driver.get(board_url)
     _wait_for_article_rows(driver)  # SPA 렌더 대기 (글 행이 나타날 때까지 폴링)
 
@@ -721,6 +785,24 @@ def fetch_articles_with_dates(driver, board_url, today, page=1):
     각 글 행(tr)의 셀들 중 날짜 형식인 셀을 찾아 날짜를 파싱한다.
     반환: [{'id','title','date_text','date'}, ...]  (date 는 date 객체 또는 None)
     """
+    if isinstance(driver, AsideDriver):
+        items = aside_fetch_articles(board_url, page_number=page)
+        result = []
+        for item in items:
+            date_text, date_val = "", None
+            for cell_text in item.get("cells") or []:
+                parsed = _parse_list_date(cell_text, today)
+                if parsed:
+                    date_text, date_val = cell_text, parsed
+                    break
+            result.append({
+                "id": str(item["id"]),
+                "title": item.get("title", ""),
+                "date_text": date_text,
+                "date": date_val,
+            })
+        return result
+
     url = board_url
     if page > 1:
         sep = "&" if "?" in board_url else "?"
@@ -946,6 +1028,28 @@ def write_comment(driver, clubid, article_id, text, board_url, delay_range, dry_
     - 등록 버튼: a.btn_register (텍스트 '등록')
     dry_run=True 이면 탐색 결과만 보고하고 실제 작성/등록은 하지 않는다.
     """
+    if isinstance(driver, AsideDriver):
+        print(f"  -> 글 {article_id} 열기 {'(DRY-RUN)' if dry_run else ''} [Aside]")
+        result = aside_write_comment(
+            clubid=str(clubid),
+            article_id=str(article_id),
+            board_url=board_url,
+            text=text,
+            dry_run=dry_run,
+            signatures=signatures or (),
+            skip_if_commented=skip_if_commented,
+        )
+        ok = bool(result.get("ok"))
+        reason = result.get("reason", "")
+        if dry_run:
+            print(f"  [DRY-RUN] 글 {article_id}: {'작성 가능' if ok else '작성 불가'} ({reason})")
+        elif ok:
+            print(f"  [성공] 글 {article_id} 댓글 등록 동작 확인 ({reason})")
+            _rand_delay(*delay_range)
+        else:
+            print(f"  [실패] 글 {article_id}: {reason or 'Aside 댓글 작성 실패'}")
+        return ok
+
     url = build_article_url(clubid, article_id, board_url)
     print(f"  -> 글 {article_id} 열기 {'(DRY-RUN)' if dry_run else ''}")
     driver.get(url)
@@ -1182,6 +1286,27 @@ def _run_oneoff(naver_id, naver_pw, clubid, board_url, comment_texts,
     try:
         naver_login(driver, naver_id, naver_pw)
 
+        if isinstance(driver, AsideDriver):
+            articles = fetch_article_ids(driver, board_url)
+            print(f"\n[목록] 공지 제외 수집 글 {len(articles)}개 (앞 10개):")
+            for aid, title in articles[:10]:
+                print(f"    - {aid}: {title[:40]}")
+            if not target_id:
+                if not articles:
+                    print("[오류] 게시판에서 글을 찾지 못했습니다.")
+                    return
+                target_id = articles[0][0]
+            print(f"\n[대상 글] ID = {target_id}")
+            if mode == "test":
+                text = random.choice(comment_texts)
+                write_comment(driver, clubid, str(target_id), text,
+                              board_url, delay_range, dry_run=False)
+            else:
+                # inspect/probe는 외부 작성 없이 입력창과 등록 버튼까지만 확인한다.
+                write_comment(driver, clubid, str(target_id), comment_texts[0],
+                              board_url, delay_range, dry_run=True)
+            return
+
         # 로그인 상태 쿠키 확인
         cookies = {c["name"] for c in driver.get_cookies()}
         print(f"[로그인 쿠키] NID_AUT={'있음' if 'NID_AUT' in cookies else '없음'}, "
@@ -1252,6 +1377,8 @@ def _is_session_dead(exc):
     """브라우저 창이 닫히거나 드라이버 연결이 끊겨 더 이상 복구 불가능한
     Selenium 오류인지 판별한다. 이 경우 봇을 종료시켜 .bat 런처가
     새 브라우저로 재시작하도록 한다 (좀비 상태로 무한 에러 방지)."""
+    if isinstance(exc, (AsideError, AsideLoginRequired)):
+        return True
     msg = str(exc).lower()
     signatures = (
         "invalid session id",
@@ -1269,9 +1396,19 @@ def _is_session_dead(exc):
 
 
 def main():
+    global BROWSER_BACKEND
     config = load_config()
-    naver_id = config["NAVER"]["id"]
-    naver_pw = config["NAVER"]["pw"]
+    configured_backend = config.get("BROWSER", "backend", fallback="").strip().lower()
+    BROWSER_BACKEND = (
+        os.environ.get("NAVERCAFE_BROWSER_BACKEND", "").strip().lower()
+        or configured_backend
+        or ("aside" if aside_available() else "selenium")
+    )
+    naver_id = config.get("NAVER", "id", fallback="")
+    naver_pw = config.get("NAVER", "pw", fallback="")
+    if BROWSER_BACKEND == "selenium" and (not naver_id or not naver_pw):
+        print("[오류] Selenium fallback에는 config.ini [NAVER] id/pw가 필요합니다.")
+        sys.exit(1)
 
     board_url = config.get("COMMENT_BOT", "board_url", fallback="").strip()
     comment_texts = load_comment_texts(config)
@@ -1363,6 +1500,7 @@ def main():
     print(f"  - 게시판: clubid={clubid}, menuid={menuid}")
     print(f"  - 댓글 문구: {len(comment_texts)}개 (랜덤)")
     print(f"  - 감시 주기: {poll_interval}초")
+    print(f"  - 브라우저: {BROWSER_BACKEND}")
     print("  - 대상: 봇 시작 이후 새로 올라온 글만")
     print(f"  - 텔레그램 보고: {'켜짐 (매일 ' + str(tg['report_hour']) + '시)' if tg['enabled'] else '꺼짐'}")
     if tg["enabled"] and tg["weekly_enabled"]:

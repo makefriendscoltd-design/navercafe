@@ -7,8 +7,8 @@
 
 전제:
 - 카페 매니저(운영진) 계정이어야 회원 아이디가 마스킹 없이 보인다.
-- 댓글봇(comment_bot.py)이 chrome_profile_commentbot 프로필을 점유 중이므로,
-  이 스크립트는 별도 프로필(chrome_profile_extractor)로 크롬을 띄운다.
+- 기본값은 Aside 브라우저의 로그인 상태를 재사용한다.
+- Selenium fallback에서만 chrome_profile_extractor 프로필을 사용한다.
 
 사용법:
     # 1) 먼저 구조 확인 (셀렉터/iframe/페이지 형태 덤프, 추출 X)
@@ -27,7 +27,12 @@ import csv
 import time
 
 import comment_bot as cb  # load_config / naver_login 재사용 (import 시 부작용 없음 — __main__ 가드)
-from selenium import webdriver
+from aside_browser import aside_available, extract_naver_members
+
+try:
+    from selenium import webdriver
+except ImportError:
+    webdriver = None
 
 EXTRACT_PROFILE = os.path.abspath("chrome_profile_extractor")
 OUTPUT_CSV = "members.csv"
@@ -40,6 +45,8 @@ ID_TOKEN_RE = re.compile(r"^[a-z0-9][a-z0-9_\-]{3,19}$")
 
 def make_extract_driver():
     """추출 전용 프로필을 쓰는 Chrome 드라이버. (댓글봇 프로필과 분리해 충돌 방지)"""
+    if webdriver is None:
+        raise RuntimeError("Selenium fallback 패키지가 설치되지 않았습니다.")
     options = webdriver.ChromeOptions()
     options.add_argument("--window-size=1100,900")
     options.add_argument(f"--user-data-dir={EXTRACT_PROFILE}")
@@ -283,15 +290,42 @@ def main():
         sys.exit(1)
 
     config = cb.load_config()
-    naver_id = config["NAVER"]["id"]
-    naver_pw = config["NAVER"]["pw"]
+    backend = config.get("BROWSER", "backend", fallback="").strip().lower() or (
+        "aside" if aside_available() else "selenium"
+    )
+    naver_id = config.get("NAVER", "id", fallback="")
+    naver_pw = config.get("NAVER", "pw", fallback="")
 
     print("=" * 60)
     print("  네이버 카페 회원 아이디 추출기")
     print(f"  - 대상 URL: {url}")
     print(f"  - 모드: {mode}")
-    print(f"  - 프로필: {EXTRACT_PROFILE} (댓글봇과 분리)")
+    print(f"  - 브라우저: {backend}")
+    if backend == "selenium":
+        print(f"  - 프로필: {EXTRACT_PROFILE} (댓글봇과 분리)")
     print("=" * 60)
+
+    if backend == "aside":
+        result = extract_naver_members(url, inspect=(mode == "inspect"))
+        if mode == "inspect":
+            print(f"[inspect] iframe(cafe_main) 진입: {result.get('iframe', False)}")
+            print(f"[inspect] 테이블 행 샘플 ({len(result.get('samples') or [])}개):")
+            for row in result.get("samples") or []:
+                print("   " + row)
+            print(f"[inspect] 이 페이지에서 추출된 아이디 후보: {result.get('rows', 0)}개")
+            return
+
+        members = result.get("members") or {}
+        rows = sorted(members.items())
+        with open(OUTPUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["아이디", "이메일", "닉네임"])
+            for uid, nick in rows:
+                writer.writerow([uid, f"{uid}@naver.com", nick])
+        print(f"\n[완료] 아이디 {len(rows)}개 → {os.path.abspath(OUTPUT_CSV)}")
+        return
+    if backend != "selenium":
+        raise ValueError(f"지원하지 않는 브라우저 백엔드입니다: {backend}")
 
     driver = make_extract_driver()
     try:

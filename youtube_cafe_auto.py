@@ -17,7 +17,11 @@ Gemini AI로 블로그 글을 생성한 뒤, 네이버 카페에 자동 발행�
   python youtube_cafe_auto.py
 
 필요 패키지 (한 줄로 설치):
-  pip install opencv-python youtube-transcript-api yt-dlp google-genai selenium pyperclip pyautogui
+  pip install opencv-python youtube-transcript-api yt-dlp google-genai
+
+브라우저 자동화:
+  - macOS 기본: Aside CLI + Aside에 로그인된 브라우저 프로필
+  - Windows 호환 경로: Selenium + pyperclip + pyautogui
 
 선택 패키지 (뉴스기사 스크래핑 품질 향상):
   pip install beautifulsoup4
@@ -41,7 +45,14 @@ import configparser
 import urllib.parse
 import urllib.request
 import traceback
+import json
 from html.parser import HTMLParser
+
+from aside_browser import (
+    AsideError,
+    aside_available,
+    post_to_naver_cafe as post_to_naver_cafe_aside,
+)
 
 # ===================================================================
 # 2. 의존성 검사 (서드파티 패키지 설치 여부 확인)
@@ -51,9 +62,6 @@ REQUIRED_PACKAGES = [
     ('youtube_transcript_api',  'youtube-transcript-api'),
     ('yt_dlp',                  'yt-dlp'),
     ('google.genai',            'google-genai'),
-    ('selenium',                'selenium'),
-    ('pyperclip',               'pyperclip'),
-    ('pyautogui',               'pyautogui'),
 ]
 
 def check_dependencies():
@@ -80,27 +88,48 @@ check_dependencies()
 # 3. 서드파티 라이브러리 import (의존성 검사 통과 후)
 # ===================================================================
 import cv2
-import pyperclip
-import pyautogui
 import yt_dlp
 from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import (
-    UnexpectedAlertPresentException, NoAlertPresentException
-)
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.action_chains import ActionChains
+
+# Selenium은 Windows 호환 fallback에서만 필요하다. Aside 경로에서는 설치하지 않아도 된다.
+try:
+    import pyperclip
+    import pyautogui
+    from selenium import webdriver
+    from selenium.webdriver.common.keys import Keys
+    from selenium.webdriver.common.by import By
+    from selenium.common.exceptions import (
+        UnexpectedAlertPresentException, NoAlertPresentException
+    )
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.common.action_chains import ActionChains
+except ImportError:
+    pyperclip = pyautogui = webdriver = Keys = By = None
+    UnexpectedAlertPresentException = NoAlertPresentException = Exception
+    WebDriverWait = EC = ActionChains = None
 
 # ===================================================================
 # 4. 경로 및 설정 관리
 # ===================================================================
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
-COOKIES_FILE = os.path.join(SCRIPT_DIR, "cookies.txt")
+_LOCAL_CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.ini")
+_MIGRATED_PROJECT_DIR = os.path.join(os.path.expanduser("~"), "orca", "projects", "ccidacafe")
+_MIGRATED_CONFIG_FILE = os.path.join(_MIGRATED_PROJECT_DIR, "config.ini")
+CONFIG_FILE = os.environ.get("NAVERCAFE_CONFIG", "").strip() or (
+    _LOCAL_CONFIG_FILE if os.path.exists(_LOCAL_CONFIG_FILE)
+    else _MIGRATED_CONFIG_FILE if os.path.exists(_MIGRATED_CONFIG_FILE)
+    else _LOCAL_CONFIG_FILE
+)
+_LOCAL_COOKIES_FILE = os.path.join(SCRIPT_DIR, "cookies.txt")
+_MIGRATED_COOKIES_FILE = os.path.join(_MIGRATED_PROJECT_DIR, "cookies.txt")
+COOKIES_FILE = os.environ.get("NAVERCAFE_COOKIES", "").strip() or (
+    _LOCAL_COOKIES_FILE if os.path.exists(_LOCAL_COOKIES_FILE)
+    else _MIGRATED_COOKIES_FILE if os.path.exists(_MIGRATED_COOKIES_FILE)
+    else _LOCAL_COOKIES_FILE
+)
+PUBLISHED_RECORD_FILE = os.path.join(SCRIPT_DIR, "published_posts.json")
 
 # 전역 설정 변수
 NAVER_ID = ""
@@ -173,7 +202,12 @@ def load_or_create_config():
     if os.path.exists(CONFIG_FILE):
         config = configparser.RawConfigParser()
         config.read(CONFIG_FILE, encoding='utf-8')
-        required = [('NAVER', 'id'), ('NAVER', 'pw'), ('NAVER', 'cafe_url'), ('GEMINI', 'api_key')]
+        backend = config.get('BROWSER', 'backend', fallback='').strip().lower() or (
+            'aside' if aside_available() else 'selenium'
+        )
+        required = [('NAVER', 'cafe_url'), ('GEMINI', 'api_key')]
+        if backend == 'selenium':
+            required[0:0] = [('NAVER', 'id'), ('NAVER', 'pw')]
         for section, key in required:
             if not config.has_option(section, key) or not config[section][key].strip():
                 print(f"[오류] config.ini의 [{section}] {key} 값이 비어있습니다.")
@@ -185,31 +219,38 @@ def load_or_create_config():
     root.withdraw()
     root.attributes('-topmost', True)
 
+    use_aside = aside_available()
     messagebox.showinfo(
         "초기 설정",
         "처음 실행합니다.\n"
-        "네이버 계정, 카페 URL, Gemini API 키,\n"
+        + ("네이버 로그인은 Aside 브라우저의 로그인 상태를 재사용합니다.\n"
+           if use_aside else "Selenium fallback용 네이버 계정 정보가 필요합니다.\n")
+        + "카페 URL, Gemini API 키,\n"
         "CTA 설정, 글 작성 스타일을 차례로 입력합니다.\n\n"
         "입력한 정보는 config.ini 파일에 저장됩니다.",
         parent=root
     )
 
     # ── 필수 항목 (한 줄 입력) ──
-    essential_fields = [
-        ("1/7 네이버 아이디", "네이버 아이디 (이메일 형식):"),
-        ("2/7 네이버 비밀번호", "네이버 비밀번호:"),
-        ("3/7 카페 게시판 URL", "글을 올릴 카페 게시판 URL:\n(예: https://cafe.naver.com/f-e/cafes/12345/menus/67)"),
-        ("4/7 Gemini API 키", "Google Gemini API 키:\n(https://aistudio.google.com/apikey 에서 발급)"),
-    ]
+    essential_fields = []
+    if not use_aside:
+        essential_fields.extend([
+            ('naver_id', "1/7 네이버 아이디", "네이버 아이디 (이메일 형식):"),
+            ('naver_pw', "2/7 네이버 비밀번호", "네이버 비밀번호:"),
+        ])
+    essential_fields.extend([
+        ('cafe_url', "카페 게시판 URL", "글을 올릴 카페 게시판 URL:\n(예: https://cafe.naver.com/f-e/cafes/12345/menus/67)"),
+        ('gemini_key', "Gemini API 키", "Google Gemini API 키:\n(https://aistudio.google.com/apikey 에서 발급)"),
+    ])
 
-    values = []
-    for title, prompt in essential_fields:
+    values = {'naver_id': '', 'naver_pw': ''}
+    for key, title, prompt in essential_fields:
         val = simpledialog.askstring(title, prompt, parent=root)
         if not val or not val.strip():
             messagebox.showerror("오류", f"{title} 값이 입력되지 않았습니다.\n프로그램을 종료합니다.", parent=root)
             root.destroy()
             sys.exit(1)
-        values.append(val.strip())
+        values[key] = val.strip()
 
     # ── CTA 설정 ──
     cta_enabled = messagebox.askyesno(
@@ -270,8 +311,13 @@ def load_or_create_config():
     root.destroy()
 
     config = configparser.RawConfigParser()
-    config['NAVER'] = {'id': values[0], 'pw': values[1], 'cafe_url': values[2]}
-    config['GEMINI'] = {'api_key': values[3]}
+    config['NAVER'] = {
+        'id': values['naver_id'],
+        'pw': values['naver_pw'],
+        'cafe_url': values['cafe_url'],
+    }
+    config['GEMINI'] = {'api_key': values['gemini_key']}
+    config['BROWSER'] = {'backend': 'aside' if use_aside else 'selenium'}
     config['CTA'] = {
         'enabled': str(cta_enabled).lower(),
         'text': cta_text,
@@ -301,18 +347,28 @@ def load_or_create_config():
     return config
 
 
+DEFAULT_CAFE_CTA_TEXT = (
+    "AI 자동화를 직접 배우는 오프라인 스터디를 진행하고 있습니다.\n"
+    "관심 있으시면 아래 패밀리데이 모집 안내 글을 읽어보세요."
+)
+DEFAULT_CAFE_CTA_URL = "https://cafe.naver.com/westudyssat/4188"
+
+
 def load_optional_config(config):
     """[CTA], [FORMATTING], [PROMPT], [CONTENT] 등 선택적 설정을 안전한 기본값과 함께 로드합니다."""
     result = {}
     # CTA
-    result['cta_enabled'] = config.getboolean('CTA', 'enabled', fallback=False)
-    result['cta_text'] = config.get('CTA', 'text', fallback='')
-    result['cta_link_url'] = config.get('CTA', 'link_url', fallback='')
+    result['cta_enabled'] = config.getboolean('CTA', 'enabled', fallback=True)
+    result['cta_text'] = config.get('CTA', 'text', fallback=DEFAULT_CAFE_CTA_TEXT)
+    result['cta_link_url'] = config.get('CTA', 'link_url', fallback=DEFAULT_CAFE_CTA_URL)
     result['cta_link_text'] = config.get('CTA', 'link_text', fallback='')
     # 서식
     result['bold_enabled'] = config.getboolean('FORMATTING', 'bold_enabled', fallback=True)
     result['highlight_enabled'] = config.getboolean('FORMATTING', 'highlight_enabled', fallback=True)
     result['highlight_color'] = config.get('FORMATTING', 'highlight_color', fallback='#FFFF00')
+    # 게시판/출처 표시는 기존 카페 원고 형식을 Aside에서도 동일하게 재현한다.
+    result['board_name'] = config.get('NAVER', 'board_name', fallback='').strip()
+    result['source_label'] = config.get('NAVER', 'source_label', fallback='▶ 원본 영상').strip()
     # 커스텀 프롬프트
     result['custom_instructions'] = config.get('PROMPT', 'custom_instructions', fallback='')
     # 콘텐츠 길이
@@ -320,6 +376,13 @@ def load_optional_config(config):
     result['max_length'] = config.getint('CONTENT', 'max_length', fallback=2500)
     result['max_paragraphs'] = config.getint('CONTENT', 'max_paragraphs', fallback=6)
     result['image_count'] = config.getint('CONTENT', 'image_count', fallback=6)
+    # 브라우저: 명시 설정 > 환경변수 > 이 Mac에 설치된 Aside > Selenium fallback
+    configured_backend = config.get('BROWSER', 'backend', fallback='').strip().lower()
+    env_backend = os.environ.get('NAVERCAFE_BROWSER_BACKEND', '').strip().lower()
+    result['browser_backend'] = configured_backend or env_backend or (
+        'aside' if aside_available() else 'selenium'
+    )
+    result['aside_account'] = config.get('BROWSER', 'aside_account', fallback='').strip()
     return result
 
 
@@ -535,45 +598,45 @@ def _transcribe_with_gemini_audio(audio_path):
     mb = file_size // (1024 * 1024)
     print(f"  -> 오디오 크기: {mb}MB, Gemini 음성 변환 시작...")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
     prompt = ('이 오디오를 한국어로 전사해주세요. '
               '발화 내용을 그대로 텍스트로 변환하고, '
               '타임스탬프·화자 구분 없이 순수 텍스트만 출력하세요.')
 
-    if file_size <= 18 * 1024 * 1024:
-        with open(audio_path, 'rb') as f:
-            encoded = base64.b64encode(f.read()).decode('utf-8')
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[{
-                'parts': [
-                    {'inline_data': {'mime_type': mime_type, 'data': encoded}},
-                    {'text': prompt},
-                ]
-            }]
-        )
-    else:
-        print(f"  -> File API 업로드 중 ({mb}MB)...")
-        uploaded = client.files.upload(
-            path=audio_path,
-            config=gtypes.UploadFileConfig(mime_type=mime_type),
-        )
-        for _ in range(30):
-            fi = client.files.get(name=uploaded.name)
-            if fi.state.name == 'ACTIVE':
-                break
-            time.sleep(2)
+    with genai.Client(api_key=GEMINI_API_KEY) as client:
+        if file_size <= 18 * 1024 * 1024:
+            with open(audio_path, 'rb') as f:
+                encoded = base64.b64encode(f.read()).decode('utf-8')
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[{
+                    'parts': [
+                        {'inline_data': {'mime_type': mime_type, 'data': encoded}},
+                        {'text': prompt},
+                    ]
+                }]
+            )
+        else:
+            print(f"  -> File API 업로드 중 ({mb}MB)...")
+            uploaded = client.files.upload(
+                path=audio_path,
+                config=gtypes.UploadFileConfig(mime_type=mime_type),
+            )
+            for _ in range(30):
+                fi = client.files.get(name=uploaded.name)
+                if fi.state.name == 'ACTIVE':
+                    break
+                time.sleep(2)
 
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[uploaded, prompt],
-        )
-        try:
-            client.files.delete(name=uploaded.name)
-        except Exception:
-            pass
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[uploaded, prompt],
+            )
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
 
-    return response.text.strip() if response.text else ''
+        return response.text.strip() if response.text else ''
 
 
 def _parse_vtt(vtt_path):
@@ -840,8 +903,6 @@ def generate_blog_post(source_text, source_type='youtube', has_images=True,
                        formatting_config=None, image_count=4):
     """Gemini AI를 이용해 소스 텍스트를 블로그 칼럼으로 변환합니다."""
     print("[2/4] Gemini AI로 블로그 글 작성 중...")
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
     meta_prompt = build_meta_prompt(formatting_config or {})
 
     source_intros = {
@@ -890,10 +951,11 @@ def generate_blog_post(source_text, source_type='youtube', has_images=True,
 {image_instruction}{formatting_instruction}
 """
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-    )
+    with genai.Client(api_key=GEMINI_API_KEY) as client:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
 
     text = response.text
     title_match = re.search(r'<TITLE>(.*?)</TITLE>', text, re.DOTALL)
@@ -915,8 +977,6 @@ def generate_blog_post(source_text, source_type='youtube', has_images=True,
 def generate_threads_post(source_text):
     """소스 텍스트로 스레드(Threads)용 연속 포스트를 생성합니다."""
     print("  -> 스레드용 글 생성 중...")
-    client = genai.Client(api_key=GEMINI_API_KEY)
-
     prompt = f"""당신은 비즈니스/AI 분야 Threads 콘텐츠 작성자입니다.
 아래 내용을 바탕으로 Threads에 올릴 연속 포스트(스레드)를 한국어로 작성하세요.
 
@@ -937,10 +997,11 @@ def generate_threads_post(source_text):
 반드시 <THREADS>스레드 내용</THREADS> 태그로 감싸주세요."""
 
     try:
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
+        with genai.Client(api_key=GEMINI_API_KEY) as client:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+            )
         match = re.search(r'<THREADS>(.*?)</THREADS>', response.text, re.DOTALL)
         return match.group(1).strip() if match else response.text.strip()
     except Exception as e:
@@ -1388,8 +1449,95 @@ def apply_highlight_js(driver, keywords, color):
 # 10. 네이버 카페 포스팅
 # ===================================================================
 
-def post_to_naver_cafe(title, body, image_paths, optional_config):
-    """Selenium으로 네이버 카페에 글을 자동 등록합니다 (OS 포커스 불필요)."""
+def _publish_source_key(source_url):
+    """Return a stable duplicate-check key without retaining URL query data."""
+    if not source_url:
+        return ""
+    video_id = extract_video_id(source_url)
+    if video_id:
+        return f"youtube:{video_id}"
+    parsed = urllib.parse.urlsplit(source_url.strip())
+    return "url:" + urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")).lower()
+
+
+def _load_published_records():
+    try:
+        with open(PUBLISHED_RECORD_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record_published_source(source_url, result):
+    source_key = _publish_source_key(source_url)
+    if not source_key:
+        return
+    records = _load_published_records()
+    records[source_key] = {
+        "status": "published",
+        "article_url": (result or {}).get("url", ""),
+        "published_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    tmp = PUBLISHED_RECORD_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(records, fh, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp, PUBLISHED_RECORD_FILE)
+
+
+def post_to_naver_cafe(title, body, image_paths, optional_config, source_url=None,
+                       draft=False, preview_path=None):
+    """설정된 브라우저 백엔드로 네이버 카페 글을 등록합니다."""
+    source_key = _publish_source_key(source_url)
+    if not draft and source_key in _load_published_records():
+        raise RuntimeError(f"이미 발행한 소스입니다: {source_key}")
+    backend = (optional_config.get('browser_backend') or '').strip().lower()
+    if not backend:
+        backend = 'aside' if aside_available() else 'selenium'
+
+    if backend == 'aside':
+        print("[4/4] Aside CLI로 네이버 카페 포스팅 시작...")
+        result = post_to_naver_cafe_aside(
+            title,
+            body,
+            image_paths,
+            cafe_url=CAFE_URL,
+            cta_text=optional_config.get('cta_text', '')
+            if optional_config.get('cta_enabled') else '',
+            cta_link_text=optional_config.get('cta_link_text', '')
+            if optional_config.get('cta_enabled') else '',
+            cta_link_url=optional_config.get('cta_link_url', '')
+            if optional_config.get('cta_enabled') else '',
+            source_label=optional_config.get('source_label') or '▶ 원본 영상',
+            source_url=source_url or '',
+            board_name=optional_config.get('board_name') or '',
+            bold_enabled=optional_config.get('bold_enabled', True),
+            highlight_enabled=optional_config.get('highlight_enabled', True),
+            highlight_color=optional_config.get('highlight_color', '#FFFF00'),
+            publish=not draft,
+            save_draft=draft,
+            preview_path=preview_path,
+            account=optional_config.get('aside_account') or None,
+        )
+        expected_status = 'draft_saved' if draft else 'published'
+        if result.get('status') != expected_status:
+            raise AsideError(f"카페 등록 완료를 확인하지 못했습니다: {result}")
+        if draft:
+            print("\n임시등록 완료! 네이버 임시글 목록에서 제목과 저장 시각을 확인했습니다.")
+        else:
+            _record_published_source(source_url, result)
+            print("\n완료! Aside가 네이버 카페 등록 동작을 마쳤습니다.")
+        return result
+
+    if backend != 'selenium':
+        raise ValueError(f"지원하지 않는 브라우저 백엔드입니다: {backend}")
+    if webdriver is None:
+        raise RuntimeError(
+            "Selenium fallback을 선택했지만 selenium/pyperclip/pyautogui가 없습니다. "
+            "[BROWSER] backend=aside를 사용하거나 fallback 패키지를 설치하세요."
+        )
+
+    """Selenium으로 네이버 카페에 글을 자동 등록합니다 (Windows fallback)."""
     print("[4/4] 네이버 카페 포스팅 시작...")
 
     # 본문에서 하이라이트 키워드 추출 (마커 제거)
