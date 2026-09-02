@@ -6,9 +6,12 @@
 - 원본 YouTube ID를 공통 `source_key`로 삼는다. 같은 `source_key`의 네이버 카페 provider URL, YouTube Shorts provider URL/상태, YouTube Community 카드뉴스 provider URL/상태가 모두 확인돼야 3채널 완료다. 쇼츠나 카드뉴스만 발행된 source_key에 카페 provider URL이 없으면 완료가 아니라 카페 미발행으로 남겨 재시도한다.
 
 - 상철이 유튜브 링크를 주면 Orca 오케스트레이션 Run을 만들고, 원본 분석·네이버 카페·유튜브 카드뉴스/커뮤니티·실제 쇼츠 영상 제작/업로드를 독립 Task로 나눠 병렬 진행한다. 카페·카드뉴스·쇼츠 3개 모두 provider 완료 증거가 있어야 한 링크 작업을 완료로 센다. 쇼츠 대본 파일만 만든 상태는 미완료다.
+- 새 링크 작업을 시작하기 전에 `.venv312/bin/python content_workflow_preflight.py --runtime --json`을 실행하고 `status=pass`를 확인한다. 실패 항목이 있으면 제작·발행을 시작하지 않는다. `run_content_link.command`는 과거의 단일 파이프라인이 금지된 브라우저·폐기 렌더 경로로 우회하지 못하게 중단하는 안전 가드다. 새 링크는 이 작업방에서 오케스트레이션의 채널별 독립 Task로만 수행한다.
+- 신규 카페 manifest의 공급자 발행기는 Git으로 추적되는 `cafe_manifest_publisher.py`를 사용한다. 기존 임시글 복구가 필요한 항목만 `naver_cafe_fresh_publish_fallback.py`를 사용하며, 큐의 호환 래퍼는 같은 추적 코드로 연결한다. 큐 JSON과 항목별 provider 증거는 런타임 상태이므로 `outputs/`에 보존하고 코드 정본으로 취급하지 않는다.
 - 브라우저와 NotebookLM 작업은 Aside CLI headless `u0` 로그인 세션만 사용한다. NotebookLM은 `민수대표님_카페글`/`민수대표님_숏폼` 기존 노트북만 사용하며 다른 노트북과 임시 노트북은 금지한다.
 - 네이버 카페는 기존 버전의 인용구/본문/이미지 구조를 그대로 유지하고, `AI 자동화&수익화 정보` 카테고리를 사용한다. 글 끝에는 `AI 자동화를 직접 배우는 오프라인 스터디를 진행하고 있습니다. 관심 있으시면 아래 패밀리데이 모집 안내 글을 읽어보세요.`와 `https://cafe.naver.com/westudyssat/4188`을 먼저 넣고, 그 아래 별도 문단에 `▶ 원본 영상`과 원본 영상 링크를 넣는다. 두 URL은 글자로만 입력하지 말고 실제 붙여넣기로 패밀리데이 OG 썸네일 카드와 YouTube 미리보기 카드를 생성하며, 원문 URL도 함께 남아 있어야 한다.
 - 쇼츠는 NotebookLM 스크립트의 다섯 번째 내용까지만 쓰고 고정 CTA를 붙인다. 원본 YouTube 영상을 중앙에, 승인된 민수 촬영본을 음소거한 원형 PIP로 하단에 쓰며 카드뉴스·정지 프레임·다른 사람 영상은 섞지 않는다. 음성·자막·90px 헤드카피·레이아웃·오디오 수치는 `SHORTS_SPEC.md`의 머신 게이트를 전부 통과해야 하며, 실패하면 생성·업로드를 중단한다.
+- 쇼츠 V7 구현 정본은 Git으로 추적되는 `outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py`와 그 파일이 고정한 renderer·BGM·SFX·reference config다. 새 source_key는 이 파일을 직접 수정하지 않고 task-local adapter에서 source identity·검증된 장면 주장·자막 sentinel·업로드 제목만 바꾼다. `shorts_video.render_short_video`의 폐기된 프레임 슬라이드 경로는 사용하지 않는다.
 - 오늘(2026-08-19) 작업만 게시 버튼 직전 화면을 보여주고 승인 후 발행한다. 이후 링크 작업은 산출물과 실제 편집기 구조 검증을 통과하면 기존 원칙대로 바로 발행한다. 상철이 별도 승인/미리보기를 요청하면 그 지시가 우선한다.
 - 실패한 글쓰기/검증 탭은 닫고, 최종 검증된 초안 또는 발행 결과만 남긴다.
 - 쇼츠 공개와 카페 발행은 서로 독립이다. 카페 공급자 URL이 없거나 카페 발행이 실패해도 쇼츠 예약·공개를 미루거나 변경하지 않는다.

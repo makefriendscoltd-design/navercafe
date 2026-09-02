@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -251,24 +250,6 @@ def publish_fingerprint(source_url, title, cafe_body, youtube_body, shorts_body=
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def run_claude(prompt, timeout=240):
-    exe = shutil.which("claude")
-    if not exe:
-        raise RuntimeError("claude CLI를 찾을 수 없습니다.")
-    r = subprocess.run(
-        [exe, "-p", "--output-format", "text"],
-        input=prompt,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-    )
-    if r.returncode != 0:
-        raise RuntimeError((r.stderr or r.stdout or "claude 실행 실패").strip())
-    return r.stdout.strip()
-
-
 def extract_json(text):
     start = text.find("{")
     end = text.rfind("}")
@@ -290,12 +271,8 @@ def make_youtube_post(manuscript):
         if text:
             return sanitize_youtube_post(text)
     except Exception as e:
-        print(f"[주의] Gemini 유튜브 게시글 변환 실패, Claude로 대체합니다: {e}")
-    try:
-        return sanitize_youtube_post(run_claude(prompt, timeout=240))
-    except Exception as e:
-        print(f"[주의] Claude 유튜브 게시글 변환 실패, 로컬 형식 변환으로 대체합니다: {e}")
-        return sanitize_youtube_post(local_youtube_post(manuscript))
+        print(f"[주의] Gemini 유튜브 게시글 변환 실패, 로컬 형식 변환으로 대체합니다: {e}")
+    return sanitize_youtube_post(local_youtube_post(manuscript))
 
 
 def local_youtube_post(manuscript):
@@ -617,17 +594,7 @@ def make_card_deck(manuscript, title):
     full_prompt = f"{prompt}\n\n==== 변환할 글 ====\n{manuscript}"
     failures = []
     try:
-        raw = run_claude(full_prompt, timeout=300)
-        deck = normalize_deck(extract_json(raw), manuscript, title, wanted=10)
-        issues = deck_validation_issues(deck)
-        if not issues:
-            return deck
-        failures.append("Claude 결과 검증 실패: " + ", ".join(issues))
-    except Exception as exc:
-        failures.append(f"Claude 생성 실패: {exc}")
-
-    try:
-        print("[카드뉴스] Claude 결과를 쓰지 못해 Gemini JSON 생성으로 재시도합니다.")
+        print("[카드뉴스] Gemini JSON을 생성합니다.")
         deck = normalize_deck(_gemini_card_deck(full_prompt), manuscript, title, wanted=10)
         issues = deck_validation_issues(deck)
         if not issues:
@@ -636,6 +603,12 @@ def make_card_deck(manuscript, title):
     except Exception as exc:
         failures.append(f"Gemini 생성 실패: {exc}")
 
+    fallback = normalize_deck(fallback_deck(manuscript, title), manuscript, title, wanted=10)
+    fallback_issues = deck_validation_issues(fallback)
+    if not fallback_issues:
+        print("[카드뉴스] Gemini 실패 후 로컬 10장 구조로 대체했습니다.")
+        return fallback
+    failures.append("로컬 대체 결과 검증 실패: " + ", ".join(fallback_issues))
     raise RuntimeError("카드뉴스 10장 품질 검증을 통과하지 못했습니다. " + " | ".join(failures))
 
 

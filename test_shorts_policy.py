@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,11 +101,73 @@ def test_replacement_sequence_is_fail_closed():
         ])
 
 
-def test_approved_v7_reference_passes_upload_policy():
-    video = Path(
-        "outputs/20260822-shorts-correction-audit/rebaseline/"
-        "remade-v7-reference-restored/GExjqEBXKN4/final.mp4"
+def test_self_contained_v7_bundle_passes_upload_policy(tmp_path):
+    video = tmp_path / "final.mp4"
+    video.write_bytes(b"self-contained-test-video")
+    presenter_name, presenter_hash = next(iter(policy.MINSOO_PRESENTER_ASSETS.items()))
+    render = {
+        "output_width": policy.VIDEO["width"],
+        "output_height": policy.VIDEO["height"],
+        "fps": policy.VIDEO["fps"],
+        "title": policy.HEADLINE,
+        "subtitle": policy.SUBTITLE,
+        "presenter": policy.PRESENTER,
+        "screen": policy.SOURCE_SCREEN,
+        "watermark": policy.WATERMARK,
+        "render_provenance": {
+            "source_and_presenter_audio_mapped": False,
+            "source_audio_mapped": False,
+            "presenter_audio_mapped": False,
+            "presenter_input": presenter_name,
+            "presenter_sha256": presenter_hash,
+            "source_footage": "source.mp4",
+            "source_footage_sha256": "source-sha256",
+            "v7_reference_restoration": {
+                "voice_settings": policy.MINSOO_VOICE_SETTINGS,
+                "headline_font_size_1080": policy.HEADLINE["font_size"],
+                "subtitle_rule": policy.SUBTITLE["rule"],
+            },
+        },
+    }
+    machine = {
+        "status": "pass",
+        "failures": [],
+        "gates": {
+            **{name: True for name in policy.REQUIRED_MACHINE_GATES},
+            "source_audio_mapped": False,
+            "presenter_audio_mapped": False,
+        },
+    }
+    alignment = {
+        "voice_id": policy.MINSOO_VOICE_ID,
+        "model_id": policy.MINSOO_MODEL_ID,
+        "settings": policy.MINSOO_VOICE_SETTINGS,
+        "alignment": {
+            "characters": ["가"],
+            "character_start_times_seconds": [0.0],
+        },
+        "generation_mode": policy.NARRATION["generation_mode"],
+        "section_count": policy.NARRATION["section_count"],
+    }
+    runtime = {
+        "status": "pass",
+        "script_alignment_hash_match": True,
+        "caption_count_matches_script_tokens": True,
+        "caption_tokens_are_whole": True,
+        "pace_uniformity": {"status": "pass", "last_to_first_ratio": 1.0},
+    }
+    for name, payload in (
+        ("render_config.json", render),
+        ("machine_validation.json", machine),
+        ("narration_alignment.json", alignment),
+        ("02_exact_runtime_gate.json", runtime),
+    ):
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "captions.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:01,000\n검증완료\n",
+        encoding="utf-8",
     )
+
     assert policy.validate_shorts_bundle_for_upload(video)["video_sha256"]
 
 

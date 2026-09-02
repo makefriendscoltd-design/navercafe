@@ -3,6 +3,7 @@ import json
 import pytest
 
 from build_tailbite_audio import Segment, build_captions
+from content_production_policy import NARRATION
 
 
 def _write_alignment(path, word_durations):
@@ -133,11 +134,13 @@ def test_upload_voice_gate_accepts_minsoo_alignment(tmp_path):
     alignment = tmp_path / "09_shorts_minsoo_alignment.json"
     alignment.write_text(
         json.dumps(
-            {
-                "voice_id": shorts_video.MINSOO_VOICE_ID,
-                "model_id": shorts_video.MINSOO_MODEL_ID,
-                "settings": shorts_video.MINSOO_VOICE_SETTINGS,
-                "alignment": {
+                {
+                    "voice_id": shorts_video.MINSOO_VOICE_ID,
+                    "model_id": shorts_video.MINSOO_MODEL_ID,
+                    "settings": shorts_video.MINSOO_VOICE_SETTINGS,
+                    "generation_mode": NARRATION["generation_mode"],
+                    "section_count": NARRATION["section_count"],
+                    "alignment": {
                     "characters": ["x"],
                     "character_start_times_seconds": [0.0],
                 },

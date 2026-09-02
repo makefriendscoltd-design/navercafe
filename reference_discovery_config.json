@@ -1,0 +1,24 @@
+{
+  "channels": [
+    {"name": "The Next New Thing", "channel_id": "UCNZEktrsM5oJZ-MK4jKPMOQ"},
+    {"name": "Tina Huang", "channel_id": "UC2UXDak6o7rBm23k3Vv5dww"},
+    {"name": "Oliver Rasmussen", "channel_id": "UCfvyx2kfeFPuLo3YqIDamSw"},
+    {"name": "Parker Prompts", "channel_id": "UCaNk22cLid93kifuVbVapcQ"},
+    {"name": "Roboverse", "channel_id": "UCZ3KGRwOA_uONNE_6VGG2bA"},
+    {"name": "Samin Yasar", "channel_id": "UCzGcYErpBX4ldvv0l7MWLfw"},
+    {"name": "AI LABS", "channel_id": "UCelfWQr9sXVMTvBzviPGlFw"},
+    {"name": "Jason On Firms", "channel_id": "UC_Z0mb0RshEg6Nu0PkebBPA"},
+    {"name": "Moe Alamawi", "channel_id": "UCziN2RSV1nTWRZ-HGwGP1Jw"},
+    {"name": "Simon Squibb", "channel_id": "UCGznz4NfW5iymkvn1l40qyA"}
+  ],
+  "queries": [
+    "AI automation agents workflow",
+    "Claude Code business automation",
+    "AI tools creator workflow",
+    "AI side hustle systems",
+    "open source AI agent tutorial"
+  ],
+  "per_channel": 2,
+  "per_query": 2,
+  "max_candidates": 20
+}

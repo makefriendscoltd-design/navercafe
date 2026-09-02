@@ -31,8 +31,6 @@ import os
 import re
 import sys
 import json
-import shutil
-import subprocess
 import threading
 
 import youtube_cafe_auto as auto
@@ -387,41 +385,8 @@ def _clean_title(raw):
     return t if 4 <= len(t) <= 60 else ''
 
 
-def _title_via_claude(manuscript, timeout=180):
-    """Claude Code CLI로 제목을 뽑는다.
-
-    이미 로그인된 구독(OAuth) 세션을 그대로 쓰므로 API 키가 필요 없다.
-    anthropic SDK를 직접 쓰려면 `ant auth login`으로 별도 OAuth 프로필을
-    만들어야 하는데, 그건 이 PC에 없다.
-    """
-    exe = shutil.which('claude')
-    if not exe:
-        print('  -> [주의] claude CLI를 찾을 수 없습니다. Gemini로 넘어갑니다.')
-        return ''
-
-    try:
-        r = subprocess.run(
-            [exe, '-p'],
-            input=TITLE_PROMPT.format(body=manuscript[:6000]),
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        print(f'  -> [주의] claude CLI 응답 없음({timeout}초). Gemini로 넘어갑니다.')
-        return ''
-    except Exception as e:
-        print(f'  -> [주의] claude CLI 호출 실패: {e}')
-        return ''
-
-    if r.returncode != 0:
-        print(f'  -> [주의] claude CLI 오류(rc={r.returncode}): {(r.stderr or "").strip()[:200]}')
-        return ''
-
-    return _clean_title(r.stdout)
-
-
 def _title_via_gemini(manuscript):
-    """폴백: Gemini로 제목을 뽑는다."""
+    """Gemini로 제목을 뽑는다."""
     try:
         from google import genai
         with genai.Client(api_key=auto.GEMINI_API_KEY) as client:
@@ -435,16 +400,11 @@ def _title_via_gemini(manuscript):
 
 
 def make_title(manuscript):
-    """제목 생성: Claude(구독 OAuth) → Gemini → 원고 첫 줄 순으로 시도."""
+    """제목 생성: Gemini → 검증된 원고 첫 줄 순으로 시도."""
     first_line = manuscript.strip().split('\n')[0].strip()
     first_line = re.sub(r'^\s{0,3}#{1,6}\s+', '', first_line).replace('**', '').strip()
 
-    print('  -> 제목 생성 중 (Claude)...')
-    t = _title_via_claude(manuscript)
-    if t:
-        return t
-
-    print('  -> Gemini로 재시도...')
+    print('  -> 제목 생성 중 (Gemini)...')
     t = _title_via_gemini(manuscript)
     if t:
         return t

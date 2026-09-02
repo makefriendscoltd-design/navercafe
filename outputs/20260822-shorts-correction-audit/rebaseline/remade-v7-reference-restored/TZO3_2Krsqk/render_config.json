@@ -1,0 +1,178 @@
+{
+  "layout": "vertical_aimax",
+  "output_width": 1080,
+  "output_height": 1920,
+  "fps": 30,
+  "export": {
+    "video_codec": "libx264",
+    "video_bitrate": "9M",
+    "preset": "veryfast",
+    "audio_bitrate": "192k",
+    "threads": 6
+  },
+  "silence_db": -99,
+  "silence_min_duration": 0.35,
+  "keep_padding": 0.08,
+  "min_clip_duration": 0.12,
+  "max_segment_duration": 0,
+  "whisper_model": "medium",
+  "whisper_language": "ko",
+  "subtitle": {
+    "font_name": "Cafe24 Ohsquare",
+    "font_path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/fonts/Cafe24Ohsquare.ttf",
+    "font_size": 59,
+    "primary_color": "&H00FFFFFF",
+    "outline_color": "&H00000000",
+    "back_color": "&H00000000",
+    "bold": -1,
+    "italic": -1,
+    "outline": 3,
+    "shadow": 3,
+    "margin_v": 0,
+    "alignment": 5,
+    "x": 540,
+    "y": 940,
+    "max_chars_per_line": 14,
+    "max_lines": 1,
+    "merge_min_duration": 0.65,
+    "merge_min_chars": 3,
+    "merge_max_chars": 14,
+    "mode": "eojel",
+    "merge_enabled": false,
+    "import_template_style": false,
+    "replacements": {}
+  },
+  "title": {
+    "auto": false,
+    "text": "창업은 아이디어가 먼저?\n목적부터 실행까지",
+    "font_name": "BM HANNA 11yrs old",
+    "font_path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/fonts/BMHANNA_11yrs_ttf.ttf",
+    "font_size": 90,
+    "color": "29D6EA",
+    "x": 540,
+    "y": 440,
+    "line_spacing": 20,
+    "shear": -0.11,
+    "bold": -1,
+    "outline": 2,
+    "shadow": 3
+  },
+  "watermark": {
+    "text": "@aimax",
+    "font_name": "BM HANNA 11yrs old",
+    "font_path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/fonts/BMHANNA_11yrs_ttf.ttf",
+    "font_size": 44,
+    "color": "29D6EA",
+    "x": 540,
+    "y": 1768,
+    "shear": -0.11
+  },
+  "source": {
+    "text": "출처: Simon Squibb",
+    "font_name": "Arial",
+    "font_size": 27,
+    "x": 540,
+    "y": 1270,
+    "duration": 3.0
+  },
+  "presenter": {
+    "x": 325,
+    "y": 1298,
+    "width": 430,
+    "height": 430,
+    "shape": "circle",
+    "crop": "",
+    "color_filter": "eq=brightness=0.025:contrast=1.14:saturation=1.06,colorbalance=bs=0.035:gs=0.01",
+    "left_light": {
+      "color": "00C8FF",
+      "alpha": 0.38,
+      "width": 260
+    }
+  },
+  "screen": {
+    "fit": "cover",
+    "x": 0,
+    "y": 664,
+    "width": 1080,
+    "height": 608,
+    "start_at": 0,
+    "speed": 2.0
+  },
+  "audio": {
+    "music_path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3",
+    "music_volume": 0.1,
+    "voice_volume": 0.82,
+    "music_volume_scale": 1.85,
+    "sfx_volume_scale": 2.2,
+    "master_lufs": -14.0,
+    "master_lra": 3.0,
+    "master_true_peak": -1.8,
+    "effects": [
+      {
+        "path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3",
+        "start": 11.285,
+        "volume": 0.5
+      },
+      {
+        "path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3",
+        "start": 17.994,
+        "volume": 0.5
+      },
+      {
+        "path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3",
+        "start": 24.597,
+        "volume": 0.5
+      },
+      {
+        "path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3",
+        "start": 29.008,
+        "volume": 0.5
+      },
+      {
+        "path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/assets/sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3",
+        "start": 36.053,
+        "volume": 0.5
+      }
+    ]
+  },
+  "render_provenance": {
+    "renderer_path": "/Users/apple/orca/navercafe/outputs/LW8KLS9j2_E-20260821/shorts/renderer/aimax_video_pipeline.py",
+    "renderer_sha256": "733372d9cb10f32b9bcc140ff6a3e7512997cfa931d5c7159776e007da5b09f5",
+    "renderer_git_ref": "origin/makefriendscoltd-design/script_video",
+    "renderer_commit": "caf33833003d7620d58930d14e875a25b7adf6af",
+    "presenter_input": "/Users/apple/Downloads/2026-07-02 15-39-18.mp4",
+    "presenter_sha256": "a84c1f78ca5ac4fc2f45d67d7cb0d2e02f7a8dc25da5c71adae911a47f7b5056",
+    "source_footage": "/tmp/orca-shorts-originals-v4/TZO3_2Krsqk.mweb18.mp4",
+    "source_footage_sha256": "eb4ac82b4353d62447295c2b1bc528400d8a4c2560487509a0954e85510458b0",
+    "script_exact": "/Users/apple/orca/navercafe/outputs/20260822-shorts-correction-audit/rebaseline/remade-v5-downloaded-minsoo/TZO3_2Krsqk/script_exact.txt",
+    "script_exact_sha256": "e82ac448da217e966e909762b8ac3e3ac0d6c69fbdd0155aa88f7919c2dd9b37",
+    "source_and_presenter_audio_mapped": false,
+    "source_id": "TZO3_2Krsqk",
+    "source_fetch_backend": "yt-dlp 2026.07.04 / youtube player_client=mweb / format 18 / no cookies",
+    "screen_method": "exact public YouTube video; center cover crop; start_at=0; speed=2.0",
+    "source_audio_mapped": false,
+    "v5_base_v4_final": "/Users/apple/orca/navercafe/outputs/20260822-shorts-correction-audit/rebaseline/remade-v4-original-footage/TZO3_2Krsqk/final.mp4",
+    "v5_base_v4_final_sha256": "358c7fb870da7368643c65df696b3e7fb23b0553f04fe06383a0e6ee7422cc25",
+    "presenter_start_seconds": 0.0,
+    "presenter_trim_duration_seconds": 70.0,
+    "presenter_input_audio": "AAC 2ch present at ffmpeg input; intentionally excluded from filter/audio mapping",
+    "presenter_audio_mapped": false,
+    "final_audio_sources": [
+      "canonical_narration_master",
+      "locked_bgm",
+      "locked_sfx"
+    ],
+    "provider_mutation": false,
+    "v7_reference_restoration": {
+      "voice_settings": {
+        "stability": 0.65,
+        "similarity_boost": 0.9,
+        "style": 0.0,
+        "use_speaker_boost": true
+      },
+      "subtitle_rule": "one full token; no Latin/mixed-token slicing",
+      "headline_font_size_1080": 90,
+      "reference": "LW8KLS9j2_E_shorts_1080x1920_APPROVED_BALANCED.mp4"
+    }
+  }
+}

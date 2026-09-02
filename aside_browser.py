@@ -431,6 +431,7 @@ def post_to_naver_cafe(
     visible_tab_id: str = "",
     prefer_path_uploads: bool = False,
     precheck_drafts: bool = True,
+    register_evaluate_click: bool = False,
 ) -> dict[str, Any]:
     """Fill, persist as a Naver draft, or publish through the signed-in profile."""
     if publish and save_draft:
@@ -520,6 +521,7 @@ def post_to_naver_cafe(
             "precheckDrafts": bool(precheck_drafts),
             "capturePreview": bool(preview_path and not publish),
             "visibleTabId": visible_tab_id.strip(),
+            "registerEvaluateClick": bool(register_evaluate_click),
         }
         code = JS_COMMON + f"\nconst payload = {_payload_expression(payload)};\n" + r"""
 const norm = value => (value || '').replace(/\s+/g, '').trim();
@@ -1762,18 +1764,28 @@ if (await pageLooksLoggedOut(p, 'naver')) {
           try{await p.evaluate(()=>window.scrollTo(0,0));await sleep(300);}catch(_){}
         }
         const preview=payload.capturePreview ? Buffer.from(await p.screenshot()).toString('base64') : '';
+        let registerDiagnostics=[];
+        try{registerDiagnostics=await bodyFound.ctx.evaluate(()=>[...document.querySelectorAll('button,a,[role="button"]')]
+          .filter(el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden'&&/등록|확인|취소|발행|게시/.test((el.innerText||el.textContent||'')+' '+(el.getAttribute('aria-label')||''));})
+          .map(el=>({tag:el.tagName,id:el.id||'',className:(el.className||'').toString().slice(0,220),text:(el.innerText||el.textContent||'').trim().slice(0,240),aria:el.getAttribute('aria-label')||'',disabled:!!el.disabled||el.getAttribute('aria-disabled')==='true'})));}catch(_){}
         emit({status:'filled', url:p.url(), images:formatState.images, board:selectedBoard,
           quotes:formatState.quotes, bold:formatState.bold, highlight:formatState.highlight,
           source_link:formatState.source, cta_link:formatState.ctaLink,
           oglinks:formatState.oglinks, embeds:formatState.embeds,
           target_id:String(p.targetId||''),
+          register_diagnostics:registerDiagnostics,
           sequence:formatState.sequence, quote_texts:formatState.quoteTexts,
           _preview_png:preview, _preview_cards_png:cardsPreview});
       } else {
         const beforeUrl = p.url();
-        const button = await findContext(p, 'a.BaseButton--skinGreen,button.btn_register,button[class*="register"],button[class*="publish"]');
+        const registerSelector = 'a.BaseButton--skinGreen,button.btn_register,button[class*="register"],button[class*="publish"]';
+        const button = await findContext(p, registerSelector);
         let clicked = false;
-        if (button) { await button.loc.click(); clicked = true; }
+        if (button) {
+          if(payload.registerEvaluateClick)await button.loc.evaluate(el=>el.click());
+          else await button.loc.click();
+          clicked = true;
+        }
         if (!clicked) {
           clicked = await bodyFound.ctx.evaluate(() => {
             const all=[...document.querySelectorAll('button,a,[role=button]')];
@@ -1783,19 +1795,48 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         }
         if (!clicked) emit({status:'error', message:'네이버 카페 등록 버튼을 찾지 못했습니다.'});
         else {
-          let confirmed=false;
-          const end=Date.now()+30000;
+          let confirmed=false,confirmationClicks=0;
+          const escalations=[];
+          const started=Date.now();
+          const end=started+45000;
           while(Date.now()<end){
             await sleep(700);
             const titleStill=await findContext(p,'.textarea_input');
             if(p.url()!==beforeUrl || !titleStill){confirmed=true;break;}
+            const elapsed=Date.now()-started;
+            if(elapsed>6000 && escalations.indexOf('evaluate')<0){
+              escalations.push('evaluate');
+              try{const again=await findContext(p,registerSelector);if(again)await again.loc.evaluate(el=>el.click());}catch(_){}
+              continue;
+            }
+            if(elapsed>16000 && escalations.indexOf('pointer')<0){
+              escalations.push('pointer');
+              try{const again=await findContext(p,registerSelector);if(again)await again.loc.evaluate(el=>{
+                const r=el.getBoundingClientRect();
+                const opts={bubbles:true,cancelable:true,composed:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2};
+                for(const t of ['pointerover','pointerenter','pointerdown','mousedown','pointerup','mouseup','click'])
+                  el.dispatchEvent(t.indexOf('pointer')===0?new PointerEvent(t,opts):new MouseEvent(t,opts));
+              });}catch(_){}
+              continue;
+            }
+            if(confirmationClicks===0){
+              for(const ctx of await contextsFor(p)){
+                try{const didClick=await ctx.evaluate(()=>{
+                  const visible=el=>{const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+                  const candidates=[...document.querySelectorAll('[role="dialog"] button,[role="dialog"] a,.layer_popup button,.layer_popup a,.popup button,.popup a,button,a')]
+                    .filter(el=>visible(el)&&/^(등록|확인)$/.test((el.innerText||el.textContent||'').trim())&&!el.classList.contains('BaseButton--skinGreen'));
+                  const hit=candidates.find(el=>el.closest('[role="dialog"],.layer_popup,.popup'))||candidates.find(el=>el.tagName==='BUTTON');
+                  if(!hit)return false;hit.click();return true;
+                });if(didClick){confirmationClicks++;break;}}catch(_){}
+              }
+            }
           }
           if(!confirmed){
-            let diagnostics={url:p.url(),messages:[]};
-            try{diagnostics.messages=await bodyFound.ctx.evaluate(()=>[...document.querySelectorAll(
+            let diagnostics={url:p.url(),messages:[],confirmationClicks,escalations};
+            for(const ctx of await contextsFor(p)){try{const found=await ctx.evaluate(()=>[...document.querySelectorAll(
               '[role="alert"],[role="dialog"],.toast,.popup,.layer_popup,[class*="error"]'
             )].filter(el=>{const s=getComputedStyle(el);const r=el.getBoundingClientRect();return s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;})
-              .map(el=>(el.innerText||el.textContent||'').trim()).filter(Boolean).slice(0,5));}catch(_){}
+              .map(el=>(el.innerText||el.textContent||'').trim()).filter(Boolean).slice(0,5));diagnostics.messages.push(...found);}catch(_){}}
             if(!payload.visibleTabId)await p.close();
             emit({status:'error',message:`등록 버튼 클릭 후 완료 화면을 확인하지 못했습니다. 진단=${JSON.stringify(diagnostics)}`});
           }
