@@ -40,6 +40,10 @@ from shorts_video import (
     validate_minsoo_voice_artifact,
     validate_short_video,
 )
+from content_production_policy import (
+    ProductionPolicyError,
+    validate_cardnews_editorial_deck,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -102,10 +106,16 @@ CARD_DECK_EXTRA_RULES = """
 
 추가 카드뉴스 규칙:
 - 정확히 10장의 slides를 만들어라.
-- preset은 반드시 "cine"로 고정한다.
-- 각 카드의 f.bgByStyle.cine 값을 서로 다르게 지정해 카드별 배경 변화가 보이게 하라.
-- 사용할 수 있는 배경은 assets/cover-a.png, assets/cover-b.png, assets/shaft.png, assets/sunrise.png, assets/streaks.png, assets/cine-1.png, assets/cine-2.png, assets/cine-3.png, assets/cine-4.png 이다.
+- 이 추가 규칙은 기본 프롬프트보다 우선한다.
+- preset은 반드시 "blue"로 고정한다.
+- 흰 바탕과 파란색 포인트를 중심으로 읽기 쉽게 구성한다. 카드마다 영화풍 배경을 바꾸지 않는다.
 - 마지막 10번째 카드는 closing 카드다.
+- 표지는 독자가 얻게 될 정보나 궁금증으로 시작한다. 출처 검증, 면책, 주의 문구로 시작하지 않는다.
+- 2~9번째 카드는 원본의 방법, 과정, 도구, 실패 지점, 실행 순서를 각각 한 가지씩 설명한다.
+- 팩트팩은 과장을 막는 가드레일이다. 팩트팩의 content_wording이나 "제작자 주장", "독립 검증" 같은 판정 문구를 카드 본문처럼 나열하지 않는다.
+- 출처 속 인물의 경험과 수치는 "영상에서 소개한 사례", "인터뷰에서 밝힌 수치"처럼 필요한 카드 한 곳에서만 자연스럽게 귀속한다.
+- 주의·한계 카드는 필요할 때 최대 2장만 사용한다. 나머지 6장 이상은 독자가 실제로 써먹을 내용이어야 한다.
+- 마지막 카드는 cta1을 "댓글 AIMAX", cta2를 "관련 정보 받기"로 고정한다.
 - 카드 문구는 한국어로 자연스럽게 작성한다.
 - 카드 문구는 원문을 길게 잘라 붙이지 말고, 사람이 카드뉴스용으로 다시 쓴 짧은 카피처럼 작성한다.
 - head는 12~24자 안팎의 명령형/판단형 문장으로 쓰고, desc는 1개의 완성된 문장으로 쓴다.
@@ -446,23 +456,21 @@ def manuscript_card_points(manuscript, limit=8):
 
 def fallback_deck(manuscript, title):
     points = manuscript_card_points(manuscript, limit=8)
-    def bg(i):
-        return {"bgByStyle": {"cine": CARD_BG_POOL[i % len(CARD_BG_POOL)]}}
 
     slides = [
-        {"type": "cover", "f": {"badge": "AIMAX", "title": clean_card_text(title, 38), "sub": clean_card_text(points[0][0] if points else "", 80), **bg(0)}}
+        {"type": "cover", "f": {"badge": "AIMAX", "title": clean_card_text(title, 38), "sub": clean_card_text(points[0][0] if points else "", 80)}}
     ]
     for idx in range(1, 9):
         head, desc = points[idx - 1] if idx - 1 < len(points) else ("다음 행동을 정한다", "계획을 문서로 끝내지 말고 바로 실행 가능한 작업으로 바꿉니다.")
         slides.append({
             "type": "content",
-            "f": {"idx": f"{idx:02d}", "total": "08", "tag": "Insight", "num": f"{idx:02d}", "head": head, "desc": desc, **bg(idx)},
+            "f": {"idx": f"{idx:02d}", "total": "08", "tag": "Insight", "num": f"{idx:02d}", "head": head, "desc": desc},
         })
     slides.append({
         "type": "closing",
-        "f": {"head": "AI 커뮤니티에\n함께해요", "desc": "참여하고 싶다면 댓글에\nAIMAX를 남겨주세요", "cta1": "댓글 AIMAX", "cta2": "바로 초대", "hint": "커뮤니티 초대를 보내드릴게요", **bg(9)},
+        "f": {"head": "AI 커뮤니티에\n함께해요", "desc": "참여하고 싶다면 댓글에\nAIMAX를 남겨주세요", "cta1": "댓글 AIMAX", "cta2": "관련 정보 받기", "hint": "커뮤니티 초대를 보내드릴게요"},
     })
-    return {"handle": "@aimax", "preset": "cine", "accent": None, "slides": slides}
+    return {"handle": "@aimax", "preset": "blue", "accent": None, "slides": slides}
 
 
 def deck_validation_issues(deck, wanted=10):
@@ -521,6 +529,10 @@ def deck_validation_issues(deck, wanted=10):
         issues.append("본문 카드 아이디어 중복")
     if len(set(descriptions)) != len(descriptions):
         issues.append("본문 카드 설명 중복")
+    try:
+        validate_cardnews_editorial_deck(deck)
+    except ProductionPolicyError as exc:
+        issues.append(str(exc))
     return issues
 
 
@@ -543,7 +555,7 @@ def _gemini_card_deck(prompt):
 def normalize_deck(deck, manuscript, title, wanted=10):
     deck = dict(deck or {})
     deck["handle"] = deck.get("handle") or "@aimax"
-    deck["preset"] = "cine"
+    deck["preset"] = "blue"
     deck["accent"] = deck.get("accent", None)
     slides = list(deck.get("slides") or [])
     if not slides:
@@ -573,8 +585,7 @@ def normalize_deck(deck, manuscript, title, wanted=10):
                     f[key] = clean_card_text(f[key].replace("거인의 어깨", "검증된 경로").replace("극대화", "높이기").replace("상상 이상", "더").replace("강력한", "실용적인"), max_len)
         if f.get("head") and f.get("desc") and f["head"] == f["desc"]:
             f["desc"] = clean_card_text(manuscript, 58)
-        bg_by_style = f.setdefault("bgByStyle", {})
-        bg_by_style.setdefault("cine", CARD_BG_POOL[i % len(CARD_BG_POOL)])
+        f.pop("bgByStyle", None)
     content = [s for s in deck["slides"] if s.get("type") == "content" and s.get("f")]
     total = f"{len(content):02d}"
     for i, s in enumerate(content, 1):

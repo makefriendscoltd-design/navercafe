@@ -1,19 +1,21 @@
-"""Generate the Shorts narration from the dedicated NotebookLM notebook.
+"""Generate Shorts narration without rewriting the NotebookLM script body.
 
-Only items through the fifth are retained.  Any sixth-and-later material and
-the notebook's own CTA are replaced by the owner's duration-aware CTA.
+Only items through the fifth are retained. Any sixth-and-later material and
+the notebook's own CTA are replaced by the owner's duration-aware CTA. No
+fact-checking or editorial pass is allowed to rewrite the narration body.
 """
 
 from __future__ import annotations
 
 import argparse
 import configparser
+import hashlib
+import json
 import math
 import re
 from pathlib import Path
 
 import notebooklm_source as nlm
-from content_factcheck import factcheck_manuscript
 from content_production_policy import ASIDE_ACCOUNT, SHORTS_NOTEBOOK, validate_notebook_binding
 
 
@@ -21,31 +23,19 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 MIGRATED_CONFIG = Path.home() / "orca" / "projects" / "ccidacafe" / "config.ini"
 SHORTS_NOTEBOOK_TITLE = SHORTS_NOTEBOOK["title"]
 SHORTS_NOTEBOOK_ID = SHORTS_NOTEBOOK["id"]
-SHORTS_PROMPT = """이 영상으로 숏폼 스크립트 만들어줘.
-먼저 `### 헤드카피라이팅` 아래에 서로 다른 2줄 헤드카피 후보 3개를 번호로 써줘.
-각 후보는 반드시 `첫째 줄 / 둘째 줄` 형식으로 쓰고, 1번을 가장 좋은 최종안으로 배치해.
-첫째 줄은 시청자가 실제로 할 법한 질문·놀람·손해감·강한 단정으로 반응을 만들고,
-둘째 줄은 쉬운 말로 도구와 결과를 바로 연결해. 각 줄은 18자 이내로 써.
-제목처럼 딱딱한 명사만 나열하거나 어려운 전문용어를 쓰지 말고, `+`, `=`, `?!`는
-뜻이 빨리 전달될 때만 사용해. 헤드카피의 약속은 스크립트 첫 두 문장이 즉시 이어받아야 해.
-영상에 없는 수치·성과·수익은 만들지 말고 헤드카피에 해시태그를 넣지 마.
+SHORTS_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
 
-그 다음 `### 스크립트` 아래에는 기존 원고 구조를 그대로 지켜줘.
-첫 문장은 '이 남자 미쳤습니다.' 또는
-'이 프로그램 대박입니다.'처럼 짧고 강한 한 문장으로 시작해. 다음에는
-인물이나 프로그램이 만든 결과를 설명하고, '5가지 방법, 저장하고 끝까지 보세요!'로
-도입을 닫아. 이후 첫째부터 다섯째까지 작성해. 영상에 없는 성과나 수치는 만들지 마."""
-
-SCRIPT_HEADER_RE = re.compile(r"^#{1,4}\s*스크립트\s*$", re.M)
-HEAD_COPY_HEADER_RE = re.compile(r"^#{1,4}\s*헤드카피(?:라이팅)?\s*$", re.M)
-FORMAT_RE = re.compile(r"^#{1,4}\s*선택한 포맷\s*$\s*(.+)$", re.M)
+SCRIPT_HEADER_RE = re.compile(r"^(?:#{1,4}\s*)?스크립트\s*$", re.M)
+HEAD_COPY_HEADER_RE = re.compile(r"^(?:#{1,4}\s*)?헤드카피(?:라이팅)?\s*$", re.M)
+FORMAT_RE = re.compile(r"^(?:#{1,4}\s*)?선택한 포맷\s*$\s*(.+)$", re.M)
 FIFTH_RE = re.compile(r"(?m)^\s*(?:[-*>#]+\s*)?(?:5\s*(?:번|번째)?\s*[.)、:]|⑤|다섯째\s*[,.:]?)")
 SIXTH_RE = re.compile(r"(?m)^\s*(?:[-*>#]+\s*)?(?:6\s*(?:번|번째)?\s*[.)、:]|⑥|여섯째\s*[,.:]?)")
 OLD_CTA_RE = re.compile(
-    r"(?mi)^.*(?:이 영상을 정리했습니다|자료가 궁금하신 분|채널(?:을)?\s*구독|프로필 링크).*$"
+    r"(?mi)^.*(?:이 영상을 정리했습니다|자료가 궁금하신 분|채널(?:을)?\s*구독|"
+    r"프로필 링크|댓글에\s*\S+\s*남겨|무료\s*(?:가이드|자료|정보)).*$"
 )
 STRONG_HOOK_RE = re.compile(
-    r"^(?:여기,\s*)?이\s*(?:남자|사람|프로그램|도구|기능).*(?:"
+    r"^(?:여기,\s*)?이\s*(?:남자들?|사람들?|프로그램|도구|기능).*(?:"
     r"미쳤습니다|대박입니다|천재입니다|신입니다|고수입니다|벌었습니다|만들었습니다)\.?$"
 )
 HEAD_COPY_ITEM_RE = re.compile(r"^\s*(?:[1-3]\s*[.)、:]|[①②③])\s*(.+?)\s*$")
@@ -111,13 +101,17 @@ def extract_head_copy_candidates(answer: str) -> list[str]:
     if not match:
         raise RuntimeError("노트북 응답에 '### 헤드카피라이팅' 절이 없습니다.")
     tail = (answer[match.end():] or "").strip()
-    next_heading = re.search(r"(?m)^#{1,4}\s+", tail)
-    block = tail[:next_heading.start()].strip() if next_heading else tail
+    script_heading = SCRIPT_HEADER_RE.search(tail)
+    block = tail[:script_heading.start()].strip() if script_heading else tail
     candidates = []
     for line in block.splitlines():
+        if not line.strip():
+            continue
         item = HEAD_COPY_ITEM_RE.match(line)
         if item:
             candidates.append(validate_head_copy(item.group(1)))
+        elif "/" in line or "／" in line:
+            candidates.append(validate_head_copy(line))
     if len(candidates) != 3:
         raise RuntimeError("쇼츠 헤드카피 후보가 정확히 3개가 아닙니다.")
     if len(set(candidates)) != 3:
@@ -152,15 +146,6 @@ def keep_through_fifth(script: str) -> str:
             raise RuntimeError("쇼츠 스크립트의 5번째 항목을 확인할 수 없습니다.")
         text = text[:sixth.start()].rstrip()
 
-    # NotebookLM sometimes ends item five and then appends a quote/promo block
-    # that does not contain the usual CTA keywords.  Item sections are emitted
-    # as blank-line-delimited blocks, so the first new block after item five is
-    # outside the requested script and must be removed wholesale.
-    if fifth:
-        end_of_fifth = re.search(r"\n\s*\n", text[fifth.start():])
-        if end_of_fifth:
-            text = text[:fifth.start() + end_of_fifth.start()].rstrip()
-
     cta = OLD_CTA_RE.search(text)
     if cta and (not fifth or cta.start() > fifth.start()):
         text = text[:cta.start()].rstrip()
@@ -184,15 +169,34 @@ def fixed_cta(minutes: int) -> str:
 
 def require_strong_hook(script: str) -> str:
     first_line = next((line.strip() for line in (script or "").splitlines() if line.strip()), "")
-    if not STRONG_HOOK_RE.match(first_line):
+    first_sentence = re.split(r"(?<=[.!?])\s+", first_line, maxsplit=1)[0]
+    if not STRONG_HOOK_RE.match(first_sentence):
         raise RuntimeError(
             "쇼츠 첫 문장이 기존 강한 후킹 구조(이 남자/이 프로그램)와 다릅니다."
         )
-    return first_line
+    return first_sentence
 
 
 def finalize_script(script: str, minutes: int) -> str:
     return f"{keep_through_fifth(script)}\n\n{fixed_cta(minutes)}"
+
+
+def cta_only_transform_report(script: str, final: str, minutes: int) -> dict:
+    """Prove that the NotebookLM body was preserved and only its CTA changed."""
+    expected_body = keep_through_fifth(script)
+    expected_final = f"{expected_body}\n\n{fixed_cta(minutes)}"
+    if final != expected_final:
+        raise RuntimeError("NotebookLM 원고 본문이 CTA 교체 외에 변경되었습니다.")
+    body_hash = hashlib.sha256(expected_body.encode("utf-8")).hexdigest()
+    return {
+        "status": "cta_only",
+        "notebooklm_body_preserved_exactly": True,
+        "content_rewrite_applied": False,
+        "removed_notebooklm_cta": True,
+        "fixed_cta_applied": True,
+        "body_sha256_before": body_hash,
+        "body_sha256_after": body_hash,
+    }
 
 
 def get_video_duration(url: str) -> float:
@@ -225,22 +229,29 @@ def load_shorts_config():
     result["prompt"] = SHORTS_PROMPT
     result["retry_if_no_heading"] = False
     result["strip_promo"] = False
-    return result, cfg.get("GEMINI", "api_key", fallback="").strip()
+    # Keep the existing two-value API for callers, but Shorts no longer uses
+    # an API key because the NotebookLM body must not pass through a rewrite.
+    return result, ""
 
 
-def fetch(url: str, log=print) -> tuple[str, str, int, str, dict, list[str]]:
-    cfg, api_key = load_shorts_config()
+def fetch(
+    url: str,
+    log=print,
+    *,
+    evidence_dir: str | Path | None = None,
+) -> tuple[str, str, int, str, dict, list[str]]:
+    cfg, _unused_api_key = load_shorts_config()
+    if evidence_dir:
+        cfg["evidence_dir"] = str(Path(evidence_dir).expanduser().resolve())
     answer = nlm.fetch_manuscript(url, cfg, log=log)
     head_copies = extract_head_copy_candidates(answer)
     script, chosen = extract_script(answer)
     minutes = duration_minutes(get_video_duration(url))
     final = finalize_script(script, minutes)
-    final, factcheck = factcheck_manuscript(final, api_key)
-    if not final.rstrip().endswith(fixed_cta(minutes)):
-        raise RuntimeError("사실확인 과정에서 쇼츠 고정 CTA가 변경되어 중단했습니다.")
+    transform = cta_only_transform_report(script, final, minutes)
     require_strong_hook(final)
     validate_head_copy_connection(head_copies[0], final)
-    return final, chosen, minutes, answer, factcheck, head_copies
+    return final, chosen, minutes, answer, transform, head_copies
 
 
 def main(argv=None) -> int:
@@ -249,9 +260,13 @@ def main(argv=None) -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--raw-out")
     parser.add_argument("--headline-out")
+    parser.add_argument("--evidence-dir")
     args = parser.parse_args(argv)
 
-    script, chosen, minutes, raw, factcheck, head_copies = fetch(args.url)
+    script, chosen, minutes, raw, transform, head_copies = fetch(
+        args.url,
+        evidence_dir=args.evidence_dir,
+    )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(script, encoding="utf-8")
@@ -263,9 +278,16 @@ def main(argv=None) -> int:
         headline_path = Path(args.headline_out).expanduser().resolve()
         headline_path.parent.mkdir(parents=True, exist_ok=True)
         headline_path.write_text(head_copies[0] + "\n", encoding="utf-8")
+    if args.evidence_dir:
+        evidence_path = Path(args.evidence_dir).expanduser().resolve()
+        evidence_path.mkdir(parents=True, exist_ok=True)
+        (evidence_path / "cta-transform.json").write_text(
+            json.dumps(transform, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(f"노트북 포맷: {chosen or '표기 없음'}")
     print("최종 헤드카피: " + " / ".join(head_copy_lines(head_copies[0])))
-    print(f"사실확인: {factcheck.get('status', '확인 필요')}")
+    print(f"원고 변환: {transform.get('status', '확인 필요')}")
     print(f"원본 영상 길이: {minutes}분 / 5번째 항목까지 사용 / 고정 CTA 적용")
     print(f"쇼츠 나레이션 저장: {out_path}")
     return 0

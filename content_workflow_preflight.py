@@ -20,6 +20,7 @@ REQUIRED_TRACKED_FILES = (
     "content_production_policy.py",
     "content_factcheck.py",
     "notebooklm_source.py",
+    "notebooklm_aside.py",
     "notebooklm_shorts.py",
     "notebook_cafe_auto.py",
     "shorts_video.py",
@@ -36,6 +37,8 @@ REQUIRED_TRACKED_FILES = (
     "outputs/20260822-shorts-correction-audit/rebaseline/remade-v7-reference-restored/TZO3_2Krsqk/render_config.json",
 )
 RUNTIME_SOURCE_FILES = (
+    "notebooklm_aside.py",
+    "notebooklm_source.py",
     "notebook_cafe_auto.py",
     "youtube_cardnews_pipeline.py",
     "run_content_link.command",
@@ -76,6 +79,20 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     checks["codex_only_no_claude_cli_invocation"] = not any(
         marker in source_text for marker in forbidden_invocations
     )
+    forbidden_browser_backends = (
+        "notebooklm-py",
+        "browser-cookies",
+        "sync_playwright",
+        "selenium.webdriver",
+    )
+    notebook_runtime = "\n".join(
+        (project / relative).read_text(encoding="utf-8").lower()
+        for relative in ("notebooklm_aside.py", "notebooklm_source.py")
+        if (project / relative).is_file()
+    )
+    checks["notebooklm_aside_only_no_cookie_or_browser_fallback"] = not any(
+        marker in notebook_runtime for marker in forbidden_browser_backends
+    )
     entrypoint = (project / "run_content_link.command").read_text(encoding="utf-8")
     checks["legacy_entrypoint_fail_closed"] = (
         "content_workflow_preflight.py --runtime --json" in entrypoint
@@ -90,6 +107,12 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         "aspect_ratio": "1:1",
         "count": 10,
     }
+    checks["cardnews_editorial_contract"] = (
+        policy.CARDNEWS_EDITORIAL.get("content_count") == 8
+        and policy.CARDNEWS_EDITORIAL.get("max_warning_first_cards") == 2
+        and policy.CARDNEWS_EDITORIAL.get("closing_cta1") == "댓글 AIMAX"
+        and policy.CARDNEWS_EDITORIAL.get("closing_cta2") == "관련 정보 받기"
+    )
     checks["shorts_video_contract"] = policy.VIDEO == {
         "width": 1080,
         "height": 1920,

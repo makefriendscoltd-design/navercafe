@@ -1,26 +1,7 @@
 # -*- coding: utf-8 -*-
-"""
-노트북LM(Gemini Notebook)에서 유튜브 영상 원고를 자동으로 뽑아온다.
-==================================================================
-
-공식 소비자 API는 없다. 이 모듈은 비공식 라이브러리 `notebooklm-py`를 쓴다.
-  - 구글 내부 RPC를 찌르는 방식이라 **예고 없이 깨질 수 있다**
-  - 깨지면 원고 칸에 직접 붙여넣는 기존 방식으로 그대로 굴러간다 (폴백 보장)
-
-최초 1회 인증 (둘 중 하나):
-    notebooklm login                          # 브라우저 열고 구글 로그인
-    notebooklm login --browser-cookies chrome # 이미 로그인된 크롬 쿠키 재사용
-
-인증 확인:
-    notebooklm auth check --test --json       # status=ok AND checks.token_fetch=true
-
-쿠키가 만료되면:
-    notebooklm auth refresh
-"""
+"""Generate NotebookLM manuscripts through the pinned Aside ``u0`` session."""
 
 import re
-import asyncio
-from datetime import datetime
 
 DEFAULT_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴 칼럼을 작성해줘.
 
@@ -53,145 +34,35 @@ def _heading_count(text):
     return sum(1 for ln in (text or '').split('\n') if ln.strip().startswith('##'))
 
 
-async def _fetch_async(youtube_url, prompt, notebook_id, notebook_title, title_prefix,
-                       scope_to_new_source, wait_timeout, delete_after,
-                       delete_source_after, retry_if_no_heading, profile, log):
-    try:
-        from notebooklm import NotebookLMClient, SourceStatus
-        from notebooklm.exceptions import AuthError
-    except ImportError as e:
-        raise NotebookLMError(
-            "notebooklm-py 가 설치되어 있지 않습니다.\n"
-            "  pip install \"notebooklm-py[cookies]\"") from e
-
-    try:
-        async with NotebookLMClient.from_storage(profile=profile or None) as client:
-            email = await client.get_account_email()
-            log(f"  -> 노트북LM 계정: {email or '(확인 실패)'}")
-
-            created = False
-            if notebook_id:
-                nb = await client.notebooks.get_or_none(notebook_id)
-                if nb is None:
-                    raise NotebookLMError(
-                        f"notebook_id '{notebook_id}' 를 찾을 수 없습니다.\n"
-                        "  config.ini의 [NOTEBOOKLM] notebook_id 를 확인하거나 비워두세요.")
-                log(f"  -> 기존 노트북 사용: {nb.title} ({nb.id})")
-            elif notebook_title:
-                wanted = notebook_title.strip().casefold()
-                notebooks = await client.notebooks.list()
-                nb = next((item for item in notebooks
-                           if (item.title or '').strip().casefold() == wanted), None)
-                if nb is not None:
-                    log(f"  -> 이름으로 기존 노트북 사용: {nb.title} ({nb.id})")
-                else:
-                    vid = _video_id(youtube_url) or 'video'
-                    title = f"{title_prefix} {datetime.now():%Y-%m-%d} {vid}".strip()
-                    nb = await client.notebooks.create(title)
-                    created = True
-                    log(f"  -> '{notebook_title}' 노트북을 찾지 못해 임시 노트북 생성: {title} ({nb.id})")
-            else:
-                vid = _video_id(youtube_url) or 'video'
-                title = f"{title_prefix} {datetime.now():%Y-%m-%d} {vid}".strip()
-                nb = await client.notebooks.create(title)
-                created = True
-                log(f"  -> 새 노트북 생성: {title} ({nb.id})")
-
-            # add_url은 중복 검사를 하지 않는다. 같은 영상을 다시 돌리면
-            # 소스가 계속 쌓여서 계정 상한(무료 50개)에 닿으므로 먼저 확인한다.
-            src = None
-            reused = False
-            vid = _video_id(youtube_url)
-            if vid:
-                for s in await client.sources.list(nb.id):
-                    if _video_id(s.url or '') == vid:
-                        src = s
-                        reused = True
-                        break
-
-            if reused:
-                log(f"  -> 이미 등록된 영상 재사용: {src.title or src.id}")
-                if src.status != SourceStatus.READY:
-                    src = await client.sources.wait_until_ready(
-                        nb.id, src.id, timeout=wait_timeout)
-            else:
-                log(f"  -> 영상 소스 추가 중 (최대 {int(wait_timeout)}초 대기)...")
-                src = await client.sources.add_url(
-                    nb.id, youtube_url, wait=True, wait_timeout=wait_timeout)
-                log(f"  -> 소스 준비 완료: {src.title or src.id}")
-
-            # 기존 노트북을 재사용할 때 이번 영상만 참조하도록 범위를 묶는다.
-            # 안 묶으면 노트북에 쌓인 과거 소스까지 답변에 섞인다.
-            source_ids = [src.id] if scope_to_new_source else None
-            if source_ids:
-                log("  -> 이번 영상 소스만 참조하도록 범위 지정")
-
-            log("  -> 원고 생성 요청 중...")
-            res = await client.chat.ask(nb.id, prompt, source_ids=source_ids)
-            answer = (res.answer or '').strip()
-
-            # 노트북LM이 '## 소제목' 지시를 무시하고 밋밋한 문단만 뱉을 때가 있다.
-            # 그대로 두면 인용구 블록이 하나도 안 생기므로 한 번만 다시 시킨다.
-            if retry_if_no_heading and _heading_count(answer) < 2:
-                log(f"  -> [재시도] 소제목이 {_heading_count(answer)}개뿐. 형식 강조해서 다시 요청")
-                strict = (prompt + "\n\n(반드시 지킬 것) 소제목은 줄 맨 앞에 '## '를 붙여 "
-                                   "마크다운 헤딩으로 출력해라. 소제목 4~6개는 필수다.")
-                res2 = await client.chat.ask(nb.id, strict, source_ids=source_ids)
-                answer2 = (res2.answer or '').strip()
-                if _heading_count(answer2) > _heading_count(answer):
-                    answer = answer2
-                    log(f"  -> 재시도 성공: 소제목 {_heading_count(answer)}개")
-                else:
-                    log("  -> [주의] 재시도해도 소제목 없음. 소제목 없이 진행합니다.")
-
-            if created and delete_after:
-                try:
-                    await client.notebooks.delete(nb.id)
-                    log("  -> 임시 노트북 삭제 완료")
-                except Exception as e:
-                    log(f"  -> [주의] 임시 노트북 삭제 실패: {e}")
-            elif not created and delete_source_after and not reused:
-                # 기존 노트북 재사용 시 소스가 무한정 쌓이는 걸 막는다.
-                # 원래 있던 소스(reused)는 내가 만든 게 아니므로 절대 건드리지 않는다.
-                try:
-                    await client.sources.delete(nb.id, src.id)
-                    log("  -> 추가했던 영상 소스 정리 완료")
-                except Exception as e:
-                    log(f"  -> [주의] 소스 정리 실패(수동 삭제 필요): {e}")
-
-            if not answer:
-                raise NotebookLMError("노트북LM이 빈 응답을 반환했습니다.")
-
-            return answer, nb.id
-
-    except AuthError as e:
-        raise NotebookLMError(
-            f"노트북LM 인증 실패: {e}\n"
-            "  터미널에서 아래를 한 번 실행하세요:\n"
-            "    notebooklm login --browser-cookies chrome\n"
-            "  (안 되면)  notebooklm login") from e
-
-
 def fetch_manuscript(youtube_url, cfg, log=print):
     """유튜브 URL → 노트북LM 원고 텍스트. 실패하면 NotebookLMError."""
     if not youtube_url:
         raise NotebookLMError("유튜브 링크가 없습니다.")
 
-    log("[노트북LM] 원고 생성 시작...")
-    answer, nb_id = asyncio.run(_fetch_async(
-        youtube_url,
-        cfg.get('prompt') or DEFAULT_PROMPT,
-        cfg.get('notebook_id', ''),
-        cfg.get('notebook_title', '민수대표님_카페글'),
-        cfg.get('notebook_title_prefix', '[자동]'),
-        cfg.get('scope_to_new_source', True),
-        float(cfg.get('source_wait_timeout', 300)),
-        cfg.get('delete_after', False),
-        cfg.get('delete_source_after', False),
-        cfg.get('retry_if_no_heading', True),
-        cfg.get('profile', ''),
-        log,
-    ))
+    from content_production_policy import CAFE_NOTEBOOK, SHORTS_NOTEBOOK
+    from notebooklm_aside import NotebookLMAsideError, ask_existing_notebook
+
+    notebook_id = str(cfg.get('notebook_id') or '').strip()
+    notebook_title = str(cfg.get('notebook_title') or '').strip()
+    kind = 'shorts' if notebook_id == SHORTS_NOTEBOOK['id'] else 'cafe'
+    expected = SHORTS_NOTEBOOK if kind == 'shorts' else CAFE_NOTEBOOK
+    notebook_id = notebook_id or expected['id']
+    notebook_title = notebook_title or expected['title']
+    log(f"[노트북LM] Aside u0 / {notebook_title} 원고 생성 시작...")
+    try:
+        result = ask_existing_notebook(
+            youtube_url,
+            cfg.get('prompt') or DEFAULT_PROMPT,
+            kind=kind,
+            notebook_id=notebook_id,
+            notebook_title=notebook_title,
+            timeout=int(cfg.get('source_wait_timeout', 300)),
+            account=str(cfg.get('aside_account') or 'u0'),
+            evidence_dir=cfg.get('evidence_dir'),
+        )
+    except (NotebookLMAsideError, RuntimeError) as exc:
+        raise NotebookLMError(str(exc)) from exc
+    answer = str(result.get('answer') or '').strip()
 
     answer = _strip_citations(answer)
     log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
@@ -336,11 +207,15 @@ def strip_promo_tail(text, log=print):
 
 def load_config(config):
     """config.ini의 [NOTEBOOKLM] 섹션을 dict로."""
+    from content_production_policy import ASIDE_ACCOUNT, CAFE_NOTEBOOK
+
     return {
         'enabled': config.getboolean('NOTEBOOKLM', 'enabled', fallback=False),
-        'notebook_id': config.get('NOTEBOOKLM', 'notebook_id', fallback='').strip(),
+        'notebook_id': config.get(
+            'NOTEBOOKLM', 'notebook_id', fallback=CAFE_NOTEBOOK['id']
+        ).strip(),
         'notebook_title': config.get('NOTEBOOKLM', 'notebook_title',
-                                     fallback='민수대표님_카페글').strip(),
+                                     fallback=CAFE_NOTEBOOK['title']).strip(),
         'notebook_title_prefix': config.get('NOTEBOOKLM', 'notebook_title_prefix',
                                             fallback='[자동]').strip(),
         'scope_to_new_source': config.getboolean('NOTEBOOKLM', 'scope_to_new_source',
@@ -348,11 +223,11 @@ def load_config(config):
         'source_wait_timeout': config.getint('NOTEBOOKLM', 'source_wait_timeout',
                                              fallback=300),
         'delete_after': config.getboolean('NOTEBOOKLM', 'delete_after', fallback=False),
-        'delete_source_after': config.getboolean('NOTEBOOKLM', 'delete_source_after',
-                                                 fallback=False),
+        'delete_source_after': True,
         'retry_if_no_heading': config.getboolean('NOTEBOOKLM', 'retry_if_no_heading',
                                                  fallback=True),
         'profile': config.get('NOTEBOOKLM', 'profile', fallback='').strip(),
+        'aside_account': ASIDE_ACCOUNT,
         'prompt': config.get('NOTEBOOKLM', 'prompt', fallback='').strip(),
     }
 

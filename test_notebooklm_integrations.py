@@ -9,8 +9,30 @@ import youtube_cardnews_pipeline
 
 def test_notebooklm_defaults_to_named_cafe_notebook():
     cfg = notebooklm_source.load_config(configparser.ConfigParser())
+    assert cfg["aside_account"] == "u0"
     assert cfg["notebook_title"] == "민수대표님_카페글"
+    assert cfg["notebook_id"] == "c09a56d4-b87c-4f54-bfdb-93219326fbae"
     assert cfg["scope_to_new_source"] is True
+
+
+def test_notebooklm_fetch_dispatches_to_aside_u0_only():
+    cfg = notebooklm_source.load_config(configparser.ConfigParser())
+    with mock.patch(
+        "notebooklm_aside.ask_existing_notebook",
+        return_value={
+            "status": "ok",
+            "answer": "## 소제목\n\n영상을 충실하게 정리한 본문입니다.",
+            "cleanupRestored": True,
+        },
+    ) as ask:
+        answer = notebooklm_source.fetch_manuscript(
+            "https://youtu.be/KUeW3zzF49A", cfg, log=lambda *_: None
+        )
+
+    assert "영상을 충실하게" in answer
+    assert ask.call_args.kwargs["kind"] == "cafe"
+    assert ask.call_args.kwargs["account"] == "u0"
+    assert ask.call_args.kwargs["notebook_id"] == "c09a56d4-b87c-4f54-bfdb-93219326fbae"
 
 
 def test_shorts_notebook_config_is_pinned_to_existing_minsoo_notebook():

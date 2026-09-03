@@ -8,6 +8,8 @@ def test_static_content_workflow_preflight_passes_from_tracked_sources():
 
     assert result["status"] == "pass", result["failures"]
     assert result["checks"]["codex_only_no_claude_cli_invocation"] is True
+    assert result["checks"]["notebooklm_aside_only_no_cookie_or_browser_fallback"] is True
     assert result["checks"]["legacy_entrypoint_fail_closed"] is True
     assert result["checks"]["legacy_entrypoint_has_no_publish_policy"] is True
+    assert result["checks"]["cardnews_editorial_contract"] is True
     assert result["checks"]["daily_schedule_contract"] is True

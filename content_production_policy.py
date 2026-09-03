@@ -75,6 +75,22 @@ AUDIO_GATES = {
 }
 
 CARDNEWS = {"width": 1080, "height": 1080, "aspect_ratio": "1:1", "count": 10}
+CARDNEWS_EDITORIAL = {
+    "content_count": 8,
+    "max_warning_first_cards": 2,
+    "closing_cta1": "댓글 AIMAX",
+    "closing_cta2": "관련 정보 받기",
+    "warning_terms": (
+        "제작자 주장",
+        "독립 검증",
+        "단정하면",
+        "보장하지",
+        "확인해야",
+        "주의하세요",
+        "믿지 마세요",
+        "과장 금지",
+    ),
+}
 SCHEDULE = {
     "max_per_day": 2,
     "minimum_gap_hours": 5,
@@ -85,6 +101,58 @@ SCHEDULE = {
 
 class ProductionPolicyError(RuntimeError):
     """Raised before a nonconforming artifact can reach a provider."""
+
+
+def _cardnews_field(slide: dict[str, Any], *names: str) -> str:
+    fields = slide.get("f") or {}
+    return " ".join(str(fields.get(name) or "").strip() for name in names).strip()
+
+
+def validate_cardnews_editorial_deck(deck: dict[str, Any]) -> dict[str, int]:
+    """Reject compliance-report decks before they reach rendering or a provider."""
+    slides = list((deck or {}).get("slides") or [])
+    if len(slides) != CARDNEWS["count"]:
+        raise ProductionPolicyError("카드뉴스는 정확히 10장이어야 합니다.")
+    if slides[0].get("type") != "cover" or slides[-1].get("type") != "closing":
+        raise ProductionPolicyError("카드뉴스는 표지 1장, 본문 8장, 마감 1장 구조여야 합니다.")
+    middle = slides[1:-1]
+    if len(middle) != CARDNEWS_EDITORIAL["content_count"]:
+        raise ProductionPolicyError("카드뉴스 본문은 정확히 8장이어야 합니다.")
+
+    terms = CARDNEWS_EDITORIAL["warning_terms"]
+    cover = _cardnews_field(slides[0], "title", "sub")
+    if any(term in cover for term in terms):
+        raise ProductionPolicyError("표지는 면책·검증 문구가 아니라 독자가 얻을 내용으로 시작해야 합니다.")
+
+    warning_first = 0
+    warning_mentions = 0
+    useful_cards = 0
+    for slide in middle:
+        headline = _cardnews_field(slide, "head", "title", "quote")
+        body = _cardnews_field(slide, "head", "title", "quote", "desc", "rows")
+        headline_is_warning = any(term in headline for term in terms)
+        if headline_is_warning:
+            warning_first += 1
+        if any(term in body for term in terms):
+            warning_mentions += 1
+        if body and not headline_is_warning:
+            useful_cards += 1
+    if warning_first > CARDNEWS_EDITORIAL["max_warning_first_cards"]:
+        raise ProductionPolicyError("면책·검증 문구가 본문 카드의 주제를 대신하고 있습니다.")
+    if useful_cards < 6:
+        raise ProductionPolicyError("원본의 방법·과정·사례를 설명하는 본문 카드가 6장 이상 필요합니다.")
+
+    closing = slides[-1].get("f") or {}
+    if closing.get("cta1") != CARDNEWS_EDITORIAL["closing_cta1"]:
+        raise ProductionPolicyError("마감 카드의 첫 CTA가 고정값과 다릅니다.")
+    if closing.get("cta2") != CARDNEWS_EDITORIAL["closing_cta2"]:
+        raise ProductionPolicyError("마감 카드의 둘째 CTA가 고정값과 다릅니다.")
+    return {
+        "slide_count": len(slides),
+        "useful_content_cards": useful_cards,
+        "warning_first_cards": warning_first,
+        "warning_mentions": warning_mentions,
+    }
 
 
 def strip_subtitle_edge_punctuation(token: str) -> str:

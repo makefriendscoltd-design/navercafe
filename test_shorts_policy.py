@@ -183,6 +183,38 @@ def test_cardnews_rejects_portrait_and_non_ten_slide_decks(tmp_path):
         pipeline.render_cardnews_pngs({"slides": [{}] * 9}, tmp_path, aspect="square")
 
 
+def _editorial_deck(heads):
+    slides = [{"type": "cover", "f": {"title": "AI 도구 10개", "sub": "이번 주에 저장할 목록"}}]
+    slides.extend(
+        {"type": "content", "f": {"head": head, "desc": "원본에서 소개한 방법과 쓰임을 한 가지씩 설명합니다."}}
+        for head in heads
+    )
+    slides.append({
+        "type": "closing",
+        "f": {"cta1": "댓글 AIMAX", "cta2": "관련 정보 받기"},
+    })
+    return {"slides": slides}
+
+
+def test_cardnews_editorial_gate_accepts_source_first_story():
+    deck = _editorial_deck([
+        "플러그인을 고른다", "이미지를 만든다", "로컬 환경을 쓴다", "로그를 분석한다",
+        "코딩 작업을 맡긴다", "영상을 자동화한다", "무료 모델을 비교한다", "권한을 확인한다",
+    ])
+    evidence = policy.validate_cardnews_editorial_deck(deck)
+    assert evidence["useful_content_cards"] == 8
+    assert evidence["warning_first_cards"] == 0
+
+
+def test_cardnews_editorial_gate_rejects_disclaimer_report():
+    deck = _editorial_deck([
+        "제작자 주장입니다", "독립 검증이 필요합니다", "단정하면 안 됩니다", "보장하지 않습니다",
+        "확인해야 합니다", "주의하세요", "방법을 살펴봅니다", "도구를 비교합니다",
+    ])
+    with pytest.raises(policy.ProductionPolicyError, match="면책·검증"):
+        policy.validate_cardnews_editorial_deck(deck)
+
+
 def test_keeps_through_fifth_and_replaces_sixth_and_old_cta():
     original = """첫째, 하나
 
@@ -207,12 +239,84 @@ def test_keeps_through_fifth_and_replaces_sixth_and_old_cta():
     )
 
 
+def test_shorts_uses_the_simple_notebooklm_request():
+    assert shorts.SHORTS_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
+
+
+def test_cta_only_transform_preserves_notebooklm_body_exactly():
+    original = """이 남자 미쳤습니다.
+
+첫째, 원문 하나
+
+둘째, 원문 둘
+
+셋째, 원문 셋
+
+넷째, 원문 넷
+
+다섯째, 원문 다섯
+
+자료가 궁금하신 분들은 기존 CTA를 확인하세요."""
+    final = shorts.finalize_script(original, 12)
+    report = shorts.cta_only_transform_report(original, final, 12)
+    assert report["status"] == "cta_only"
+    assert report["notebooklm_body_preserved_exactly"] is True
+    assert report["content_rewrite_applied"] is False
+    assert report["body_sha256_before"] == report["body_sha256_after"]
+
+
+def test_cta_only_transform_rejects_any_body_rewrite():
+    original = "첫째, 원문\n둘째, 둘\n셋째, 셋\n넷째, 넷\n다섯째, 다섯"
+    rewritten = shorts.finalize_script(original, 5).replace("첫째, 원문", "첫째, 재작성")
+    with pytest.raises(RuntimeError, match="CTA 교체 외에 변경"):
+        shorts.cta_only_transform_report(original, rewritten, 5)
+
+
+def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch):
+    answer = """헤드카피라이팅
+1. 클로드가 다 한다고? / 자동화 핵심 5가지
+2. 반복 업무 아직 해요? / 클로드로 줄이는 법
+3. 이 기능 대박입니다 / 클로드 자동화 공개
+
+스크립트
+이 프로그램 대박입니다.
+클로드가 반복 업무를 처리하는 흐름입니다.
+다섯 가지 방법, 저장하고 끝까지 보세요!
+
+첫째, 원문 하나
+
+둘째, 원문 둘
+
+셋째, 원문 셋
+
+넷째, 원문 넷
+
+다섯째, 원문 다섯
+
+이 자료가 궁금하신 분들은 채널을 구독하세요."""
+    monkeypatch.setattr(shorts, "load_shorts_config", lambda: ({"prompt": shorts.SHORTS_PROMPT}, ""))
+    monkeypatch.setattr(shorts.nlm, "fetch_manuscript", lambda url, cfg, log=print: answer)
+    monkeypatch.setattr(shorts, "get_video_duration", lambda url: 12 * 60)
+
+    final, _format, minutes, raw, transform, _head_copies = shorts.fetch(
+        "https://www.youtube.com/watch?v=example"
+    )
+
+    assert raw == answer
+    assert minutes == 12
+    assert final.startswith("이 프로그램 대박입니다.\n클로드가 반복 업무를 처리하는 흐름입니다.")
+    assert "채널을 구독하세요" not in final
+    assert final.endswith(shorts.fixed_cta(12))
+    assert transform["status"] == "cta_only"
+    assert transform["body_sha256_before"] == transform["body_sha256_after"]
+
+
 def test_numeric_sixth_is_cut():
     original = "1. 하나\n2. 둘\n3. 셋\n4. 넷\n5. 다섯\n6. 여섯"
     assert "6. 여섯" not in shorts.finalize_script(original, 10)
 
 
-def test_everything_after_fifth_block_is_replaced_even_without_cta_keywords():
+def test_fifth_item_paragraphs_are_preserved_until_an_explicit_cta():
     original = """첫째, 하나
 
 둘째, 둘
@@ -224,11 +328,12 @@ def test_everything_after_fifth_block_is_replaced_even_without_cta_keywords():
 다섯째, 다섯의 설명입니다.
 두 번째 설명입니다.
 
-\"마지막 명언\"
-무료 가이드를 보내드립니다."""
+추가 설명도 본문입니다.
+
+댓글에 자료 남겨주세요. 무료 가이드를 보내드립니다."""
     result = shorts.finalize_script(original, 17)
     assert "두 번째 설명입니다." in result
-    assert "마지막 명언" not in result
+    assert "추가 설명도 본문입니다." in result
     assert "무료 가이드" not in result
     assert result.endswith(
         "17분 짜리 영상 내용을 모두 정리했습니다.\n\n"
@@ -277,6 +382,40 @@ def test_extracts_three_ranked_two_line_head_copies():
         "이거 그냥 쓰면 손해\n클로드 디자인 바꾸는법",
         "5단계면 충분합니다\nAI 모션그래픽 개선법",
     ]
+
+
+def test_extracts_plain_notebooklm_headings_without_markdown_hashes():
+    answer = """헤드카피라이팅
+1. 클로드가 영상도 만든다고? / 디자인 AI 티 없애는법
+2. 이거 그냥 쓰면 손해 / 클로드 디자인 바꾸는법
+3. 5단계면 충분합니다 / AI 모션그래픽 개선법
+
+스크립트
+이 프로그램 대박입니다.
+다음 문장입니다.
+"""
+    assert len(shorts.extract_head_copy_candidates(answer)) == 3
+    script, _ = shorts.extract_script(answer)
+    assert script.startswith("이 프로그램 대박입니다.")
+
+
+def test_extracts_three_unnumbered_notebooklm_head_copies():
+    answer = """헤드카피라이팅
+고딩이 월 2만 불 벌어?! / 클로드로 24시간 자동 영업
+매달 제안서 쓰다 밤새워?! / 클로드로 5분 만에 완성함
+에이아이 매번 새로 가르쳐?! / 옵시디언으로 뇌 이식하기
+스크립트
+이 남자 미쳤습니다.
+다음 문장입니다.
+"""
+    candidates = shorts.extract_head_copy_candidates(answer)
+    assert len(candidates) == 3
+
+
+def test_plural_person_hook_and_same_line_body_are_accepted():
+    assert shorts.require_strong_hook("이 남자들 미쳤습니다.\n다음 문장입니다.")
+    script = "이 남자들 미쳤습니다. 매달 나가는 비용을 줄인 방법입니다."
+    assert shorts.require_strong_hook(script) == "이 남자들 미쳤습니다."
 
 
 def test_generic_noun_head_copy_is_rejected():

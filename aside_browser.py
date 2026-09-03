@@ -23,6 +23,7 @@ from typing import Any, Iterable
 
 RESULT_MARKER = "__ASIDE_RESULT__"
 DEFAULT_TIMEOUT = 180
+ASIDE_ACCOUNT = "u0"
 
 
 class AsideError(RuntimeError):
@@ -87,7 +88,7 @@ def run_repl(
     *,
     cwd: str | os.PathLike[str] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
-    account: str | None = None,
+    account: str | None = ASIDE_ACCOUNT,
 ) -> dict[str, Any]:
     """Run deterministic JavaScript in Aside and return the marked JSON result."""
     executable = resolve_aside_cli()
@@ -96,9 +97,10 @@ def run_repl(
             "Aside CLI를 찾을 수 없습니다. Aside > Settings > Developers에서 CLI를 설치하세요."
         )
     command = [executable, "repl"]
-    selected_account = (account or os.environ.get("ASIDE_ACCOUNT", "")).strip()
-    if selected_account:
-        command.extend(["--account", selected_account])
+    selected_account = (account or ASIDE_ACCOUNT).strip()
+    if selected_account != ASIDE_ACCOUNT:
+        raise AsideError(f"이 프로젝트의 Aside 계정은 {ASIDE_ACCOUNT}만 허용됩니다.")
+    command.extend(["--account", selected_account])
     # Feed one async expression through stdin.  Passing generated code as a
     # command-line argument hits macOS ARG_MAX once image bytes are embedded.
     expression = f"(async()=>{{\n{code}\n}})()"
@@ -249,7 +251,12 @@ async function pageLooksLoggedOut(p, site) {
 """
 
 
-def check_login(site: str, *, keep_login_tab: bool = False) -> dict[str, Any]:
+def check_login(
+    site: str,
+    *,
+    keep_login_tab: bool = False,
+    account: str | None = ASIDE_ACCOUNT,
+) -> dict[str, Any]:
     """Check a Naver or YouTube session without reading cookies or credentials."""
     if site not in {"naver", "youtube"}:
         raise ValueError("site must be 'naver' or 'youtube'")
@@ -273,7 +280,7 @@ if (loggedOut && payload.keep) {
   emit(result);
 }
 """
-    return run_repl(code, timeout=45)
+    return run_repl(code, timeout=45, account=account)
 
 
 def capture_youtube_frames(

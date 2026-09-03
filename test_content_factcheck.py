@@ -28,7 +28,14 @@ def _valid_deck():
                 "desc": f"검증된 원문에서 {index}번째 실행 방법을 구체적으로 정리했습니다.",
             },
         })
-    slides.append({"type": "closing", "f": {"head": "댓글에 AIMAX"}})
+    slides.append({
+        "type": "closing",
+        "f": {
+            "head": "댓글에 AIMAX",
+            "cta1": "댓글 AIMAX",
+            "cta2": "관련 정보 받기",
+        },
+    })
     return {"slides": slides}
 
 

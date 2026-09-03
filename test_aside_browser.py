@@ -24,6 +24,11 @@ class AsideBrowserUnitTests(unittest.TestCase):
         with self.assertRaises(aside_browser.AsideLoginRequired):
             aside_browser._parse_result(output)
 
+    @mock.patch("aside_browser.run_repl", return_value={"status": "ok"})
+    def test_login_check_is_pinned_to_u0(self, run_repl):
+        aside_browser.check_login("naver")
+        self.assertEqual(run_repl.call_args.kwargs["account"], "u0")
+
     def test_body_markers_are_removed_but_image_boundaries_remain(self):
         body = "[BOLD]첫 문단[/BOLD]\n[BLOCKQUOTE]소제목[/BLOCKQUOTE][IMAGE_HERE]끝"
         self.assertEqual(
@@ -145,6 +150,19 @@ class AsideBrowserUnitTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["/tmp/aside", "repl", "--account", "u0"])
         self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    @mock.patch("aside_browser.subprocess.run")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_run_repl_defaults_to_u0_and_rejects_other_accounts(self, _resolve, run):
+        run.return_value = mock.Mock(
+            returncode=0,
+            stdout=aside_browser.RESULT_MARKER + '{"status":"ok"}\n',
+            stderr="",
+        )
+        aside_browser.run_repl("emit({status:'ok'})")
+        self.assertEqual(run.call_args.args[0][:4], ["/tmp/aside", "repl", "--account", "u0"])
+        with self.assertRaises(aside_browser.AsideError):
+            aside_browser.run_repl("emit({status:'ok'})", account="u1")
 
     @mock.patch("shorts_video.validate_upload_ready", return_value={"status": "pass"})
     @mock.patch("aside_browser.run_repl")
