@@ -382,6 +382,7 @@ def _compose_naver_body(
     cta_link_url: str = "",
     source_label: str = "▶ 원본 영상",
     source_url: str = "",
+    source_long_url: str = "",
 ) -> str:
     """Append the owner's CTA and the original source link without dropping markers."""
     parts = [(body or "").rstrip()]
@@ -390,7 +391,11 @@ def _compose_naver_body(
         parts.append("\n\n".join(cta_parts))
     if source_url.strip():
         label = source_label.strip() or "▶ 원본 영상"
-        parts.append(f"{label}\n{source_url.strip()}")
+        source_lines = [label]
+        if source_long_url.strip():
+            source_lines.append(source_long_url.strip())
+        source_lines.append(source_url.strip())
+        parts.append("\n".join(source_lines))
     return "\n\n\n".join(part for part in parts if part).strip()
 
 
@@ -427,6 +432,7 @@ def post_to_naver_cafe(
     cta_link_url: str = "",
     source_label: str = "▶ 원본 영상",
     source_url: str = "",
+    source_long_url: str = "",
     board_name: str = "",
     bold_enabled: bool = True,
     highlight_enabled: bool = True,
@@ -450,6 +456,7 @@ def post_to_naver_cafe(
         cta_link_url=cta_link_url,
         source_label=source_label,
         source_url=source_url,
+        source_long_url=source_long_url,
     )
     # SmartEditor only expands links into OG/oEmbed cards when they arrive as
     # a real clipboard paste.  Keep URLs out of the sequentially typed body and
@@ -461,6 +468,7 @@ def post_to_naver_cafe(
         cta_link_url="",
         source_label=source_label,
         source_url="",
+        source_long_url="",
     )
     highlight_keywords = [
         re.sub(r"\[/?BOLD\]", "", item).strip()
@@ -514,6 +522,7 @@ def post_to_naver_cafe(
             "ctaLinkUrl": cta_link_url.strip(),
             "sourceLabel": source_label.strip() or "▶ 원본 영상",
             "sourceUrl": source_url.strip(),
+            "sourceLongUrl": source_long_url.strip(),
             "boldEnabled": bool(bold_enabled),
             "highlightEnabled": bool(highlight_enabled),
             "highlightColor": highlight_color or "#ffff00",
@@ -1342,6 +1351,14 @@ if (await pageLooksLoggedOut(p, 'naver')) {
               await p.keyboard.type(payload.sourceLabel,{delay:20});
             }
             await p.keyboard.press('Shift+Enter');
+            if(payload.sourceLongUrl){
+              if(p.keyboard&&typeof p.keyboard.insertText==='function'){
+                await p.keyboard.insertText(payload.sourceLongUrl);
+              }else{
+                await p.keyboard.type(payload.sourceLongUrl,{delay:20});
+              }
+              await p.keyboard.press('Shift+Enter');
+            }
             if(!(await pasteEarlyCard(payload.sourceUrl))){
               const earlyDebug=await bodyFound.ctx.evaluate(()=>({
                 paragraphs:[...document.querySelectorAll('.se-text-paragraph')]
@@ -1604,7 +1621,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             }
             return {ok:await focusEnd(),hasText:false};
           };
-          const pasteCard=async(url,prefix='')=>{
+          const pasteCard=async(url,prefix='',prefixExtra='')=>{
             if(!url)return true;
             const prepared=await prepareFooterParagraph();
             if(!prepared.ok||!activeParagraph)return false;
@@ -1615,6 +1632,11 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             if(prefix){
               if(p.keyboard&&typeof p.keyboard.insertText==='function')await p.keyboard.insertText(prefix);
               else await p.keyboard.type(prefix,{delay:20});
+              await p.keyboard.press('Shift+Enter');
+            }
+            if(prefixExtra){
+              if(p.keyboard&&typeof p.keyboard.insertText==='function')await p.keyboard.insertText(prefixExtra);
+              else await p.keyboard.type(prefixExtra,{delay:20});
               await p.keyboard.press('Shift+Enter');
             }
             const selector=cardSelectorFor(url);
@@ -1655,7 +1677,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             workflowError=`네이버 패밀리데이 OG 링크 카드를 만들지 못했습니다. 진단=${JSON.stringify(linkFailureDebug)}`;
           }
           if(!workflowError&&payload.sourceUrl&&
-              !(await pasteCard(payload.sourceUrl,payload.sourceLabel))){
+              !(await pasteCard(payload.sourceUrl,payload.sourceLabel,payload.sourceLongUrl))){
             workflowError=`네이버 원본 영상 링크 카드를 만들지 못했습니다. 진단=${JSON.stringify(linkFailureDebug)}`;
           }
         }catch(error){
@@ -1666,7 +1688,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         if(!workflowError)await sleep(1200);
       }
 
-      const formatState=await bodyFound.ctx.evaluate(({sourceUrl,ctaLinkUrl})=>{
+      const formatState=await bodyFound.ctx.evaluate(({sourceUrl,sourceLongUrl,ctaLinkUrl})=>{
         const components=[...document.querySelectorAll(
           '.se-components-wrap > .se-component'
         )];
@@ -1693,21 +1715,24 @@ if (await pageLooksLoggedOut(p, 'naver')) {
           bold:(html.match(/se-style-bold|font-weight\s*:\s*(?:bold|[6-9]00)|<(?:b|strong)\b/gi)||[]).length,
           highlight:(html.match(/background(?:-color)?\s*:/gi)||[]).length,
           source:!sourceUrl||text.includes(sourceUrl),
+          sourceLong:!sourceLongUrl||text.includes(sourceLongUrl),
           ctaLink:!ctaLinkUrl||paragraphs.includes(ctaLinkUrl),
           sourceRaw:!sourceUrl||paragraphs.includes(sourceUrl),
+          sourceLongRaw:!sourceLongUrl||paragraphs.includes(sourceLongUrl),
           oglinks:document.querySelectorAll('.se-oglink').length,
           embeds:document.querySelectorAll('.se-oembed,.se-video').length,
           sequence:meaningful.map(item=>item.kind),
           quoteTexts:meaningful.filter(item=>item.kind==='quote')
             .map(item=>item.text.replace(/\u00a0/g,' ')),
           textValues:meaningful.filter(item=>item.kind==='text').map(item=>item.text)};
-      },{sourceUrl:payload.sourceUrl,ctaLinkUrl:payload.ctaLinkUrl});
+      },{sourceUrl:payload.sourceUrl,sourceLongUrl:payload.sourceLongUrl,ctaLinkUrl:payload.ctaLinkUrl});
       if(!workflowError&&formatState.quotes!==payload.expectedQuotes)workflowError='네이버 인용구 서식 개수가 원고와 다릅니다.';
       if(!workflowError&&formatState.images<insertedImages)workflowError='네이버 이미지 삽입 개수가 원고와 다릅니다.';
       if(!workflowError&&payload.boldEnabled&&payload.expectedBold&&formatState.bold===0)workflowError='네이버 볼드 서식 적용을 확인하지 못했습니다.';
       if(!workflowError&&payload.sourceUrl&&!formatState.source)workflowError='원본 영상 링크가 본문에 들어가지 않았습니다.';
       if(!workflowError&&payload.ctaLinkUrl&&!formatState.ctaLink)workflowError='패밀리데이 링크 원문이 본문에 들어가지 않았습니다.';
       if(!workflowError&&payload.sourceUrl&&!formatState.sourceRaw)workflowError='원본 영상 URL 원문이 본문에 들어가지 않았습니다.';
+      if(!workflowError&&payload.sourceLongUrl&&!formatState.sourceLongRaw)workflowError='원본 영상 긴 URL 원문이 본문에 들어가지 않았습니다.';
       const expectedEmbeds=[payload.ctaLinkUrl,payload.sourceUrl]
         .filter(url=>url&&/youtu(?:\.be|be\.com)/i.test(url)).length;
       const expectedOglinks=[payload.ctaLinkUrl,payload.sourceUrl]

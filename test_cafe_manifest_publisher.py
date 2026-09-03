@@ -23,6 +23,7 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
     manifest = {
         "source_key": "sampleKey01",
         "source_url": "https://youtu.be/sampleKey01",
+        "source_long_url": "https://www.youtube.com/watch?v=sampleKey01",
         "title": "검증용 카페 제목",
         "category": publisher.EXPECTED_CATEGORY,
         "expected_quotes": 5,
@@ -36,6 +37,7 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
             "family_day_url": publisher.EXPECTED_CTA_URL,
             "source_label": publisher.EXPECTED_SOURCE_LABEL,
             "source_url": "https://youtu.be/sampleKey01",
+            "source_long_url": "https://www.youtube.com/watch?v=sampleKey01",
         },
     }
     write_json(manifest_path, manifest)
@@ -104,7 +106,7 @@ def test_provider_verification_and_crm_order_remain_fail_closed():
     source = Path(publisher.__file__).read_text(encoding="utf-8")
 
     assert "state.titleExact&&state.categoryExact&&state.ctaExact" in source
-    assert "state.oglinks>=1&&state.embeds>=1?'verified':'observed'" in source
+    assert "state.sourceRaw&&state.sourceLongRaw&&state.images===5" in source
     assert source.index('if verified.get("status") != "verified"') < source.index("crm = crm_emit(source_key, evidence_path)")
     assert source.index('evidence_path.write_text(json.dumps(evidence_payload') < source.index("crm = crm_emit(source_key, evidence_path)")
     assert '"sourceUrls": [short_url, long_url]' in source

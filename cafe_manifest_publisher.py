@@ -57,6 +57,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     local_gate = read_json(provider / "09_cafe_only_local_gate.json")
     source_key = manifest.get("source_key")
     source_url = f"https://youtu.be/{source_key}"
+    source_long_url = f"https://www.youtube.com/watch?v={source_key}"
     tail = manifest.get("tail", {})
     checks = {
         "canonical_manifest_exact": approval.get("sourceOfTruth") == str(manifest_path.relative_to(PROJECT)),
@@ -64,6 +65,8 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "source_key_exact": source_key == approval.get("sourceKey"),
         "source_url_exact": manifest.get("source_url") == source_url,
         "tail_source_url_exact": tail.get("source_url") == source_url,
+        "source_long_url_exact": manifest.get("source_long_url") == source_long_url,
+        "tail_source_long_url_exact": tail.get("source_long_url") == source_long_url,
         "category_exact": manifest.get("category") == EXPECTED_CATEGORY,
         "cta_text_exact": tail.get("cta_text") == EXPECTED_CTA_TEXT,
         "cta_url_exact": tail.get("family_day_url") == EXPECTED_CTA_URL,
@@ -134,7 +137,7 @@ def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path) -> 
     manifest = read_json(manifest_path)
     source_key = manifest["source_key"]
     short_url = manifest["source_url"]
-    long_url = f"https://www.youtube.com/watch?v={source_key}"
+    long_url = manifest["source_long_url"]
     body = (manifest_path.parent / manifest["body_file"]).read_text(encoding="utf-8").strip()
     images = [manifest_path.parent / relative for relative in manifest["images"]]
     if len(images) != 5 or not all(path.is_file() for path in images):
@@ -166,6 +169,7 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
             cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
             cta_text=manifest["tail"]["cta_text"], cta_link_url=manifest["tail"]["family_day_url"],
             source_label=manifest["tail"]["source_label"], source_url=manifest["tail"]["source_url"],
+            source_long_url=manifest["tail"]["source_long_url"],
             board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
             publish=True, save_draft=False, account="u0",
         )
@@ -177,10 +181,11 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
         verify_payload = {
             "url": result["url"], "title": manifest["title"], "cta": manifest["tail"]["cta_text"],
             "ctaUrl": manifest["tail"]["family_day_url"], "sourceUrl": manifest["tail"]["source_url"],
+            "sourceLongUrl": manifest["tail"]["source_long_url"],
             "category": manifest["category"],
         }
         verify_code = JS_COMMON + "\nconst payload=" + _payload_expression(verify_payload) + ";\n" + r'''
-const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provider_verify=${Date.now()}`);await sleep(4500);let text='',html='',images=0,oglinks=0,embeds=0,contexts=0;for(const ctx of await contextsFor(p)){try{const part=await ctx.evaluate(()=>({text:document.body?.innerText||'',html:document.body?.innerHTML||'',images:document.querySelectorAll('.se-image img,.se-module-image img').length,oglinks:document.querySelectorAll('.se-oglink').length,embeds:document.querySelectorAll('.se-oembed,.se-video').length}));text+='\n'+part.text;html+='\n'+part.html;images+=part.images;oglinks+=part.oglinks;embeds+=part.embeds;contexts++;}catch(_){}}const state={url:p.url(),contexts,titleExact:text.includes(payload.title),categoryExact:text.includes(payload.category),ctaExact:text.includes(payload.cta),ctaRaw:text.includes(payload.ctaUrl)||html.includes(payload.ctaUrl),sourceRaw:text.includes(payload.sourceUrl)||html.includes(payload.sourceUrl),images,oglinks,embeds};await p.screenshot({path:'cafe/provider/public_verification.png',fullPage:true});const screenshotPath=await fs.resolvePath('cafe/provider/public_verification.png');await p.close();emit({status:state.titleExact&&state.categoryExact&&state.ctaExact&&state.ctaRaw&&state.sourceRaw&&state.images===5&&state.oglinks>=1&&state.embeds>=1?'verified':'observed',...state,screenshotPath});
+const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provider_verify=${Date.now()}`);await sleep(4500);let text='',html='',images=0,oglinks=0,embeds=0,contexts=0;for(const ctx of await contextsFor(p)){try{const part=await ctx.evaluate(()=>({text:document.body?.innerText||'',html:document.body?.innerHTML||'',images:document.querySelectorAll('.se-image img,.se-module-image img').length,oglinks:document.querySelectorAll('.se-oglink').length,embeds:document.querySelectorAll('.se-oembed,.se-video').length}));text+='\n'+part.text;html+='\n'+part.html;images+=part.images;oglinks+=part.oglinks;embeds+=part.embeds;contexts++;}catch(_){}}const state={url:p.url(),contexts,titleExact:text.includes(payload.title),categoryExact:text.includes(payload.category),ctaExact:text.includes(payload.cta),ctaRaw:text.includes(payload.ctaUrl)||html.includes(payload.ctaUrl),sourceRaw:text.includes(payload.sourceUrl)||html.includes(payload.sourceUrl),sourceLongRaw:text.includes(payload.sourceLongUrl)||html.includes(payload.sourceLongUrl),images,oglinks,embeds};await p.screenshot({path:'cafe/provider/public_verification.png',fullPage:true});const screenshotPath=await fs.resolvePath('cafe/provider/public_verification.png');await p.close();emit({status:state.titleExact&&state.categoryExact&&state.ctaExact&&state.ctaRaw&&state.sourceRaw&&state.sourceLongRaw&&state.images===5&&state.oglinks>=1&&state.embeds>=1?'verified':'observed',...state,screenshotPath});
 '''
         verified = run_repl(verify_code, cwd=base, timeout=150, account="u0")
         if verified.get("status") != "verified":
@@ -194,7 +199,7 @@ const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provide
         "category": manifest["category"], "providerUrl": result["url"], "providerState": "public",
         "exactTitle": manifest["title"], "images": result.get("images"), "quotes": result.get("quotes"),
         "ogCards": result.get("oglinks"), "youtubeCards": result.get("embeds"),
-        "ctaRaw": verified["ctaRaw"], "sourceRaw": verified["sourceRaw"],
+        "ctaRaw": verified["ctaRaw"], "sourceRaw": verified["sourceRaw"], "sourceLongRaw": verified["sourceLongRaw"],
         "publicVerification": verified, "precommitDuplicateCheck": precheck,
         "verifiedAt": datetime.now().astimezone().isoformat(timespec="seconds"), "doNotRetry": True,
     }

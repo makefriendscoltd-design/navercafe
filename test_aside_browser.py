@@ -81,6 +81,28 @@ class AsideBrowserUnitTests(unittest.TestCase):
         )
 
     @mock.patch("aside_browser.run_repl")
+    def test_cafe_keeps_long_source_url_as_raw_text_and_short_url_for_card(self, run_repl):
+        run_repl.return_value = {"status": "filled"}
+        with tempfile.TemporaryDirectory() as temp:
+            image = Path(temp) / "frame.jpg"
+            image.write_bytes(b"jpg")
+            aside_browser.post_to_naver_cafe(
+                "제목", "본문", [image],
+                cafe_url="https://cafe.naver.com/ca-fe/cafes/1/menus/2/articles/write",
+                source_url="https://youtu.be/example",
+                source_long_url="https://www.youtube.com/watch?v=example",
+                publish=False,
+            )
+
+        code = run_repl.call_args.args[0]
+        encoded = re.search(r"atob\('([^']+)'\)", code).group(1)
+        payload = json.loads(base64.b64decode(encoded))
+        self.assertNotIn("https://", payload["body"])
+        self.assertEqual(payload["sourceUrl"], "https://youtu.be/example")
+        self.assertEqual(payload["sourceLongUrl"], "https://www.youtube.com/watch?v=example")
+        self.assertIn("sourceLongRaw", code)
+
+    @mock.patch("aside_browser.run_repl")
     def test_cafe_draft_clicks_real_temporary_registration(self, run_repl):
         run_repl.return_value = {"status": "draft_saved", "saved_time": "방금"}
         aside_browser.post_to_naver_cafe(
