@@ -6,6 +6,7 @@
 - 원본 YouTube ID를 공통 `source_key`로 삼는다. 같은 `source_key`의 네이버 카페 provider URL, YouTube Shorts provider URL/상태, YouTube Community 카드뉴스 provider URL/상태가 모두 확인돼야 3채널 완료다. 쇼츠나 카드뉴스만 발행된 source_key에 카페 provider URL이 없으면 완료가 아니라 카페 미발행으로 남겨 재시도한다.
 
 - 상철이 유튜브 링크를 주면 Orca 오케스트레이션 Run을 만들고, 원본 분석·네이버 카페·유튜브 카드뉴스/커뮤니티·실제 쇼츠 영상 제작/업로드를 독립 Task로 나눠 병렬 진행한다. 카페·카드뉴스·쇼츠 3개 모두 provider 완료 증거가 있어야 한 링크 작업을 완료로 센다. 쇼츠 대본 파일만 만든 상태는 미완료다.
+- 새 `source_key`는 현재 `main` HEAD에서 시작해 `outputs/<source_key>-<YYYYMMDD>/` 하나만 공동 산출물 루트로 쓴다. `/Users/apple/orca/workspaces/navercafe/레퍼런스`, `숏폼`, `카드뉴스`, `카페글`의 기존 dirty/stale 작업 폴더를 새 링크에 재사용하거나 서로의 미커밋 파일을 복사하지 않는다. 별도 worktree가 필요하면 현재 `main` HEAD에서 고유 이름으로 새로 만든다.
 - 새 링크 작업을 시작하기 전에 `.venv312/bin/python content_workflow_preflight.py --runtime --json`을 실행하고 `status=pass`를 확인한다. 실패 항목이 있으면 제작·발행을 시작하지 않는다. `run_content_link.command`는 과거의 단일 파이프라인이 금지된 브라우저·폐기 렌더 경로로 우회하지 못하게 중단하는 안전 가드다. 새 링크는 이 작업방에서 오케스트레이션의 채널별 독립 Task로만 수행한다.
 - 신규 카페 manifest의 공급자 발행기는 Git으로 추적되는 `cafe_manifest_publisher.py`를 사용한다. 기존 임시글 복구가 필요한 항목만 `naver_cafe_fresh_publish_fallback.py`를 사용하며, 큐의 호환 래퍼는 같은 추적 코드로 연결한다. 큐 JSON과 항목별 provider 증거는 런타임 상태이므로 `outputs/`에 보존하고 코드 정본으로 취급하지 않는다.
 - 브라우저와 NotebookLM 작업은 Aside CLI headless `u0` 로그인 세션만 사용한다. NotebookLM은 `민수대표님_카페글`/`민수대표님_숏폼` 기존 노트북만 사용하며 다른 노트북과 임시 노트북은 금지한다.

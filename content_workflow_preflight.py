@@ -94,12 +94,18 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         marker in notebook_runtime for marker in forbidden_browser_backends
     )
     entrypoint = (project / "run_content_link.command").read_text(encoding="utf-8")
+    agent_rules = (project / "AGENTS.md").read_text(encoding="utf-8")
     checks["legacy_entrypoint_fail_closed"] = (
         "content_workflow_preflight.py --runtime --json" in entrypoint
         and "exit 2" in entrypoint
         and "youtube_cardnews_pipeline.py" not in entrypoint
     )
     checks["legacy_entrypoint_has_no_publish_policy"] = "--publish-policy" not in entrypoint
+    checks["source_key_output_isolation_contract"] = (
+        "outputs/<source_key>-<YYYYMMDD>/" in agent_rules
+        and "dirty/stale 작업 폴더" in agent_rules
+        and "현재 `main` HEAD" in agent_rules
+    )
     checks["aside_account_u0"] = policy.ASIDE_ACCOUNT == "u0"
     checks["cardnews_exactly_ten_square"] = policy.CARDNEWS == {
         "width": 1080,
