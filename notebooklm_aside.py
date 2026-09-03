@@ -58,7 +58,8 @@ const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebook
 await sleep(5000);
 const initialUrl=p.url();
 const norm=s=>(s||'').normalize('NFKC').replace(/[\u2019\u2018]/g,"'")
-  .replace(/^(?:Select|선택)\s+/i,'').replace(/\s+/g,' ').trim();
+  .replace(/^(?:Select|선택)\s+/i,'').replace(/\s+(?:Select|선택)$/i,'')
+  .replace(/\s+/g,' ').trim();
 const notebookValues=async()=>await p.evaluate(()=>[...document.querySelectorAll('input')]
   .map(x=>(x.value||'').trim()).filter(Boolean));
 const sourceState=async()=>await p.evaluate(()=>[...document.querySelectorAll('input[type="checkbox"]')]
