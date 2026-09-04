@@ -209,6 +209,7 @@ def test_recorded_generic_timezone_label_preserves_exact_kst_date_and_time() -> 
 
 
 def test_provider_js_checks_raw_selector_cardinality_before_element_selection() -> None:
+    row_contract = CURRENT_UI_FIXTURE["shorts_list_row"]
     for body in (
         adapter.INVENTORY_JS,
         adapter.ATTACH_JS,
@@ -223,6 +224,14 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
     assert "row-title-not-visible" in adapter.INVENTORY_JS
     assert "row-date-cardinality" in adapter.INVENTORY_JS
     assert "row-date-not-visible" in adapter.INVENTORY_JS
+    assert row_contract["rows_inspected"] == 30
+    assert row_contract["old_date_count_values"] == [0]
+    assert row_contract["date_count_values"] == [1]
+    assert row_contract["date_visible_count_values"] == [1]
+    assert row_contract["status_count_values"] == [1]
+    assert row_contract["status_visible_count_values"] == [1]
+    assert f"row.locator('{row_contract['date_selector']}')" in adapter.INVENTORY_JS
+    assert f"row.locator('{row_contract['old_date_selector']}')" not in adapter.INVENTORY_JS
     assert "titles.count()!==1||!await titles.isVisible()" in adapter.INVENTORY_JS
     assert "titles.count()!==1||!await titles.isVisible()" in adapter.SCHEDULE_JS
 

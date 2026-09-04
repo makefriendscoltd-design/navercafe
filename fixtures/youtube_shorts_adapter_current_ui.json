@@ -10,6 +10,30 @@
     "title_control_count": 1,
     "description_control_count": 1
   },
+  "shorts_list_row": {
+    "captured_at_kst": "2026-09-05T07:15:44+09:00",
+    "rows_inspected": 30,
+    "old_date_selector": "#date,time[datetime]",
+    "old_date_count_values": [
+      0
+    ],
+    "date_selector": ".tablecell-date",
+    "date_count_values": [
+      1
+    ],
+    "date_visible_count_values": [
+      1
+    ],
+    "status_selector": ".tablecell-visibility",
+    "status_count_values": [
+      1
+    ],
+    "status_visible_count_values": [
+      1
+    ],
+    "sample_date_text": "2026. 9. 16. 예약 날짜",
+    "sample_status_text": "예약됨"
+  },
   "public_row": {
     "provider_id": "pubVID00001",
     "date_text": "2026. 9. 4."
