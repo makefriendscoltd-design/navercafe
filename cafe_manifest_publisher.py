@@ -10,11 +10,13 @@ import argparse
 import fcntl
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, unquote, urlparse
+from zoneinfo import ZoneInfo
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -23,6 +25,8 @@ EXPECTED_CATEGORY = "AI 자동화&수익화 정보"
 EXPECTED_CTA_TEXT = "AI 자동화를 직접 배우는 오프라인 스터디를 진행하고 있습니다. 관심 있으시면 아래 패밀리데이 모집 안내 글을 읽어보세요."
 EXPECTED_CTA_URL = "https://cafe.naver.com/westudyssat/4188"
 EXPECTED_SOURCE_LABEL = "▶ 원본 영상"
+EXPECTED_CAFE_SLUG = "westudyssat"
+QUEUE_POLICY_PATH = Path("outputs/cafe-publish-queue-20260823/queue.json")
 sys.path.insert(0, str(PROJECT))
 
 from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
@@ -34,6 +38,70 @@ def read_json(path: Path) -> dict:
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def manifest_long_source_url(manifest: dict) -> str:
+    """Read the canonical long YouTube URL while retaining legacy manifests."""
+    return str(manifest.get("source_url_long") or manifest.get("source_long_url") or "")
+
+
+def canonical_cafe_article_url(raw_url: str) -> tuple[str, str]:
+    """Turn Naver's iframe redirect URL into a stable, query-free article URL."""
+    decoded = raw_url or ""
+    article_id = None
+    for _ in range(4):
+        match = re.search(r"(?:articleid=|/articles/|/westudyssat/)(\d+)", decoded, re.I)
+        if match:
+            article_id = match.group(1)
+            break
+        newer = unquote(decoded)
+        if newer == decoded:
+            break
+        decoded = newer
+    if not article_id:
+        path = urlparse(raw_url or "").path
+        match = re.search(r"/(\d+)/?$", path)
+        article_id = match.group(1) if match else None
+    if not article_id:
+        raise RuntimeError("verified Naver Cafe URL has no article id")
+    return f"https://cafe.naver.com/{EXPECTED_CAFE_SLUG}/{article_id}", article_id
+
+
+def enforce_cafe_publish_window(now: datetime | None = None) -> None:
+    """Enforce the queue's daily cap and gap again inside the provider lock."""
+    queue = read_json(PROJECT / QUEUE_POLICY_PATH)
+    timezone = ZoneInfo(queue["timezone"])
+    current = (now or datetime.now(timezone)).astimezone(timezone)
+    verified_by_source: dict[str, datetime] = {}
+    for entry in queue.get("entries", []):
+        source_key = entry.get("source_key")
+        evidence_raw = entry.get("provider_evidence")
+        if not source_key or not evidence_raw:
+            continue
+        evidence_path = PROJECT / evidence_raw
+        candidates = [evidence_path, evidence_path.with_name("12_provider_success_reservation.json")]
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            try:
+                payload = read_json(candidate)
+                raw_time = payload.get("verifiedAt")
+                if payload.get("status") not in ("published_verified", "provider_success_reserved") or not raw_time:
+                    continue
+                verified_at = datetime.fromisoformat(raw_time).astimezone(timezone)
+            except (OSError, ValueError, TypeError, KeyError):
+                continue
+            previous = verified_by_source.get(source_key)
+            if previous is None or verified_at > previous:
+                verified_by_source[source_key] = verified_at
+
+    today = [stamp for stamp in verified_by_source.values() if stamp.date() == current.date()]
+    maximum = int(queue["maximum_successes_per_day"])
+    minimum_gap = float(queue["minimum_gap_hours"])
+    if len(today) >= maximum:
+        raise RuntimeError(f"Cafe daily publish cap reached: {len(today)}/{maximum}")
+    if today and (current - max(today)).total_seconds() < minimum_gap * 3600:
+        raise RuntimeError(f"Cafe publish gap has not reached {minimum_gap:g} hours")
 
 
 def resolve_manifest(raw: str) -> tuple[Path, Path, Path, Path]:
@@ -65,7 +133,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "source_key_exact": source_key == approval.get("sourceKey"),
         "source_url_exact": manifest.get("source_url") == source_url,
         "tail_source_url_exact": tail.get("source_url") == source_url,
-        "source_long_url_exact": manifest.get("source_long_url") == source_long_url,
+        "source_long_url_exact": manifest_long_source_url(manifest) == source_long_url,
         "tail_source_long_url_exact": tail.get("source_long_url") == source_long_url,
         "category_exact": manifest.get("category") == EXPECTED_CATEGORY,
         "cta_text_exact": tail.get("cta_text") == EXPECTED_CTA_TEXT,
@@ -137,7 +205,7 @@ def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path) -> 
     manifest = read_json(manifest_path)
     source_key = manifest["source_key"]
     short_url = manifest["source_url"]
-    long_url = manifest["source_long_url"]
+    long_url = manifest_long_source_url(manifest)
     body = (manifest_path.parent / manifest["body_file"]).read_text(encoding="utf-8").strip()
     images = [manifest_path.parent / relative for relative in manifest["images"]]
     if len(images) != 5 or not all(path.is_file() for path in images):
@@ -161,6 +229,7 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
 '''
     with LOCK.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        enforce_cafe_publish_window()
         precheck = run_repl(precheck_code, cwd=base, timeout=220, account="u0")
         if precheck.get("status") != "ok" or precheck.get("matches"):
             raise RuntimeError({"cafe_precommit_blocked": precheck})
@@ -185,7 +254,7 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
             "category": manifest["category"],
         }
         verify_code = JS_COMMON + "\nconst payload=" + _payload_expression(verify_payload) + ";\n" + r'''
-const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provider_verify=${Date.now()}`);await sleep(4500);let text='',html='',images=0,oglinks=0,embeds=0,contexts=0;for(const ctx of await contextsFor(p)){try{const part=await ctx.evaluate(()=>({text:document.body?.innerText||'',html:document.body?.innerHTML||'',images:document.querySelectorAll('.se-image img,.se-module-image img').length,oglinks:document.querySelectorAll('.se-oglink').length,embeds:document.querySelectorAll('.se-oembed,.se-video').length}));text+='\n'+part.text;html+='\n'+part.html;images+=part.images;oglinks+=part.oglinks;embeds+=part.embeds;contexts++;}catch(_){}}const state={url:p.url(),contexts,titleExact:text.includes(payload.title),categoryExact:text.includes(payload.category),ctaExact:text.includes(payload.cta),ctaRaw:text.includes(payload.ctaUrl)||html.includes(payload.ctaUrl),sourceRaw:text.includes(payload.sourceUrl)||html.includes(payload.sourceUrl),sourceLongRaw:text.includes(payload.sourceLongUrl)||html.includes(payload.sourceLongUrl),images,oglinks,embeds};await p.screenshot({path:'cafe/provider/public_verification.png',fullPage:true});const screenshotPath=await fs.resolvePath('cafe/provider/public_verification.png');await p.close();emit({status:state.titleExact&&state.categoryExact&&state.ctaExact&&state.ctaRaw&&state.sourceRaw&&state.sourceLongRaw&&state.images===5&&state.oglinks>=1&&state.embeds>=1?'verified':'observed',...state,screenshotPath});
+const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provider_verify=${Date.now()}`);await sleep(4500);let text='',html='',images=0,oglinks=0,embeds=0,contexts=0;for(const ctx of await contextsFor(p)){try{const part=await ctx.evaluate(()=>({text:document.body?.innerText||'',html:document.body?.innerHTML||'',images:document.querySelectorAll('.se-image img,.se-module-image img').length,oglinks:document.querySelectorAll('.se-oglink').length,embeds:document.querySelectorAll('.se-oembed,.se-video').length}));text+='\n'+part.text;html+='\n'+part.html;images+=part.images;oglinks+=part.oglinks;embeds+=part.embeds;contexts++;}catch(_){}}const state={url:p.url(),contexts,titleExact:text.includes(payload.title),categoryExact:text.includes(payload.category),ctaExact:text.includes(payload.cta),ctaRaw:text.includes(payload.ctaUrl),sourceRaw:text.includes(payload.sourceUrl),sourceLongRaw:text.includes(payload.sourceLongUrl),images,oglinks,embeds};await p.screenshot({path:'cafe/provider/public_verification.png',fullPage:true});const screenshotPath=await fs.resolvePath('cafe/provider/public_verification.png');await p.close();emit({status:state.titleExact&&state.categoryExact&&state.ctaExact&&state.ctaRaw&&state.sourceRaw&&state.sourceLongRaw&&state.images===5&&state.oglinks>=1&&state.embeds>=1?'verified':'observed',...state,screenshotPath});
 '''
         verified = run_repl(verify_code, cwd=base, timeout=150, account="u0")
         if verified.get("status") != "verified":
@@ -194,9 +263,23 @@ const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provide
             )
             raise RuntimeError({"cafe_publication_exists_but_verification_failed_do_not_retry": verified})
 
+        canonical_url, article_id = canonical_cafe_article_url(
+            verified.get("url") or result.get("url") or ""
+        )
+        (evidence / "12_provider_success_reservation.json").write_text(
+            json.dumps({
+                "status": "provider_success_reserved",
+                "sourceKey": source_key,
+                "providerUrl": canonical_url,
+                "articleId": article_id,
+                "verifiedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
     evidence_payload = {
         "status": "published_verified", "sourceKey": source_key, "provider": "Naver Cafe", "account": "u0",
-        "category": manifest["category"], "providerUrl": result["url"], "providerState": "public",
+        "category": manifest["category"], "providerUrl": canonical_url, "providerState": "public",
+        "articleId": article_id,
         "exactTitle": manifest["title"], "images": result.get("images"), "quotes": result.get("quotes"),
         "ogCards": result.get("oglinks"), "youtubeCards": result.get("embeds"),
         "ctaRaw": verified["ctaRaw"], "sourceRaw": verified["sourceRaw"], "sourceLongRaw": verified["sourceLongRaw"],
@@ -210,7 +293,7 @@ const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provide
         raise RuntimeError({"provider_success_crm_failed": crm})
     evidence_payload["crm"] = {"status": "success", "channel": "naver_cafe", "stage": "sent", "count": 1}
     evidence_path.write_text(json.dumps(evidence_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"status": "published_verified", "providerUrl": result["url"], "crm": evidence_payload["crm"]}, ensure_ascii=False, indent=2))
+    print(json.dumps({"status": "published_verified", "providerUrl": canonical_url, "crm": evidence_payload["crm"]}, ensure_ascii=False, indent=2))
 
 
 def main() -> None:

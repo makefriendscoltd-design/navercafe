@@ -110,3 +110,75 @@ def test_provider_verification_and_crm_order_remain_fail_closed():
     assert source.index('if verified.get("status") != "verified"') < source.index("crm = crm_emit(source_key, evidence_path)")
     assert source.index('evidence_path.write_text(json.dumps(evidence_payload') < source.index("crm = crm_emit(source_key, evidence_path)")
     assert '"sourceUrls": [short_url, long_url]' in source
+
+
+def test_canonical_cafe_article_url_decodes_legacy_iframe_redirect():
+    raw = (
+        "https://cafe.naver.com/westudyssat?iframe_url_utf8="
+        "%2FArticleRead.nhn%253Fclubid%3D26321967%2526articleid%3D6081%2526menuid%3D163"
+    )
+    assert publisher.canonical_cafe_article_url(raw) == (
+        "https://cafe.naver.com/westudyssat/6081",
+        "6081",
+    )
+
+
+def test_canonical_cafe_article_url_rejects_board_root():
+    with pytest.raises(RuntimeError, match="no article id"):
+        publisher.canonical_cafe_article_url("https://cafe.naver.com/westudyssat")
+
+
+def test_manifest_long_source_url_prefers_canonical_field_and_keeps_legacy_alias():
+    canonical = "https://www.youtube.com/watch?v=canonical1"
+    legacy = "https://www.youtube.com/watch?v=legacy00001"
+    assert publisher.manifest_long_source_url({"source_url_long": canonical, "source_long_url": legacy}) == canonical
+    assert publisher.manifest_long_source_url({"source_long_url": legacy}) == legacy
+
+
+def test_publish_window_uses_queue_as_source_of_truth(tmp_path, monkeypatch):
+    monkeypatch.setattr(publisher, "PROJECT", tmp_path)
+    queue_path = tmp_path / publisher.QUEUE_POLICY_PATH
+    evidence_path = tmp_path / "outputs/already/cafe/provider/13_provider_evidence.json"
+    write_json(queue_path, {
+        "timezone": "Asia/Seoul",
+        "minimum_gap_hours": 5,
+        "maximum_successes_per_day": 2,
+        "entries": [{
+            "source_key": "already",
+            "provider_evidence": str(evidence_path.relative_to(tmp_path)),
+        }],
+    })
+    write_json(evidence_path, {
+        "status": "published_verified",
+        "verifiedAt": "2026-09-04T10:00:00+09:00",
+    })
+    with pytest.raises(RuntimeError, match="gap has not reached 5 hours"):
+        publisher.enforce_cafe_publish_window(
+            publisher.datetime.fromisoformat("2026-09-04T14:59:59+09:00"))
+    publisher.enforce_cafe_publish_window(
+        publisher.datetime.fromisoformat("2026-09-04T15:00:00+09:00"))
+
+
+def test_publish_window_counts_locked_success_reservations(tmp_path, monkeypatch):
+    monkeypatch.setattr(publisher, "PROJECT", tmp_path)
+    queue_path = tmp_path / publisher.QUEUE_POLICY_PATH
+    entries = []
+    for index, hour in enumerate((10, 15), start=1):
+        evidence = tmp_path / f"outputs/item{index}/cafe/provider/13_provider_evidence.json"
+        entries.append({
+            "source_key": f"item{index}",
+            "provider_evidence": str(evidence.relative_to(tmp_path)),
+        })
+        write_json(evidence.with_name("12_provider_success_reservation.json"), {
+            "status": "provider_success_reserved",
+            "verifiedAt": f"2026-09-04T{hour:02d}:00:00+09:00",
+        })
+    write_json(queue_path, {
+        "timezone": "Asia/Seoul",
+        "minimum_gap_hours": 5,
+        "maximum_successes_per_day": 2,
+        "entries": entries,
+    })
+    with pytest.raises(RuntimeError, match="daily publish cap reached: 2/2"):
+        publisher.enforce_cafe_publish_window(
+            publisher.datetime.fromisoformat("2026-09-04T23:00:00+09:00"))
