@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import configparser
+import fcntl
 import json
 import os
 import sys
@@ -36,22 +37,22 @@ PROVIDER_LOCK = Path("/tmp/aimax-naver-provider.lock")
 def _provider_lock(timeout_seconds: int = 900):
     """Serialize Naver provider UI mutations across Cafe workers."""
     deadline = time.monotonic() + timeout_seconds
-    acquired = False
-    try:
-        while not acquired:
+    PROVIDER_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with PROVIDER_LOCK.open("a+") as lock_stream:
+        while True:
             try:
-                PROVIDER_LOCK.mkdir()
-                acquired = True
-            except FileExistsError:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("네이버 제공자 잠금을 15분 안에 획득하지 못했습니다.")
                 time.sleep(5)
-        yield
-    finally:
-        if acquired:
+        try:
+            yield
+        finally:
             try:
-                PROVIDER_LOCK.rmdir()
-            except FileNotFoundError:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+            except OSError:
                 pass
 
 

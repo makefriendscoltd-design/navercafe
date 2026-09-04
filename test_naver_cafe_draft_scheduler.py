@@ -22,6 +22,7 @@ def _manifest(tmp_path):
 
 
 def test_run_manifest_tracks_only_after_provider_proof(monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduler, "PROVIDER_LOCK", tmp_path / "provider.lock")
     monkeypatch.setattr(scheduler, "_load_config", configparser.RawConfigParser)
     monkeypatch.setattr(scheduler, "publish_saved_naver_cafe_draft", lambda *a, **k: {
         "status": "published", "url": "https://cafe.naver.com/example/2"
@@ -37,6 +38,7 @@ def test_run_manifest_tracks_only_after_provider_proof(monkeypatch, tmp_path):
 
 
 def test_run_manifest_blocks_and_notifies_without_tracking(monkeypatch, tmp_path):
+    monkeypatch.setattr(scheduler, "PROVIDER_LOCK", tmp_path / "provider.lock")
     monkeypatch.setattr(scheduler, "_load_config", configparser.RawConfigParser)
     monkeypatch.setattr(
         scheduler,
@@ -52,3 +54,14 @@ def test_run_manifest_blocks_and_notifies_without_tracking(monkeypatch, tmp_path
     result = scheduler.run_manifest(_manifest(tmp_path), tmp_path / "result.json")
     assert result["status"] == "blocked"
     assert result["ccida_private_notified"] is True
+
+
+def test_provider_lock_reuses_stale_regular_file(monkeypatch, tmp_path):
+    lock_path = tmp_path / "provider.lock"
+    lock_path.touch()
+    monkeypatch.setattr(scheduler, "PROVIDER_LOCK", lock_path)
+
+    with scheduler._provider_lock(timeout_seconds=0):
+        assert lock_path.is_file()
+
+    assert lock_path.is_file()
