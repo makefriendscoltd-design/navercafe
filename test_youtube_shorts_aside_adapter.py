@@ -5,7 +5,7 @@ import json
 import os
 import sqlite3
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 from unittest import mock
@@ -120,6 +120,41 @@ def inventory_fixture() -> dict[str, Any]:
     }
 
 
+def chunked_inventory_response(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the adapter's exact seed/chunk envelope for the static UI rows."""
+
+    base = inventory_fixture()
+    direct_rows = base.pop("rows")
+    seeds = []
+    for row in direct_rows:
+        seeds.append(
+            {
+                "identity": row["identity"],
+                "provider_id": row["provider_id"],
+                "status": row["status"],
+                "title": row["title"],
+                "listText": row["title"],
+                "urls": list(row["urls"]),
+                "page": row["page"],
+                "publishedRaw": row.get("published_at", ""),
+            }
+        )
+    start = int(payload["chunk_start"])
+    end = int(payload["chunk_end"])
+    return {
+        **base,
+        "scan_token": payload["scan_token"],
+        "chunk_nonce": payload["chunk_nonce"],
+        "chunk_index": payload["chunk_index"],
+        "chunk_total": payload["chunk_total"],
+        "chunk_start": start,
+        "chunk_end": end,
+        "captured_at": NOW.isoformat(),
+        "seed_rows": seeds,
+        "rows": direct_rows[start:end],
+    }
+
+
 class CapturingAsideRunner:
     def __init__(self, result: Any):
         self.result = result
@@ -143,7 +178,7 @@ def test_inventory_exhaustively_preserves_pagination_and_four_state_evidence(
     tmp_path: Path,
 ) -> None:
     _path, manifest = make_manifest(tmp_path)
-    aside = CapturingAsideRunner(inventory_fixture())
+    aside = CapturingAsideRunner(chunked_inventory_response)
     port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
 
     evidence = port.scan_inventory(manifest, phase="attachment_precommit_requery")
@@ -166,13 +201,25 @@ def test_inventory_exhaustively_preserves_pagination_and_four_state_evidence(
     assert all(row["direct_metadata_inspected"] is True for row in evidence["rows"])
     assert evidence["rows"][0]["published_date"] == "2026-09-04"
     assert evidence["rows"][1]["scheduled_at"] == "2026-09-06T11:00:00+09:00"
-    assert len(aside.calls) == 1
-    assert aside.calls[0]["payload"] == {
-        "list_url": adapter.STUDIO_SHORTS_URL,
-        "channel": adapter.CHANNEL_NAME,
-        "sentinel": manifest.draft_sentinel,
-        "title": manifest.title,
-    }
+    assert len(aside.calls) == 2
+    seed_payload = aside.calls[0]["payload"]
+    assert seed_payload["list_url"] == adapter.STUDIO_SHORTS_URL
+    assert seed_payload["channel"] == adapter.CHANNEL_NAME
+    assert seed_payload["sentinel"] == manifest.draft_sentinel
+    assert seed_payload["title"] == manifest.title
+    assert seed_payload["chunk_start"] == seed_payload["chunk_end"] == 0
+    assert seed_payload["expected_identities"] == []
+    chunk_payload = aside.calls[1]["payload"]
+    assert chunk_payload["scan_token"] == seed_payload["scan_token"]
+    assert chunk_payload["chunk_start"] == 0
+    assert chunk_payload["chunk_end"] == 4
+    assert chunk_payload["expected_identities"] == [
+        "public00001",
+        "sched000001",
+        "privat00001",
+        "draft000001",
+    ]
+    assert all(call["timeout"] == 100 for call in aside.calls)
     assert "#navigate-after" in aside.calls[0]["body"]
 
 
@@ -305,21 +352,156 @@ def test_composed_provider_programs_remain_isolated_in_a_persistent_scope() -> N
         lambda value: value.update(pagination_complete=False),
         lambda value: value["pages"][-1].update(next_disabled=False),
         lambda value: value.update(account="u1"),
-        lambda value: value["rows"][0].update(direct_metadata_inspected=False),
-        lambda value: value["rows"][0].update(status="other"),
+        lambda value: value.update(chunk_nonce="stale-replayed-nonce"),
+        lambda value: value["seed_rows"][0].update(status="other"),
     ],
 )
 def test_inventory_fails_closed_on_incomplete_or_unbound_evidence(
     mutation: Any, tmp_path: Path
 ) -> None:
     _path, manifest = make_manifest(tmp_path)
-    raw = inventory_fixture()
-    mutation(raw)
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = chunked_inventory_response(payload)
+        mutation(raw)
+        return raw
+
     port = adapter.AsideHeadlessU0Provider(
-        runner=CapturingAsideRunner(raw), clock=lambda: NOW
+        runner=CapturingAsideRunner(result), clock=lambda: NOW
     )
     with pytest.raises(publisher.PublisherSafetyError):
         port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+
+def test_inventory_merges_multiple_direct_metadata_chunks_under_one_scan_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(adapter, "INVENTORY_DIRECT_CHUNK_SIZE", 2)
+    _path, manifest = make_manifest(tmp_path)
+    aside = CapturingAsideRunner(chunked_inventory_response)
+    port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
+
+    evidence = port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+    assert len(evidence["rows"]) == 4
+    assert len(aside.calls) == 3  # seed, rows 0:2, rows 2:4
+    assert {call["payload"]["scan_token"] for call in aside.calls} == {
+        evidence["scan_id"]
+    }
+    assert len({call["payload"]["chunk_nonce"] for call in aside.calls}) == 3
+    assert [call["payload"]["expected_identities"] for call in aside.calls] == [
+        [],
+        ["public00001", "sched000001"],
+        ["privat00001", "draft000001"],
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value, payload: value.update(
+            captured_at="2026-09-05T08:50:00+09:00"
+        ),
+        lambda value, payload: (
+            value["rows"].pop() if value["rows"] else None
+        ),
+        lambda value, payload: (
+            value["rows"].append(dict(value["rows"][0]))
+            if value["rows"]
+            else None
+        ),
+        lambda value, payload: value["seed_rows"][1].update(
+            identity=value["seed_rows"][0]["identity"]
+        ),
+        lambda value, payload: (
+            value["seed_rows"][0].update(title="changed-during-chunks")
+            if payload["chunk_start"] >= 2
+            else None
+        ),
+    ],
+)
+def test_inventory_chunks_fail_closed_on_stale_missing_duplicate_or_drifted_evidence(
+    mutation: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(adapter, "INVENTORY_DIRECT_CHUNK_SIZE", 2)
+    _path, manifest = make_manifest(tmp_path)
+
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = chunked_inventory_response(payload)
+        mutation(raw, payload)
+        return raw
+
+    port = adapter.AsideHeadlessU0Provider(
+        runner=CapturingAsideRunner(result), clock=lambda: NOW
+    )
+    with pytest.raises(publisher.PublisherSafetyError):
+        port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+
+def test_inventory_chunks_fail_closed_when_logical_scan_outlives_freshness_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(adapter, "INVENTORY_DIRECT_CHUNK_SIZE", 2)
+    _path, manifest = make_manifest(tmp_path)
+    observed_now = [NOW]
+
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        if payload["chunk_start"] == payload["chunk_end"] == 0:
+            captured = NOW
+        elif payload["chunk_start"] == 0:
+            captured = NOW + timedelta(minutes=3)
+        else:
+            captured = NOW + timedelta(minutes=6)
+        observed_now[0] = captured
+        raw = chunked_inventory_response(payload)
+        raw["captured_at"] = captured.isoformat()
+        return raw
+
+    port = adapter.AsideHeadlessU0Provider(
+        runner=CapturingAsideRunner(result), clock=lambda: observed_now[0]
+    )
+    with pytest.raises(
+        publisher.PublisherSafetyError,
+        match="logical scan exceeded its freshness window",
+    ):
+        port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+
+def test_inventory_fails_closed_on_nonpositive_chunk_size(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(adapter, "INVENTORY_DIRECT_CHUNK_SIZE", 0)
+    _path, manifest = make_manifest(tmp_path)
+    port = adapter.AsideHeadlessU0Provider(
+        runner=CapturingAsideRunner(chunked_inventory_response), clock=lambda: NOW
+    )
+    with pytest.raises(
+        publisher.PublisherSafetyError,
+        match="chunk size must be positive",
+    ):
+        port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+
+def test_inventory_discards_partial_chunks_when_a_later_aside_call_disconnects(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(adapter, "INVENTORY_DIRECT_CHUNK_SIZE", 2)
+    _path, manifest = make_manifest(tmp_path)
+
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        if payload["chunk_start"] >= 2:
+            raise TimeoutError("simulated Aside daemon disconnect")
+        return chunked_inventory_response(payload)
+
+    aside = CapturingAsideRunner(result)
+    port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
+    with pytest.raises(adapter.LiveDependencyError, match="Aside CLI headless u0 call failed"):
+        port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+    assert len(aside.calls) == 3
 
 
 def test_attach_sends_exact_final_mp4_once_with_sentinel_and_observed_receipt(
