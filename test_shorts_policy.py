@@ -3,6 +3,7 @@ import json
 import pytest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import content_production_policy as policy
 import notebooklm_shorts as shorts
@@ -69,7 +70,7 @@ def test_all_four_downloaded_minsoo_assets_have_locked_hashes():
 
 
 def test_schedule_allows_two_per_day_with_five_hour_gap():
-    zone = timezone(timedelta(hours=9))
+    zone = ZoneInfo("Asia/Seoul")
     slots = [
         datetime(2026, 8, 24, 11, tzinfo=zone),
         datetime(2026, 8, 24, 20, tzinfo=zone),
@@ -80,7 +81,7 @@ def test_schedule_allows_two_per_day_with_five_hour_gap():
 
 
 def test_schedule_includes_saturday_and_sunday():
-    zone = timezone(timedelta(hours=9))
+    zone = ZoneInfo("Asia/Seoul")
     weekend_slots = [
         datetime(2026, 8, 29, 11, tzinfo=zone),
         datetime(2026, 8, 29, 20, tzinfo=zone),
@@ -89,6 +90,29 @@ def test_schedule_includes_saturday_and_sunday():
     ]
     assert policy.SCHEDULE["include_weekends"] is True
     assert policy.validate_schedule(weekend_slots) == weekend_slots
+
+
+def test_schedule_rejects_fixed_offset_and_naive_datetimes():
+    fixed_offset = timezone(timedelta(hours=9))
+    with pytest.raises(policy.ProductionPolicyError, match="Asia/Seoul"):
+        policy.validate_schedule([datetime(2026, 9, 17, 11, tzinfo=fixed_offset)])
+    with pytest.raises(policy.ProductionPolicyError, match="Asia/Seoul"):
+        policy.validate_schedule([datetime(2026, 9, 17, 11)])
+
+
+def test_plan_shorts_schedule_is_append_only_and_gap_safe():
+    zone = ZoneInfo("Asia/Seoul")
+    now = datetime(2026, 9, 5, 0, 30, tzinfo=zone)
+    assert policy.plan_shorts_schedule([], now) == datetime(2026, 9, 5, 11, tzinfo=zone)
+    assert policy.plan_shorts_schedule(
+        [datetime(2026, 9, 16, 11, tzinfo=zone)], now
+    ) == datetime(2026, 9, 16, 20, tzinfo=zone)
+    assert policy.plan_shorts_schedule(
+        [datetime(2026, 9, 16, 20, tzinfo=zone)], now
+    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
+    assert policy.plan_shorts_schedule(
+        [datetime(2026, 9, 16, 18, tzinfo=zone)], now
+    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
 
 
 def test_replacement_sequence_is_fail_closed():

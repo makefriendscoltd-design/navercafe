@@ -10,10 +10,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urljoin
+from zoneinfo import ZoneInfo
 
 
 ASIDE_ACCOUNT = "u0"
@@ -99,6 +100,7 @@ SCHEDULE = {
     "preferred_hours": (11, 20),
     "include_weekends": True,
 }
+KST = ZoneInfo("Asia/Seoul")
 
 
 class ProductionPolicyError(RuntimeError):
@@ -406,8 +408,8 @@ def validate_schedule(slots: Iterable[datetime]) -> list[datetime]:
     ordered = sorted(slots)
     by_date: dict[Any, list[datetime]] = {}
     for slot in ordered:
-        if slot.tzinfo is None:
-            raise ProductionPolicyError("예약 시각에는 Asia/Seoul 오프셋이 필요합니다.")
+        if slot.tzinfo is None or getattr(slot.tzinfo, "key", None) != "Asia/Seoul":
+            raise ProductionPolicyError("예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
         by_date.setdefault(slot.date(), []).append(slot)
     if any(len(items) > SCHEDULE["max_per_day"] for items in by_date.values()):
         raise ProductionPolicyError("쇼츠는 하루 최대 2개만 예약합니다.")
@@ -415,6 +417,45 @@ def validate_schedule(slots: Iterable[datetime]) -> list[datetime]:
         if (current - previous).total_seconds() < SCHEDULE["minimum_gap_hours"] * 3600:
             raise ProductionPolicyError("쇼츠 예약 간격은 최소 5시간이어야 합니다.")
     return ordered
+
+
+def plan_shorts_schedule(
+    existing_slots: Iterable[datetime],
+    now_kst: datetime,
+    *,
+    horizon_days: int = 366,
+) -> datetime:
+    """Choose the next append-only 11:00/20:00 KST slot.
+
+    Existing provider reservations must already be parsed into exact KST
+    datetimes.  Callers must fail closed instead of omitting an unparseable
+    provider row.  The planner never backfills before the latest reservation;
+    every candidate is validated against the complete schedule.
+    """
+
+    if now_kst.tzinfo is None or getattr(now_kst.tzinfo, "key", None) != "Asia/Seoul":
+        raise ProductionPolicyError("현재 시각에는 Asia/Seoul 시간대가 필요합니다.")
+    existing = validate_schedule(existing_slots)
+    cursor = max([now_kst, *existing])
+    start_date = cursor.date()
+    for offset in range(horizon_days + 1):
+        candidate_date = start_date + timedelta(days=offset)
+        for hour in SCHEDULE["preferred_hours"]:
+            candidate = datetime(
+                candidate_date.year,
+                candidate_date.month,
+                candidate_date.day,
+                hour,
+                tzinfo=KST,
+            )
+            if candidate <= cursor:
+                continue
+            try:
+                validate_schedule([*existing, candidate])
+            except ProductionPolicyError:
+                continue
+            return candidate
+    raise ProductionPolicyError("예약 가능한 쇼츠 슬롯을 찾지 못했습니다.")
 
 
 def validate_replacement_sequence(events: Iterable[str]) -> None:
