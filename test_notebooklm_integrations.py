@@ -75,7 +75,7 @@ def test_notebooklm_source_preserves_raw_provider_answer_for_shorts(monkeypatch)
     ) == raw
 
 
-def test_shorts_aside_verifies_v13_instruction_before_source_add(monkeypatch):
+def test_shorts_aside_verifies_v14_instruction_before_source_add(monkeypatch):
     observed = {}
 
     def fake_run_repl(code, *, timeout, account):
@@ -96,7 +96,7 @@ def test_shorts_aside_verifies_v13_instruction_before_source_add(monkeypatch):
             "targetOnlyAfter": True,
             "instructionValue": policy.SHORTS_NOTEBOOK_INSTRUCTION,
             "instructionEvidence": {
-                "version": "v13.0",
+                "version": "v14.0",
                 "sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
                 "goal": "맞춤",
                 "responseLength": "길게",
@@ -151,7 +151,7 @@ def test_shorts_aside_python_boundary_rejects_incomplete_target_only_evidence(
         "targetOnlyAfter": True,
         "instructionValue": policy.SHORTS_NOTEBOOK_INSTRUCTION,
         "instructionEvidence": {
-            "version": "v13.0",
+            "version": "v14.0",
             "sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
             "goal": "맞춤",
             "responseLength": "길게",

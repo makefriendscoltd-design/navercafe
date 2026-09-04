@@ -318,10 +318,10 @@ def test_shorts_uses_the_simple_notebooklm_request():
     assert shorts.SHORTS_PROMPT == policy.SHORTS_NOTEBOOK_PROMPT
 
 
-def test_shorts_notebook_instruction_v13_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v13.0"
+def test_shorts_notebook_instruction_v14_is_hash_pinned_and_fail_closed():
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v14.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "086b336f8c5b076050638598efbf715d9b405fc225225b16eacb4b664c379818"
+        "503d5c7eb8564e5dd517154b876ecb8ad654f8092f3bf869f3f6b493f7a02f12"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -363,6 +363,8 @@ def test_captured_v12_dcl_response_is_an_exact_rejection_fixture():
         "free_or_unlimited",
         "fixed_generation_time",
         "automatic_cross_platform_distribution",
+        "repurpose_boundary_missing",
+        "repurpose_or_platform_distribution_extra",
     }
     with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
         policy.validate_shorts_verbatim_claims(script)
@@ -389,14 +391,267 @@ def test_v13_compliant_fixture_passes_pixel_claim_and_verbatim_cta_gates():
     assert report["body_sha256_before"] == report["body_sha256_after"]
 
 
+def test_captured_v13_dcl_provider_response_is_preserved_and_rejected():
+    answer = (FIXTURE_ROOT / "v13_failed_dcl_provider.md").read_text(encoding="utf-8")
+    assert hashlib.sha256(answer.encode("utf-8")).hexdigest() == (
+        "50357b323073ea24148d69d270c05e0ddaa7dd31dd13c100bd518547668c376d"
+    )
+    script, _ = shorts.extract_script(answer)
+    hits = policy.find_forbidden_shorts_claims(script)
+    assert "automatic_cross_platform_distribution" in hits
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
+    assert "영상 하나를 올리는 즉시 모든 채널에 자동으로 배포됩니다." in script
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(script)
+
+
 def test_forbidden_claim_gate_allows_attribution_and_conditional_caveats():
     qualified = """제작자는 모든 소스를 받는다고 말했지만 공식 지원 범위는 확인해야 합니다.
 화자는 2클릭만으로 완성된다고 시연했지만 결과는 보장되지 않습니다.
 원본은 무료라고 소개했지만 현재 요금은 확인이 필요합니다.
-원본 화자는 5분에서 10분이면 생성된다고 말했지만 고정 시간은 아닙니다.
-제작자는 Repurpose로 인스타, 틱톡, 유튜브 쇼츠에 자동 배포했다고 시연했지만 NotebookLM 자체 기능은 아닙니다."""
+원본 화자는 5분에서 10분이면 생성된다고 말했지만 고정 시간은 아닙니다."""
     assert policy.find_forbidden_shorts_claims(qualified) == {}
     assert policy.validate_shorts_verbatim_claims(qualified)["status"] == "pass"
+
+
+def test_repurpose_boundary_clauses_pass_only_when_both_are_exact():
+    compliant = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다."""
+    assert policy.find_forbidden_shorts_claims(compliant) == {}
+    assert policy.validate_shorts_verbatim_claims(compliant)["status"] == "pass"
+
+
+@pytest.mark.parametrize("duplicate_index", [0, 1, 2])
+def test_repurpose_boundary_sentences_must_each_appear_exactly_once(duplicate_index):
+    first, second = policy.SHORTS_REPURPOSE_BOUNDARY_SENTENCES
+    extras = {0: first, 1: second, 2: first + "\n" + second}[duplicate_index]
+    value = first + "\n" + second + "\n" + extras
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" not in hits
+    assert "repurpose_boundary_cardinality" in hits
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+def test_v14_instruction_requires_source_ordered_points_without_global_overfit():
+    instruction = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "첫째부터 다섯째의 제목과 핵심 행동" in instruction
+    assert "원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다" in instruction
+    assert "일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다" in instruction
+    assert "원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다" in instruction
+    assert "dCLW6IQt06M" not in instruction
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
+        "별도 연결 설정 후 리퍼퍼스로 지원 채널에 배포할 수 있습니다.",
+    ],
+)
+def test_repurpose_boundary_requires_both_exact_clauses(value):
+    assert "repurpose_boundary_missing" in policy.find_forbidden_shorts_claims(value)
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "Repurpose를 한 번 연결하면 지원 채널에 자동 배포됩니다.",
+        "제작자는 Repurpose로 인스타와 틱톡에 자동 배포했다고 시연했습니다.",
+        "Repurpose에 한 번의 업로드로 지원 채널에 자동 배포됩니다.",
+    ],
+)
+def test_repurpose_boundary_does_not_waive_unsupported_distribution_extras(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" not in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "Repurpose로 지원 채널에 자동 배포되지만 예약 기능이 없습니다.",
+        "Repurpose로 지원 채널에 자동 배포되며 편집 기능이 없습니다.",
+        "Repurpose로 지원 채널에 업로드되지만 분석 기능은 없습니다.",
+        "Repurpose로 지원 채널에 자동 배포되지만 다운로드는 하지 못합니다.",
+    ],
+)
+def test_unrelated_trailing_negation_does_not_waive_repurpose_distribution(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_or_platform_distribution_extra" in hits
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "Repurpose로 자동 배포되지만 업로드하지 못합니다.",
+        "Repurpose로 지원 채널에 배포되지만 자동 업로드 기능이 없습니다.",
+        "Repurpose로 자동 배포되지만 다른 채널에는 게시하지 못합니다.",
+    ],
+)
+def test_a_negated_second_predicate_does_not_waive_positive_distribution(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_or_platform_distribution_extra" in hits
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "Repurpose로 자동 배포할 수 없지는 않습니다.",
+        "Repurpose로 자동 배포할 수 없는 것은 아닙니다.",
+        "Repurpose로 업로드하지 못하는 것은 아닙니다.",
+        "Repurpose에는 자동 업로드 기능이 없는 것은 아닙니다.",
+        "Repurpose로 자동 배포를 보장하지 않는 것은 아닙니다.",
+        "Repurpose로 게시된다고 보장되지 않는 것은 아닙니다.",
+    ],
+)
+def test_double_negative_reversal_is_not_accepted_as_direct_negation(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_or_platform_distribution_extra" in hits
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "원본은 Repurpose라는 별도 외부 도구를 소개합니다.",
+        "Repurpose가 자동 배포를 보장하지 않습니다.",
+        "Repurpose로 게시된다고 보장되지 않습니다.",
+        "Repurpose로 자동 배포할 수 없습니다.",
+        "Repurpose로 업로드하지 못합니다.",
+        "Repurpose에는 자동 업로드 기능이 없습니다.",
+        "Repurpose에서는 다운로드하지 못합니다.",
+        "Repurpose로 배포는 하지 못합니다.",
+        "Repurpose로 배포하지는 못합니다.",
+        "Repurpose로 배포할 수는 없습니다.",
+        "Repurpose로 배포가 되지 않습니다.",
+        "Repurpose에는 업로드 기능이 전혀 없습니다.",
+        "Repurpose로 배포가 안 됩니다.",
+    ],
+)
+def test_repurpose_boundary_rejects_every_additional_repurpose_sentence(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    assert "repurpose_or_platform_distribution_extra" in policy.find_forbidden_shorts_claims(value)
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "이 도구로 지원 채널에 자동 배포됩니다.",
+        "이 앱은 인스타와 틱톡에 게시하지 못합니다.",
+        "해당 서비스로 모든 채널에 업로드된다는 뜻은 아닙니다.",
+    ],
+)
+def test_repurpose_context_rejects_pronoun_distribution_extras(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    assert "repurpose_or_platform_distribution_extra" in policy.find_forbidden_shorts_claims(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "인스타 게시가 가능합니다.",
+        "인스타용 콘텐츠를 업로드합니다.",
+        "콘텐츠를 인스타에 올립니다.",
+        "틱톡으로 내보낼 수 있습니다.",
+        "SNS에 발행할 수 있습니다.",
+    ],
+)
+def test_platform_only_distribution_vocabulary_requires_exact_boundary(value):
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "그 도구로 배포됩니다.",
+        "그 앱에서 업로드합니다.",
+        "이것으로 게시하지 않습니다.",
+        "이 워크플로우로 유포됩니다.",
+    ],
+)
+def test_boundary_context_tracks_broader_demonstrative_actors(extra):
+    value = """Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.
+별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.
+""" + extra
+    assert "repurpose_or_platform_distribution_extra" in policy.find_forbidden_shorts_claims(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "원본 영상을 NotebookLM에 업로드합니다.",
+        "유튜브 영상을 소스로 업로드합니다.",
+        "PDF 파일과 원본 문서를 업로드합니다.",
+    ],
+)
+def test_ordinary_source_upload_without_distribution_context_is_allowed(value):
+    assert policy.find_forbidden_shorts_claims(value) == {}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "유튜브 쇼츠 영상을 NotebookLM에 업로드합니다.",
+        "틱톡 영상을 소스로 NotebookLM에 업로드합니다.",
+        "NotebookLM에 인스타 영상을 업로드합니다.",
+        "인스타 게시물을 NotebookLM에 업로드합니다.",
+        "NotebookLM에 인스타 게시물을 업로드합니다.",
+    ],
+)
+def test_platform_named_source_ingestion_to_notebooklm_is_allowed(value):
+    assert policy.find_forbidden_shorts_claims(value) == {}
+
+
+def test_notebooklm_named_video_uploaded_to_platform_is_still_distribution():
+    value = "NotebookLM 영상을 틱톡에 업로드합니다."
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
+
+
+def test_notebooklm_ingestion_exception_does_not_hide_compound_distribution():
+    value = "NotebookLM에 인스타 영상을 업로드하고 틱톡에 게시합니다."
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
+
+
+def test_notebooklm_ingestion_exception_rejects_external_euro_destination():
+    value = "NotebookLM에 인스타 영상을 틱톡으로 업로드합니다."
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
 
 
 @pytest.mark.parametrize(
@@ -405,6 +660,9 @@ def test_forbidden_claim_gate_allows_attribution_and_conditional_caveats():
         "제작자는 화면 구성을 소개했지만 이 도구는 어떤 자료든 처리합니다.",
         "이 도구는 무료지만 지원 범위는 확인이 필요합니다.",
         "모든 SNS 채널에 자동으로 배포됩니다.",
+        "모든 채널에 배포됩니다.",
+        "영상 하나를 올리는 즉시 지원 채널에 게시됩니다.",
+        "영상 하나를 올리는 즉시 모든 채널에 자동으로 배포됩니다.",
         "클릭 두 번이면 영상이 완성됩니다.",
         "버튼을 두 번 누르면 영상이 완성됩니다.",
         "10분 안에 영상이 완성됩니다.",
@@ -424,11 +682,17 @@ def test_forbidden_claim_gate_cannot_be_bypassed_by_unrelated_or_missing_forms(v
         "모든 소스를 지원하는 것은 아닙니다.",
         "2클릭만으로 완성된다고 보장하지 않습니다.",
         "5분에서 10분이면 완성된다는 뜻은 아닙니다.",
-        "NotebookLM에서 인스타와 틱톡으로 자동 배포되는 자체 기능은 아닙니다.",
     ],
 )
 def test_forbidden_claim_gate_allows_directly_bound_negation(value):
     assert policy.find_forbidden_shorts_claims(value) == {}
+
+
+def test_platform_distribution_negation_still_requires_exact_boundary_only():
+    value = "NotebookLM에서 인스타와 틱톡으로 자동 배포되는 자체 기능은 아닙니다."
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "repurpose_boundary_missing" in hits
+    assert "repurpose_or_platform_distribution_extra" in hits
 
 
 def test_cta_only_transform_preserves_notebooklm_body_exactly():

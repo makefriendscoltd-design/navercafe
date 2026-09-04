@@ -30,8 +30,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v13.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v13.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v14.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v14.0
 
 ## 작업 원칙
 
@@ -46,6 +46,13 @@ SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타�
 3. `무료`, `공짜`, `무제한`처럼 비용·사용량을 확정하는 표현
 4. `5분에서 10분이면 완성`처럼 생성 시간을 고정하는 표현
 5. NotebookLM이 인스타·틱톡·유튜브 쇼츠 등 여러 플랫폼에 자동·동시·무인 배포한다는 표현. 별도 도구의 역할을 NotebookLM 기능으로 합치지 않는다.
+
+Repurpose 또는 플랫폼 배포를 스크립트에서 언급해야 한다면 아래 두 문장을 글자 그대로 모두 쓴다.
+
+`Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.`
+`별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.`
+
+이 두 문장 외에는 Repurpose 또는 플랫폼 배포에 관한 문장을 어떤 형태로도 덧붙이지 않는다. 긍정·부정·제작자 귀속·조건·이중부정 표현도 모두 금지한다. `한 번 연결`, `영상 하나를 올리는 즉시`, `모든 채널`, `자동 배포`, `동시 배포`, `무인 유포`처럼 한 번의 업로드가 곧 전체 플랫폼 발행으로 이어진다고 쓰지 않는다.
 
 ## STEP 1: 영상 분석
 
@@ -93,7 +100,7 @@ SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타�
 ### 내용 규칙
 
 1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다.
-2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다.
+2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다. 첫째부터 다섯째의 제목과 핵심 행동은 원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다. 출처의 구체적 행동을 `자료 준비`, `기능 활용`, `자동화하기` 같은 일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다. 어느 항목인지 원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다.
 3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
 4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. `첫째,`부터 `다섯째,`까지를 각각 새 줄 첫 머리에 표시하고, 여섯째 이후는 출력하지 않는다.
 5. 원본이나 임의의 CTA를 스크립트에 출력하지 않는다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
@@ -106,6 +113,7 @@ SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타�
 - 타임스탬프·섹션 레이블·메타 주석·영문 병기가 없는가?
 - 도입과 첫째~다섯째만 있고, 각 항목이 새 줄에서 시작하며, 원본 CTA가 없는가?
 - 지원 범위 일반화·보장된 2클릭·무료·고정 생성 시간·자동 다중 플랫폼 배포 표현이 없는가?
+- Repurpose나 플랫폼 배포를 언급했다면 지정된 두 문장만 글자 그대로 썼고, 긍정·부정·제작자 귀속·조건·이중부정을 포함한 다른 관련 문장을 하나도 덧붙이지 않았는가?
 
 하나라도 아니면 과장해서 고치지 말고, 원본 범위 안에서 다시 작성한다.
 
@@ -125,10 +133,10 @@ SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타�
 ### 스크립트
 [레이블 없이 스크립트 본문]
 
-버전: v13.0 (90px 안전폭·금지 주장·다섯째/CTA 계약 고정)
+버전: v14.0 (Repurpose 외부 경계·90px 안전폭·금지 주장·다섯째/CTA 계약 고정)
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "086b336f8c5b076050638598efbf715d9b405fc225225b16eacb4b664c379818"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "503d5c7eb8564e5dd517154b876ecb8ad654f8092f3bf869f3f6b493f7a02f12"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
@@ -136,6 +144,12 @@ SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "`무료`, `공짜`, `무제한`",
     "생성 시간을 고정",
     "자동·동시·무인 배포",
+    "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
+    "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
+    "긍정·부정·제작자 귀속·조건·이중부정 표현도 모두 금지",
+    "영상 하나를 올리는 즉시",
+    "첫째부터 다섯째의 제목과 핵심 행동",
+    "원본과 일대일로 대응할 수 없으면",
     "첫째부터 다섯째까지만",
     "고정 CTA만 붙는다",
 )
@@ -319,6 +333,58 @@ def _shorts_claim_is_qualified(sentence: str, match: re.Match[str], claim: str) 
     return any(re.search(pattern, tail, re.IGNORECASE) for pattern in direct_negations[claim])
 
 
+SHORTS_REPURPOSE_BOUNDARY_SENTENCES = (
+    "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
+    "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
+)
+SHORTS_DISTRIBUTION_PREDICATE = (
+    r"(?:게시(?!물)|배포|(?<!다운)업로드|유포|발행(?!물)|"
+    r"올리|올립|내보내|내보낼|전송|공유|송출)"
+)
+
+
+def _is_platform_distribution_sentence(sentence: str) -> bool:
+    """Identify platform-targeted distribution without treating source ingestion as distribution."""
+
+    distribution_actions = list(
+        re.finditer(SHORTS_DISTRIBUTION_PREDICATE, sentence, re.IGNORECASE)
+    )
+    if not distribution_actions:
+        return False
+    upload_action = distribution_actions[0] if len(distribution_actions) == 1 else None
+    notebooklm_destination = None
+    if upload_action and upload_action.group(0) == "업로드":
+        before_upload = sentence[:upload_action.start()]
+        notebooklm_destination = re.search(
+            r"(?:NotebookLM|노트북엘엠)\s*에(?P<tail>[^,;.!?\n]{0,64})$",
+            before_upload,
+            re.IGNORECASE,
+        )
+        if notebooklm_destination:
+            tail = notebooklm_destination.group("tail")
+            external_destination = re.search(
+                r"(?:인스타(?:그램)?|틱톡|유튜브\s*쇼츠|링크드인|SNS|"
+                r"소셜\s*미디어|플랫폼|채널)\s*(?:에|(?:으)?로)",
+                tail,
+                re.IGNORECASE,
+            )
+            if external_destination:
+                notebooklm_destination = None
+    if (
+        notebooklm_destination
+        and len(distribution_actions) == 1
+        and distribution_actions[0].group(0) == "업로드"
+    ):
+        return False
+    platform_marker = re.search(
+        r"(?:인스타(?:그램)?|틱톡|유튜브\s*쇼츠|링크드인|SNS|"
+        r"소셜\s*미디어|플랫폼|채널)",
+        sentence,
+        re.IGNORECASE,
+    )
+    return bool(platform_marker)
+
+
 def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
     """Find source-independent claim shapes; source fact gates remain additive."""
     text = normalize_notebook_instruction(value)
@@ -339,30 +405,61 @@ def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
         if values:
             hits[name] = sorted(values)
 
-    distribution_hits = []
-    for sentence in sentences:
-        platforms = {
-            platform
-            for platform in ("인스타", "틱톡", "유튜브 쇼츠", "링크드인")
-            if platform in sentence
+    exact_boundaries = set(SHORTS_REPURPOSE_BOUNDARY_SENTENCES)
+    repurpose_mentioned = any(
+        re.search(r"(?:Repurpose|리퍼퍼스)", sentence, re.IGNORECASE)
+        for sentence in sentences
+    )
+    platform_distribution_mentioned = any(
+        _is_platform_distribution_sentence(sentence) for sentence in sentences
+    )
+    distribution_context = repurpose_mentioned or platform_distribution_mentioned
+    if distribution_context:
+        missing = [boundary for boundary in exact_boundaries if boundary not in sentences]
+        if missing:
+            hits["repurpose_boundary_missing"] = missing
+        duplicate_boundaries = {
+            boundary: sentences.count(boundary)
+            for boundary in exact_boundaries
+            if sentences.count(boundary) > 1
         }
-        broad_platform_scope = re.search(
-            r"(?:모든|여러|다중|각종)\s*(?:SNS|소셜\s*미디어|플랫폼|채널)",
-            sentence,
+        if duplicate_boundaries:
+            hits["repurpose_boundary_cardinality"] = [
+                f"{boundary} count={count}"
+                for boundary, count in sorted(duplicate_boundaries.items())
+            ]
+
+        residual_distribution = []
+        platform_distribution = []
+        contextual_actor = re.compile(
+            r"(?:(?:이|그|저|해당|전용|이런|그런)\s*"
+            r"(?:도구|앱|서비스|프로그램|워크플로우|솔루션|시스템)|"
+            r"이것|그것|이를|그걸|이걸)",
             re.IGNORECASE,
         )
-        distribution_match = re.search(r"자동|동시|무인", sentence)
-        if (
-            (len(platforms) >= 2 or broad_platform_scope)
-            and distribution_match
-            and re.search(r"게시|배포|업로드|유포", sentence)
-            and not _shorts_claim_is_qualified(
-                sentence, distribution_match, "automatic_cross_platform_distribution"
+        for sentence in sentences:
+            if sentence in exact_boundaries:
+                continue
+            has_repurpose = re.search(r"(?:Repurpose|리퍼퍼스)", sentence, re.IGNORECASE)
+            has_distribution_predicate = re.search(
+                SHORTS_DISTRIBUTION_PREDICATE, sentence, re.IGNORECASE
             )
-        ):
-            distribution_hits.append(sentence.strip())
-    if distribution_hits:
-        hits["automatic_cross_platform_distribution"] = sorted(set(distribution_hits))
+            has_platform_distribution = _is_platform_distribution_sentence(sentence)
+            has_contextual_distribution = bool(
+                has_distribution_predicate and contextual_actor.search(sentence)
+            )
+            if has_repurpose or has_platform_distribution or has_contextual_distribution:
+                residual_distribution.append(sentence.strip())
+            if has_platform_distribution:
+                platform_distribution.append(sentence.strip())
+        if residual_distribution:
+            hits["repurpose_or_platform_distribution_extra"] = sorted(
+                set(residual_distribution)
+            )
+        if platform_distribution:
+            hits["automatic_cross_platform_distribution"] = sorted(
+                set(platform_distribution)
+            )
     return hits
 
 
@@ -436,13 +533,13 @@ def validate_shorts_notebook_instruction(
     missing = [marker for marker in SHORTS_NOTEBOOK_REQUIRED_MARKERS if marker not in normalized]
     if missing:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침에 v13 사전 금지 계약이 없습니다. "
+            "Shorts NotebookLM 맞춤 지침에 v14 사전 금지 계약이 없습니다. "
             "소스 추가 전 중단합니다."
         )
     actual = notebook_instruction_sha256(value)
     if actual != SHORTS_NOTEBOOK_INSTRUCTION_SHA256:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침이 정본 v13.0과 다릅니다. 소스 추가 전 중단합니다."
+            "Shorts NotebookLM 맞춤 지침이 정본 v14.0과 다릅니다. 소스 추가 전 중단합니다."
         )
     if goal != "맞춤":
         raise ProductionPolicyError("Shorts NotebookLM 응답 목표가 '맞춤'이 아닙니다.")
