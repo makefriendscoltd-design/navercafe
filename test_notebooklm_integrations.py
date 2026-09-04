@@ -1,8 +1,12 @@
 import configparser
 from unittest import mock
 
+import pytest
+
 import notebooklm_source
+import notebooklm_aside
 import notebooklm_shorts
+import content_production_policy as policy
 import youtube_cafe_auto
 import youtube_cardnews_pipeline
 
@@ -23,6 +27,14 @@ def test_notebooklm_fetch_dispatches_to_aside_u0_only():
             "status": "ok",
             "answer": "## 소제목\n\n영상을 충실하게 정리한 본문입니다.",
             "cleanupRestored": True,
+            "sourceAdded": True,
+            "targetLabel": "KJWaxYpcXoo 선택",
+            "sourceCountBefore": 7,
+            "sourceCountAfterAdd": 8,
+            "selectedBefore": ["KJWaxYpcXoo 선택"],
+            "selectedAfter": ["KJWaxYpcXoo 선택"],
+            "targetOnlyBefore": True,
+            "targetOnlyAfter": True,
         },
     ) as ask:
         answer = notebooklm_source.fetch_manuscript(
@@ -40,6 +52,136 @@ def test_shorts_notebook_config_is_pinned_to_existing_minsoo_notebook():
     assert cfg["aside_account"] == "u0"
     assert cfg["notebook_title"] == "민수대표님_숏폼"
     assert cfg["notebook_id"] == "ed70fc3b-474b-423a-9ca8-d19934703f27"
+    assert cfg["preserve_provider_answer"] is True
+
+
+def test_notebooklm_source_preserves_raw_provider_answer_for_shorts(monkeypatch):
+    raw = "### 스크립트\n이 프로그램 대박입니다.[1]"
+    monkeypatch.setattr(
+        notebooklm_aside,
+        "ask_existing_notebook",
+        lambda *args, **kwargs: {"status": "ok", "answer": raw},
+    )
+    cfg = {
+        "notebook_id": policy.SHORTS_NOTEBOOK["id"],
+        "notebook_title": policy.SHORTS_NOTEBOOK["title"],
+        "aside_account": "u0",
+        "prompt": policy.SHORTS_NOTEBOOK_PROMPT,
+        "preserve_provider_answer": True,
+        "strip_promo": False,
+    }
+    assert notebooklm_source.fetch_manuscript(
+        "https://www.youtube.com/watch?v=KJWaxYpcXoo", cfg, log=lambda *_: None
+    ) == raw
+
+
+def test_shorts_aside_verifies_v13_instruction_before_source_add(monkeypatch):
+    observed = {}
+
+    def fake_run_repl(code, *, timeout, account):
+        observed["code"] = code
+        observed["account"] = account
+        return {
+            "status": "ok",
+            "message": "",
+            "answer": "### 헤드카피라이팅\n1. 질문인가요? / 안전한 둘째 줄\n2. 두 번째인가요? / 안전한 둘째 줄\n3. 세 번째인가요? / 안전한 둘째 줄\n\n### 스크립트\n이 프로그램 대박입니다.",
+            "cleanupRestored": True,
+            "sourceAdded": True,
+            "targetLabel": "KJWaxYpcXoo 선택",
+            "sourceCountBefore": 7,
+            "sourceCountAfterAdd": 8,
+            "selectedBefore": ["KJWaxYpcXoo 선택"],
+            "selectedAfter": ["KJWaxYpcXoo 선택"],
+            "targetOnlyBefore": True,
+            "targetOnlyAfter": True,
+            "instructionValue": policy.SHORTS_NOTEBOOK_INSTRUCTION,
+            "instructionEvidence": {
+                "version": "v13.0",
+                "sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+                "goal": "맞춤",
+                "responseLength": "길게",
+                "sourceCount": 7,
+                "chatPairCount": 10,
+                "verifiedBeforeSourceAdd": True,
+            },
+        }
+
+    monkeypatch.setattr(notebooklm_aside, "run_repl", fake_run_repl)
+    result = notebooklm_aside.ask_existing_notebook(
+        "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+        policy.SHORTS_NOTEBOOK_PROMPT,
+        kind="shorts",
+        notebook_id=policy.SHORTS_NOTEBOOK["id"],
+        notebook_title=policy.SHORTS_NOTEBOOK["title"],
+    )
+
+    assert observed["account"] == "u0"
+    assert result["instructionEvidence"]["sha256"] == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
+    assert result["instructionEvidence"]["verifiedBeforeSourceAdd"] is True
+    assert "대상 소스 하나만 선택되지 않았습니다" in observed["code"]
+    assert observed["code"].index("맞춤 지침이 정본과 다릅니다") < observed["code"].index("출처 추가")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sourceAdded", False),
+        ("sourceCountAfterAdd", 7),
+        ("targetOnlyBefore", False),
+        ("targetOnlyAfter", False),
+        ("selectedBefore", ["다른 소스 선택"]),
+        ("selectedAfter", []),
+    ],
+)
+def test_shorts_aside_python_boundary_rejects_incomplete_target_only_evidence(
+    monkeypatch, field, value
+):
+    result = {
+        "status": "ok",
+        "message": "",
+        "answer": "완성된 응답입니다." * 10,
+        "cleanupRestored": True,
+        "sourceAdded": True,
+        "targetLabel": "정확한 소스 선택",
+        "sourceCountBefore": 7,
+        "sourceCountAfterAdd": 8,
+        "selectedBefore": ["정확한 소스 선택"],
+        "selectedAfter": ["정확한 소스 선택"],
+        "targetOnlyBefore": True,
+        "targetOnlyAfter": True,
+        "instructionValue": policy.SHORTS_NOTEBOOK_INSTRUCTION,
+        "instructionEvidence": {
+            "version": "v13.0",
+            "sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+            "goal": "맞춤",
+            "responseLength": "길게",
+            "verifiedBeforeSourceAdd": True,
+        },
+    }
+    result[field] = value
+    monkeypatch.setattr(notebooklm_aside, "run_repl", lambda *args, **kwargs: result)
+    with pytest.raises(notebooklm_aside.NotebookLMAsideError, match="대상 소스 1개"):
+        notebooklm_aside.ask_existing_notebook(
+            "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+            policy.SHORTS_NOTEBOOK_PROMPT,
+            kind="shorts",
+            notebook_id=policy.SHORTS_NOTEBOOK["id"],
+            notebook_title=policy.SHORTS_NOTEBOOK["title"],
+        )
+
+
+def test_shorts_aside_rejects_noncanonical_prompt_before_repl(monkeypatch):
+    run_repl = mock.Mock()
+    monkeypatch.setattr(notebooklm_aside, "run_repl", run_repl)
+    with pytest.raises(notebooklm_aside.NotebookLMAsideError, match="프롬프트"):
+        notebooklm_aside.ask_existing_notebook(
+            "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+            "다른 프롬프트",
+            kind="shorts",
+            notebook_id=policy.SHORTS_NOTEBOOK["id"],
+            notebook_title=policy.SHORTS_NOTEBOOK["title"],
+        )
+    run_repl.assert_not_called()
 
 
 def test_naver_draft_uses_aside_without_publishing():

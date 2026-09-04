@@ -64,10 +64,15 @@ def fetch_manuscript(youtube_url, cfg, log=print):
         raise NotebookLMError(str(exc)) from exc
     answer = str(result.get('answer') or '').strip()
 
-    answer = _strip_citations(answer)
+    # Shorts records the provider answer first, then proves citation cleanup,
+    # parser extraction and CTA replacement as separate deterministic stages.
+    # Cafe keeps the longstanding citation cleanup here.
+    preserve_provider_answer = bool(cfg.get('preserve_provider_answer', False))
+    if not preserve_provider_answer:
+        answer = _strip_citations(answer)
     log(f"[노트북LM] 원고 {len(answer)}자 수신 완료")
 
-    if cfg.get('strip_promo', True):
+    if cfg.get('strip_promo', True) and not preserve_provider_answer:
         before = len(answer)
         answer = strip_promo_tail(answer, log=log)
         if len(answer) != before:

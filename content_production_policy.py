@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -27,6 +28,145 @@ SHORTS_NOTEBOOK = {
     "id": "ed70fc3b-474b-423a-9ca8-d19934703f27",
 }
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
+
+SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v13.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v13.0
+
+## 작업 원칙
+
+선택된 원본 영상 하나만 근거로 쓴다. 영상에 없는 사실, 숫자, 인과관계, 성과, 수익, 연봉, 지위, 경력은 만들거나 더 강하게 바꾸지 않는다. 영상 속 화자의 경험과 주장은 그대로 요약하되, 비교·가능성·의견을 확정 사실이나 개인의 보장된 결과로 바꾸지 않는다.
+
+`무조건`, `보장`, `필승`, `대체 불가능`, `최고 연봉`, `돈을 복사`, `몸값 폭등`처럼 원본보다 강한 절대 표현을 쓰지 않는다. 강한 훅이 필요해도 새로운 결과나 수치를 발명하지 말고, 원본에서 직접 확인되는 사람·도구·행동·문제만 짧고 구어체로 표현한다. 근거가 부족하면 과장해서 채우지 말고 해당 문구를 빼거나 `확인 불가`로 분석에만 표시한다.
+
+아래 다섯 유형은 원본의 제목이나 화자가 언급해도 헤드카피와 스크립트에 단정형으로 쓰지 않는다.
+
+1. `모든 소스`, `어떤 자료든`처럼 지원 범위를 전체로 일반화하는 표현
+2. `2클릭만으로 완성`, `두 번 클릭이면 완성`처럼 결과를 보장하는 표현
+3. `무료`, `공짜`, `무제한`처럼 비용·사용량을 확정하는 표현
+4. `5분에서 10분이면 완성`처럼 생성 시간을 고정하는 표현
+5. NotebookLM이 인스타·틱톡·유튜브 쇼츠 등 여러 플랫폼에 자동·동시·무인 배포한다는 표현. 별도 도구의 역할을 NotebookLM 기능으로 합치지 않는다.
+
+## STEP 1: 영상 분석
+
+아래 항목을 먼저 채우고 `분석 완료`라고 선언한다.
+
+1. 화자 성별: 남성/여성/확인 불가와 근거
+2. 화자 이름: 정확한 이름/언급 없음과 언급 위치
+3. 핵심 주제: 한 문장
+4. 전략·팁 개수: 원본에서 직접 확인되는 개수
+5. 각 전략·팁: 제목과 핵심 내용
+6. 구체적 수치: 원본에 실제로 나온 수치와 맥락만 기록
+7. 화자 배경·권위: 원본에서 직접 말한 경력·실적만 기록
+8. 영상 길이
+
+## STEP 2: 정확성 검증
+
+- 화자 성별과 이름을 추측하지 않았는가?
+- 전략·팁·수치·성과가 원본에 직접 있는가?
+- 비교나 가능성을 확정·보장 표현으로 바꾸지 않았는가?
+- 화자의 사례를 모든 사람에게 적용되는 결과로 일반화하지 않았는가?
+
+하나라도 불확실하면 원본보다 강하게 쓰지 말고 분석에 `확인 불가`로 표시한다.
+
+## STEP 3: 포맷 선택
+
+- 스토리 중심이면 포맷 A
+- 전략 6개 이상이면 포맷 B
+- 실용 팁 10개 이상이면 포맷 C
+- 원본의 정확한 수치가 핵심이면 포맷 D
+
+수치 자체가 자극적이라는 이유로 포맷 D를 고르지 않는다.
+
+## STEP 4: 헤드카피와 스크립트 작성
+
+### 형식 규칙
+
+1. 타임스탬프, `[훅]`·`[본문]`·`[결론]` 같은 레이블, 메타 주석, 이름의 영문 병기를 쓰지 않는다.
+2. 스크립트는 문장이 끝날 때마다 줄을 바꾼다.
+3. 본문은 자연스러운 한국어 구어체로 쓰고 볼드 강조를 쓰지 않는다.
+4. 헤드카피 후보는 정확히 3개다. 각 후보는 `첫째 줄 / 둘째 줄` 형식의 정확히 2줄이고, 각 줄은 공백 포함 18자 이하다.
+5. 헤드카피 3안의 모든 줄은 BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하여야 한다. 실측을 보장할 수 없으면 공백 포함 13자 이하로 줄여 안전폭을 확보한다.
+6. 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체이며, 둘째 줄과 스크립트 첫 3문장이 같은 구체적 주제를 이어받아야 한다.
+7. 헤드카피에도 원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다.
+
+### 내용 규칙
+
+1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다.
+2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다.
+3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
+4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. `첫째,`부터 `다섯째,`까지를 각각 새 줄 첫 머리에 표시하고, 여섯째 이후는 출력하지 않는다.
+5. 원본이나 임의의 CTA를 스크립트에 출력하지 않는다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
+
+## STEP 5: 최종 검증
+
+- 분석, 헤드카피 3개, 스크립트가 모두 선택된 원본 하나에만 근거하는가?
+- 원본에 없는 숫자·성과·수익·연봉·지위·인과·보장을 추가하지 않았는가?
+- 헤드카피가 정확히 3개이며 각 후보가 2줄·줄당 18자 이하·90px 실측 920px 이하인가?
+- 타임스탬프·섹션 레이블·메타 주석·영문 병기가 없는가?
+- 도입과 첫째~다섯째만 있고, 각 항목이 새 줄에서 시작하며, 원본 CTA가 없는가?
+- 지원 범위 일반화·보장된 2클릭·무료·고정 생성 시간·자동 다중 플랫폼 배포 표현이 없는가?
+
+하나라도 아니면 과장해서 고치지 말고, 원본 범위 안에서 다시 작성한다.
+
+## 최종 출력 형식
+
+### 영상 분석 결과
+[STEP 1 내용 전체]
+
+### 선택한 포맷
+포맷 [A/B/C/D]
+
+### 헤드카피라이팅
+1. [첫째 줄] / [둘째 줄]
+2. [첫째 줄] / [둘째 줄]
+3. [첫째 줄] / [둘째 줄]
+
+### 스크립트
+[레이블 없이 스크립트 본문]
+
+버전: v13.0 (90px 안전폭·금지 주장·다섯째/CTA 계약 고정)
+"""
+# Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "086b336f8c5b076050638598efbf715d9b405fc225225b16eacb4b664c379818"
+SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
+    "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
+    "모든 소스",
+    "2클릭만으로 완성",
+    "`무료`, `공짜`, `무제한`",
+    "생성 시간을 고정",
+    "자동·동시·무인 배포",
+    "첫째부터 다섯째까지만",
+    "고정 CTA만 붙는다",
+)
+
+SHORTS_FORBIDDEN_CLAIM_PATTERNS = {
+    "all_or_any_source": (
+        r"(?:모든|어떤)\s*(?:종류의\s*)?(?:웹\s*)?(?:원본\s*)?(?:자료|소스|파일|문서|형식)(?:든|를|가|도|이든)?",
+    ),
+    "guaranteed_two_clicks": (
+        r"(?:단\s*)?(?:2|두)\s*(?:번|회)?(?:의\s*(?:마우스\s*)?)?\s*(?:클릭|누르\w*)\s*(?:만으로|만에|이면)",
+        r"(?:클릭|누르\w*)\s*(?:2|두)\s*(?:번|회)\s*(?:만으로|만에|이면)",
+        r"(?:2|두)\s*(?:번|회)[^,;.!?\n]{0,12}(?:클릭|누르\w*)[^,;.!?\n]{0,24}(?:완성|완료|제작|생성|만들|끝)",
+    ),
+    "free_or_unlimited": (
+        r"(?:완전\s*)?무료(?:로|한|다|인|이며|이고)?",
+        r"공짜",
+        r"무제한",
+    ),
+    "fixed_generation_time": (
+        r"(?:5|오)\s*분\s*(?:에서|~|-|부터)\s*(?:10|십)\s*분[^.!?\n]{0,40}(?:완성|완료|제작|생성|만들|기다리|끝)",
+        r"(?:\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|십)\s*분\s*(?:안에|이내|만에|이면)[^.!?\n]{0,40}(?:완성|완료|제작|생성|만들|기다리|끝)",
+    ),
+}
+
+SHORTS_ATTEMPT_BLOCKING_STATUSES = {
+    "started",
+    "provider_response_received",
+    "substantive_failed",
+    "unknown_after_provider_start",
+    "passed",
+}
 
 MINSOO_VOICE_ID = "34bevfaPHev7LXnjGAlA"
 MINSOO_MODEL_ID = "eleven_multilingual_v2"
@@ -46,6 +186,12 @@ NARRATION = {
 }
 VIDEO = {"width": 1080, "height": 1920, "fps": 30}
 HEADLINE = {"font_size": 90, "x": 540, "y": 440, "line_spacing": 20}
+HEADLINE_SAFE_WIDTH_PX = 920
+HEADLINE_SAFE_PROXY_CHAR_LIMIT = 13
+SHORTS_TITLE_FONT_PATH = (
+    Path(__file__).resolve().parent
+    / "outputs/uX6zwf4b8sM-20260829/shorts/renderer/assets/fonts/BMHANNA_11yrs_ttf.ttf"
+)
 SUBTITLE = {
     "font_size": 59,
     "x": 540,
@@ -105,6 +251,236 @@ KST = ZoneInfo("Asia/Seoul")
 
 class ProductionPolicyError(RuntimeError):
     """Raised before a nonconforming artifact can reach a provider."""
+
+
+def normalize_notebook_instruction(value: str) -> str:
+    """Normalize provider text exactly as the pinned instruction audit does."""
+    return unicodedata.normalize(
+        "NFKC", str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    ).strip()
+
+
+def notebook_instruction_sha256(value: str) -> str:
+    return hashlib.sha256(normalize_notebook_instruction(value).encode("utf-8")).hexdigest()
+
+
+def _shorts_claim_is_qualified(sentence: str, match: re.Match[str], claim: str) -> bool:
+    """Allow only qualification that is grammatically tied to this claim match.
+
+    A source actor elsewhere in the sentence or a caveat about a different
+    property must not waive the matched claim.  The deliberately narrow forms
+    below keep the machine gate predictable instead of attempting open-ended
+    Korean semantic interpretation.
+    """
+
+    before = sentence[max(0, match.start() - 48):match.start()]
+    after = sentence[match.end():match.end() + 72]
+    actor = r"(?:영상\s*)?(?:제작자|화자|원본|출처|영상)"
+    reporting = (
+        r"(?:라고|다고|는다고|한다고|했다고)[^,;.!?\n]{0,24}"
+        r"(?:말했|언급했|주장했|소개했|시연했|표현했|"
+        r"말합|언급합|주장합|소개합|시연합|표현합|전했|전합)"
+    )
+    if re.search(actor + r"[^,;.!?\n]{0,32}$", before) and re.search(reporting, after):
+        return True
+    if re.search(
+        r"(?:영상|원본|출처)(?:에서는?|에\s*따르면|를\s*보면)\s*$",
+        before,
+    ):
+        return True
+
+    tail = sentence[match.start():match.end() + 96]
+    direct_negations = {
+        "all_or_any_source": (
+            r"(?:모든|어떤)[^,;.!?\n]{0,48}(?:지원|처리|받)(?:하)?는\s*(?:것|건)?은?\s*(?:아니|아닙)",
+            r"지원\s*범위[^,;.!?\n]{0,24}(?:확인이\s*필요|확인해야)",
+            r"(?:지원|처리)(?:하)?는지[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+        ),
+        "guaranteed_two_clicks": (
+            r"(?:2|두)[^,;.!?\n]{0,48}(?:완성|결과)[^,;.!?\n]{0,24}(?:보장하지\s*않|보장되지\s*않)",
+            r"(?:2|두)[^,;.!?\n]{0,48}(?:결과|완성)\s*여부[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+        ),
+        "free_or_unlimited": (
+            r"(?:무료|공짜|무제한)(?:가|이|은|는|\s)*(?:아니|아닙)",
+            r"(?:무료|공짜|무제한)[^,;.!?\n]{0,36}(?:요금|비용|가격)[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+            r"(?:무료|공짜|무제한)(?:인지|\s*여부)[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+        ),
+        "fixed_generation_time": (
+            r"\d+[^,;.!?\n]{0,56}(?:고정\s*시간|고정된\s*시간|뜻)(?:은|이)?\s*(?:아니|아닙)",
+            r"(?:생성|소요)\s*시간[^,;.!?\n]{0,20}(?:조건에\s*따라|확인이\s*필요|확인해야)",
+            r"\d+[^,;.!?\n]{0,48}(?:완성|생성|제작)(?:되|하)?는지[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+        ),
+        "automatic_cross_platform_distribution": (
+            r"(?:자동|동시|무인)[^,;.!?\n]{0,64}자체\s*기능(?:은|이)?\s*(?:아니|아닙)",
+            r"(?:자동|동시|무인)[^,;.!?\n]{0,48}(?:배포|게시|업로드|유포)[^,;.!?\n]{0,20}보장(?:하지|되지)\s*않",
+            r"(?:자동|동시|무인)[^,;.!?\n]{0,48}(?:배포|게시|업로드|유포)\s*여부[^,;.!?\n]{0,20}(?:확인이\s*필요|확인해야)",
+        ),
+    }
+    return any(re.search(pattern, tail, re.IGNORECASE) for pattern in direct_negations[claim])
+
+
+def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
+    """Find source-independent claim shapes; source fact gates remain additive."""
+    text = normalize_notebook_instruction(value)
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", text)
+        if sentence.strip()
+    ]
+    hits: dict[str, list[str]] = {}
+    for name, patterns in SHORTS_FORBIDDEN_CLAIM_PATTERNS.items():
+        values = {
+            match.group(0).strip()
+            for sentence in sentences
+            for pattern in patterns
+            for match in re.finditer(pattern, sentence, re.IGNORECASE)
+            if not _shorts_claim_is_qualified(sentence, match, name)
+        }
+        if values:
+            hits[name] = sorted(values)
+
+    distribution_hits = []
+    for sentence in sentences:
+        platforms = {
+            platform
+            for platform in ("인스타", "틱톡", "유튜브 쇼츠", "링크드인")
+            if platform in sentence
+        }
+        broad_platform_scope = re.search(
+            r"(?:모든|여러|다중|각종)\s*(?:SNS|소셜\s*미디어|플랫폼|채널)",
+            sentence,
+            re.IGNORECASE,
+        )
+        distribution_match = re.search(r"자동|동시|무인", sentence)
+        if (
+            (len(platforms) >= 2 or broad_platform_scope)
+            and distribution_match
+            and re.search(r"게시|배포|업로드|유포", sentence)
+            and not _shorts_claim_is_qualified(
+                sentence, distribution_match, "automatic_cross_platform_distribution"
+            )
+        ):
+            distribution_hits.append(sentence.strip())
+    if distribution_hits:
+        hits["automatic_cross_platform_distribution"] = sorted(set(distribution_hits))
+    return hits
+
+
+def validate_shorts_verbatim_claims(value: str) -> dict[str, Any]:
+    """Reject known generalized claims before verbatim narration can proceed."""
+    hits = find_forbidden_shorts_claims(value)
+    if hits:
+        raise ProductionPolicyError(
+            "쇼츠 NotebookLM 그대로 보존 본문에 금지 주장이 있습니다: "
+            + ", ".join(sorted(hits))
+        )
+    return {"status": "pass", "forbidden_claim_hits": {}}
+
+
+def validate_shorts_notebook_retry(
+    source_key: str,
+    attempts: Iterable[dict[str, Any]],
+    *,
+    instruction_version: str = SHORTS_NOTEBOOK_INSTRUCTION_VERSION,
+    instruction_sha256: str = SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+) -> dict[str, Any]:
+    """Reject a second provider attempt for one source and instruction pin."""
+
+    source = str(source_key or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", source):
+        raise ProductionPolicyError("쇼츠 재시도 원본 source_key가 정확하지 않습니다.")
+    records = list(attempts)
+    blocking = []
+    for raw in records:
+        attempt = raw if isinstance(raw, dict) else {}
+        if str(attempt.get("source_key") or attempt.get("sourceKey") or "") != source:
+            continue
+        version = str(
+            attempt.get("instruction_version")
+            or attempt.get("instructionVersion")
+            or (attempt.get("instruction") or {}).get("version")
+            or ""
+        )
+        digest = str(
+            attempt.get("instruction_sha256")
+            or attempt.get("instructionSha256")
+            or (attempt.get("instruction") or {}).get("sha256")
+            or ""
+        )
+        status = str(attempt.get("attempt_status") or attempt.get("status") or "")
+        substantive = bool(attempt.get("substantive_failure")) or status in SHORTS_ATTEMPT_BLOCKING_STATUSES
+        if version == instruction_version and digest == instruction_sha256 and substantive:
+            blocking.append(status or "substantive_failed")
+    if blocking:
+        raise ProductionPolicyError(
+            "동일 Shorts NotebookLM 지침 버전/해시에서 이미 공급자 시도를 시작했거나 "
+            "실질적 실패가 확인되어 재추출을 중단합니다."
+        )
+    return {
+        "status": "pass",
+        "source_key": source,
+        "instruction_version": instruction_version,
+        "instruction_sha256": instruction_sha256,
+        "prior_attempt_count": len(records),
+    }
+
+
+def validate_shorts_notebook_instruction(
+    value: str,
+    *,
+    goal: str = "맞춤",
+    response_length: str = "길게",
+) -> dict[str, str]:
+    """Fail before adding a source when the shared Shorts notebook drifts."""
+    normalized = normalize_notebook_instruction(value)
+    missing = [marker for marker in SHORTS_NOTEBOOK_REQUIRED_MARKERS if marker not in normalized]
+    if missing:
+        raise ProductionPolicyError(
+            "Shorts NotebookLM 맞춤 지침에 v13 사전 금지 계약이 없습니다. "
+            "소스 추가 전 중단합니다."
+        )
+    actual = notebook_instruction_sha256(value)
+    if actual != SHORTS_NOTEBOOK_INSTRUCTION_SHA256:
+        raise ProductionPolicyError(
+            "Shorts NotebookLM 맞춤 지침이 정본 v13.0과 다릅니다. 소스 추가 전 중단합니다."
+        )
+    if goal != "맞춤":
+        raise ProductionPolicyError("Shorts NotebookLM 응답 목표가 '맞춤'이 아닙니다.")
+    if response_length != "길게":
+        raise ProductionPolicyError("Shorts NotebookLM 응답 길이가 '길게'가 아닙니다.")
+    return {
+        "version": SHORTS_NOTEBOOK_INSTRUCTION_VERSION,
+        "sha256": actual,
+        "goal": goal,
+        "response_length": response_length,
+    }
+
+
+def validate_headline_pixel_width(lines: Iterable[str]) -> dict[str, Any]:
+    """Use the exact 90px title font to prevent libass soft-wrapping to 3 lines."""
+    values = [str(line or "").strip() for line in lines]
+    if len(values) != 2 or not all(values):
+        raise ProductionPolicyError("쇼츠 헤드카피는 실측 전에도 정확히 2줄이어야 합니다.")
+    if not SHORTS_TITLE_FONT_PATH.is_file():
+        raise ProductionPolicyError("쇼츠 90px 헤드카피 정본 폰트가 없습니다.")
+    try:
+        from PIL import ImageFont
+
+        font = ImageFont.truetype(str(SHORTS_TITLE_FONT_PATH), HEADLINE["font_size"])
+        widths = [float(font.getlength(line)) for line in values]
+    except Exception as exc:
+        raise ProductionPolicyError("쇼츠 헤드카피 90px 픽셀 폭을 측정하지 못했습니다.") from exc
+    if any(width > HEADLINE_SAFE_WIDTH_PX for width in widths):
+        raise ProductionPolicyError(
+            f"쇼츠 헤드카피가 90px 안전폭 {HEADLINE_SAFE_WIDTH_PX}px를 넘어 3줄로 접힐 수 있습니다."
+        )
+    return {
+        "font_path": str(SHORTS_TITLE_FONT_PATH),
+        "font_size": HEADLINE["font_size"],
+        "safe_width_px": HEADLINE_SAFE_WIDTH_PX,
+        "line_widths_px": widths,
+        "visible_line_count": 2,
+    }
 
 
 def validate_community_provider_text(

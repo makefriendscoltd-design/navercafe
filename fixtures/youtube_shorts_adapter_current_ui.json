@@ -1,0 +1,30 @@
+{
+  "schema_version": "youtube-shorts-adapter-current-ui/v1",
+  "captured_at_kst": "2026-09-05T03:43:01+09:00",
+  "logged_in_edit_context": {
+    "route": "https://studio.youtube.com/video/FS088Bs4Fow/edit",
+    "page_looks_logged_out_raw": true,
+    "explicit_signin_redirect": false,
+    "expected_channel_present": true,
+    "avatar_button_count": 1,
+    "title_control_count": 1,
+    "description_control_count": 1
+  },
+  "public_row": {
+    "provider_id": "pubVID00001",
+    "date_text": "2026. 9. 4."
+  },
+  "scheduled_direct": {
+    "provider_id": "sched000001",
+    "date_text": "2026. 9. 8.",
+    "time_text": "오후 8:00",
+    "timezone_button_text": "시간대"
+  },
+  "draft_direct": {
+    "provider_id": "FS088Bs4Fow",
+    "visibility_control_count": 0,
+    "date_control_count": 0,
+    "time_control_count": 0,
+    "timezone_control_count": 0
+  }
+}

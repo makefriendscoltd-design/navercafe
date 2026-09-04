@@ -6,11 +6,20 @@ import fcntl
 import json
 import re
 import shutil
+import unicodedata
 from pathlib import Path
 from typing import Any
 
 from aside_browser import JS_COMMON, _payload_expression, run_repl
-from content_production_policy import ASIDE_ACCOUNT, validate_notebook_binding
+from content_production_policy import (
+    ASIDE_ACCOUNT,
+    SHORTS_NOTEBOOK_INSTRUCTION,
+    SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+    SHORTS_NOTEBOOK_INSTRUCTION_VERSION,
+    SHORTS_NOTEBOOK_PROMPT,
+    validate_notebook_binding,
+    validate_shorts_notebook_instruction,
+)
 
 
 PROVIDER_LOCK = Path("/tmp/aimax-aside-u0-provider.lock")
@@ -45,6 +54,14 @@ def ask_existing_notebook(
         title=notebook_title,
         notebook_id=notebook_id,
     )
+    if kind == "shorts":
+        if prompt.strip() != SHORTS_NOTEBOOK_PROMPT:
+            raise NotebookLMAsideError("Shorts NotebookLM 프롬프트가 정본과 다릅니다.")
+        validate_shorts_notebook_instruction(
+            SHORTS_NOTEBOOK_INSTRUCTION,
+            goal="맞춤",
+            response_length="길게",
+        )
     payload = {
         "url": youtube_url.strip(),
         "prompt": prompt.strip(),
@@ -52,6 +69,13 @@ def ask_existing_notebook(
         "notebookId": notebook_id,
         "notebookTitle": notebook_title,
         "evidencePrefix": f"notebooklm-{_source_key(youtube_url)}",
+        "expectedInstruction": SHORTS_NOTEBOOK_INSTRUCTION if kind == "shorts" else "",
+        "expectedInstructionSha256": (
+            SHORTS_NOTEBOOK_INSTRUCTION_SHA256 if kind == "shorts" else ""
+        ),
+        "expectedInstructionVersion": (
+            SHORTS_NOTEBOOK_INSTRUCTION_VERSION if kind == "shorts" else ""
+        ),
     }
     code = JS_COMMON + f"\nconst payload={_payload_expression(payload)};\n" + r'''
 const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&aside_pipeline=${Date.now()}`);
@@ -68,13 +92,46 @@ const sourceState=async()=>await p.evaluate(()=>[...document.querySelectorAll('i
 const labelCounts=values=>{const counts={};for(const value of values)counts[norm(value)]=(counts[norm(value)]||0)+1;return counts;};
 const sameCounts=(left,right)=>{const a=labelCounts(left),b=labelCounts(right),keys=new Set([...Object.keys(a),...Object.keys(b)]);return [...keys].every(k=>(a[k]||0)===(b[k]||0));};
 let status='ok',message='',answer='',targetLabel='',targetNorm='',targetIndex=-1,sourceAdded=false,cleanupRestored=false;
+let targetOnlyBefore=false,targetOnlyAfter=false;
 let before=[],afterAdd=[],selectedBefore=[],selectedAfter=[],selectedRestored=[];
 let beforeSubmitScreenshotPath='',afterResponseScreenshotPath='';
+let instructionEvidence={},instructionValue='';
 try{
   const values=await notebookValues();
   before=await sourceState();
   if(/accounts\.google\.com|ServiceLogin/i.test(initialUrl))throw new Error('NotebookLM 로그인이 필요합니다.');
   if(!initialUrl.includes(payload.notebookId)||!values.includes(payload.notebookTitle))throw new Error('NotebookLM 정본 제목/ID를 확인하지 못했습니다.');
+  if(payload.kind==='shorts'){
+    const normalizeInstruction=value=>(value||'').replace(/\r\n?/g,'\n').normalize('NFKC').trim();
+    const configButton=p.locator('button[aria-label="노트북 구성"]').first();
+    if(!(await configButton.count()))throw new Error('Shorts NotebookLM 노트북 구성 버튼을 찾지 못했습니다.');
+    await configButton.click();await sleep(800);
+    const config=await p.evaluate(()=>{
+      const dialog=[...document.querySelectorAll('[role="dialog"]')].find(e=>/채팅 설정/.test((e.innerText||e.textContent||'')));
+      if(!dialog)return {found:false};
+      const textarea=dialog.querySelector('textarea[aria-label="채팅 응답을 제어하는 맞춤 프롬프트"]');
+      const radios=[...dialog.querySelectorAll('[role="radio"]')].map(e=>({
+        text:(e.innerText||e.textContent||'').trim(),selected:e.getAttribute('aria-checked')==='true'
+      }));
+      const counter=((dialog.innerText||dialog.textContent||'').match(/(\d+)\s*\/\s*(\d+)/)||[]);
+      return {found:true,value:textarea?.value||'',utf16Length:(textarea?.value||'').length,
+        counterCurrent:counter[1]?Number(counter[1]):null,radios};
+    });
+    if(!config.found||!config.value)throw new Error('Shorts NotebookLM 맞춤 지침을 읽지 못했습니다.');
+    if(config.counterCurrent===null||config.counterCurrent!==config.utf16Length)throw new Error('Shorts NotebookLM 지침 UI 카운터가 일치하지 않습니다.');
+    const selected=config.radios.filter(x=>x.selected).map(x=>x.text);
+    const goal=selected.find(x=>['기본값','학습 가이드','맞춤'].includes(x))||'';
+    const responseLength=[...selected].reverse().find(x=>['기본값','길게','짧게'].includes(x))||'';
+    instructionValue=config.value;
+    if(normalizeInstruction(instructionValue)!==normalizeInstruction(payload.expectedInstruction))throw new Error('Shorts NotebookLM 맞춤 지침이 정본과 다릅니다. 소스 추가 전 중단합니다.');
+    if(goal!=='맞춤'||responseLength!=='길게')throw new Error('Shorts NotebookLM 설정이 맞춤/길게가 아닙니다. 소스 추가 전 중단합니다.');
+    instructionEvidence={version:payload.expectedInstructionVersion,sha256:payload.expectedInstructionSha256,
+      goal,responseLength,sourceCount:before.length,chatPairCount:await p.locator('.chat-message-pair').count(),
+      verifiedBeforeSourceAdd:true};
+    const closeButton=p.locator('button[aria-label="채팅 설정 닫기"]').first();
+    if(!(await closeButton.count()))throw new Error('Shorts NotebookLM 채팅 설정 닫기 버튼을 찾지 못했습니다.');
+    await closeButton.click();await sleep(500);
+  }
   if(before.length>=50)throw new Error('NotebookLM 소스가 50개라 새 소스를 추가할 자리가 없습니다.');
   const add=p.locator('button[aria-label="출처 추가"]').first();
   if(!(await add.count()))throw new Error('NotebookLM 출처 추가 버튼을 찾지 못했습니다.');
@@ -110,7 +167,8 @@ try{
   if(!(await targetBox.isChecked()))await targetBox.click();
   await sleep(800);
   selectedBefore=(await sourceState()).filter(x=>x.checked).map(x=>x.label);
-  if(selectedBefore.length!==1||norm(selectedBefore[0])!==targetNorm)throw new Error('NotebookLM 제출 직전 대상 소스 하나만 선택되지 않았습니다.');
+  targetOnlyBefore=selectedBefore.length===1&&norm(selectedBefore[0])===targetNorm;
+  if(!targetOnlyBefore)throw new Error('NotebookLM 제출 직전 대상 소스 하나만 선택되지 않았습니다.');
   await p.screenshot({path:payload.evidencePrefix+'-before-submit.png',fullPage:true});
   beforeSubmitScreenshotPath=await fs.resolvePath(payload.evidencePrefix+'-before-submit.png');
   const chatBefore=await p.locator('.chat-message-pair').count();
@@ -123,7 +181,8 @@ try{
   while(Date.now()<answerDeadline){const state=await p.evaluate(()=>{const pairs=[...document.querySelectorAll('.chat-message-pair')],last=pairs[pairs.length-1];const value=(last?.querySelector('.to-user-container .message-text-content')?.innerText||'').trim();const done=!!last?.querySelector('button[aria-label="클립보드에 모델 대답 복사"]');return {count:pairs.length,value,done};});if(state.count>chatBefore&&state.done&&state.value.length>100){answer=state.value;break;}await sleep(1200);}
   if(!answer)throw new Error('NotebookLM 응답을 제한 시간 안에 확인하지 못했습니다.');
   selectedAfter=(await sourceState()).filter(x=>x.checked).map(x=>x.label);
-  if(selectedAfter.length!==1||norm(selectedAfter[0])!==targetNorm)throw new Error('NotebookLM 응답 후 소스 범위가 바뀌었습니다.');
+  targetOnlyAfter=selectedAfter.length===1&&norm(selectedAfter[0])===targetNorm;
+  if(!targetOnlyAfter)throw new Error('NotebookLM 응답 후 소스 범위가 바뀌었습니다.');
   await p.screenshot({path:payload.evidencePrefix+'-after-response.png',fullPage:true});
   afterResponseScreenshotPath=await fs.resolvePath(payload.evidencePrefix+'-after-response.png');
 }catch(error){status='error';message=String(error?.message||error);}
@@ -152,14 +211,52 @@ if(sourceAdded){
   }catch(error){status='error';message=[message,String(error?.message||error)].filter(Boolean).join(' | ');}
 }
 await p.close();
-emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload.kind,notebookId:payload.notebookId,notebookTitle:payload.notebookTitle,targetLabel,sourceCountBefore:before.length,sourceCountAfterAdd:afterAdd.length,selectedBefore,selectedAfter,selectedRestored,sourceAdded,cleanupRestored,beforeSubmitScreenshotPath,afterResponseScreenshotPath,answer});
+emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload.kind,notebookId:payload.notebookId,notebookTitle:payload.notebookTitle,targetLabel,targetNorm,sourceCountBefore:before.length,sourceCountAfterAdd:afterAdd.length,selectedBefore,selectedAfter,selectedRestored,sourceAdded,targetOnlyBefore,targetOnlyAfter,cleanupRestored,beforeSubmitScreenshotPath,afterResponseScreenshotPath,answer,instructionEvidence,instructionValue});
 '''
     PROVIDER_LOCK.touch(exist_ok=True)
     with PROVIDER_LOCK.open("a+") as lock_stream:
         fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
         result = run_repl(code, timeout=max(360, int(timeout) + 90), account=account)
+    instruction_value = str(result.pop("instructionValue", "") or "")
     if result.get("status") != "ok":
         raise NotebookLMAsideError(str(result.get("message") or json.dumps(result, ensure_ascii=False)))
+    if kind == "shorts":
+        instruction = result.get("instructionEvidence") or {}
+        validated = validate_shorts_notebook_instruction(
+            instruction_value,
+            goal=str(instruction.get("goal") or ""),
+            response_length=str(instruction.get("responseLength") or ""),
+        )
+        if not instruction.get("verifiedBeforeSourceAdd"):
+            raise NotebookLMAsideError("Shorts NotebookLM 지침을 소스 추가 전에 검증하지 못했습니다.")
+        instruction.update(validated)
+    def normalized_label(value: Any) -> str:
+        text = unicodedata.normalize("NFKC", str(value or ""))
+        text = re.sub(r"^(?:Select|선택)\s+", "", text, flags=re.I)
+        text = re.sub(r"\s+(?:Select|선택)$", "", text, flags=re.I)
+        return re.sub(r"\s+", " ", text).strip()
+
+    target = normalized_label(result.get("targetLabel"))
+    selected_before = result.get("selectedBefore")
+    selected_after = result.get("selectedAfter")
+    count_before = result.get("sourceCountBefore")
+    count_after = result.get("sourceCountAfterAdd")
+    if (
+        result.get("sourceAdded") is not True
+        or not target
+        or not isinstance(count_before, int)
+        or not isinstance(count_after, int)
+        or count_after != count_before + 1
+        or result.get("targetOnlyBefore") is not True
+        or result.get("targetOnlyAfter") is not True
+        or not isinstance(selected_before, list)
+        or not isinstance(selected_after, list)
+        or len(selected_before) != 1
+        or len(selected_after) != 1
+        or normalized_label(selected_before[0]) != target
+        or normalized_label(selected_after[0]) != target
+    ):
+        raise NotebookLMAsideError("NotebookLM 대상 소스 1개 추가·제출·응답 증거가 완전하지 않습니다.")
     if not result.get("cleanupRestored") or not str(result.get("answer") or "").strip():
         raise NotebookLMAsideError("NotebookLM 응답/소스 복구 증거가 완전하지 않습니다.")
     if evidence_dir:

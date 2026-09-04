@@ -1,4 +1,7 @@
+import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 import pytest
 from datetime import datetime, timedelta, timezone
@@ -9,6 +12,9 @@ import content_production_policy as policy
 import notebooklm_shorts as shorts
 import shorts_video
 import youtube_cardnews_pipeline as pipeline
+
+
+FIXTURE_ROOT = Path(__file__).resolve().parent / "test_fixtures" / "notebooklm_shorts"
 
 
 def test_notebooklm_is_pinned_to_minsoo_notebooks_and_aside_u0():
@@ -282,7 +288,9 @@ def test_cardnews_editorial_gate_rejects_disclaimer_report():
 
 
 def test_keeps_through_fifth_and_replaces_sixth_and_old_cta():
-    original = """첫째, 하나
+    original = """이 프로그램 대박입니다.
+
+첫째, 하나
 
 둘째, 둘
 
@@ -307,6 +315,120 @@ def test_keeps_through_fifth_and_replaces_sixth_and_old_cta():
 
 def test_shorts_uses_the_simple_notebooklm_request():
     assert shorts.SHORTS_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
+    assert shorts.SHORTS_PROMPT == policy.SHORTS_NOTEBOOK_PROMPT
+
+
+def test_shorts_notebook_instruction_v13_is_hash_pinned_and_fail_closed():
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v13.0"
+    assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
+        "086b336f8c5b076050638598efbf715d9b405fc225225b16eacb4b664c379818"
+    )
+    assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
+    assert all(
+        marker in policy.SHORTS_NOTEBOOK_INSTRUCTION
+        for marker in policy.SHORTS_NOTEBOOK_REQUIRED_MARKERS
+    )
+    assert policy.validate_shorts_notebook_instruction(
+        policy.SHORTS_NOTEBOOK_INSTRUCTION,
+        goal="맞춤",
+        response_length="길게",
+    )["sha256"] == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
+    with pytest.raises(policy.ProductionPolicyError, match="맞춤 지침"):
+        policy.validate_shorts_notebook_instruction(
+            policy.SHORTS_NOTEBOOK_INSTRUCTION + "\n임의 변경",
+            goal="맞춤",
+            response_length="길게",
+        )
+    with pytest.raises(policy.ProductionPolicyError, match="응답 길이"):
+        policy.validate_shorts_notebook_instruction(
+            policy.SHORTS_NOTEBOOK_INSTRUCTION,
+            goal="맞춤",
+            response_length="짧게",
+        )
+
+
+def test_captured_v12_dcl_response_is_an_exact_rejection_fixture():
+    answer = (FIXTURE_ROOT / "v12_bad_dcl.md").read_text(encoding="utf-8").strip()
+    assert hashlib.sha256(answer.encode("utf-8")).hexdigest() == (
+        "1888dfb0c1467129a5d635c89ad1d8ac65688ddc953e116fef7d775fbc942a13"
+    )
+
+    with pytest.raises(RuntimeError, match="90px 안전폭 920px"):
+        shorts.extract_head_copy_candidates(answer)
+
+    script, _ = shorts.extract_script(answer)
+    assert set(policy.find_forbidden_shorts_claims(script)) == {
+        "all_or_any_source",
+        "guaranteed_two_clicks",
+        "free_or_unlimited",
+        "fixed_generation_time",
+        "automatic_cross_platform_distribution",
+    }
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(script)
+
+
+def test_v13_compliant_fixture_passes_pixel_claim_and_verbatim_cta_gates():
+    answer = (FIXTURE_ROOT / "v13_compliant.md").read_text(encoding="utf-8").strip()
+    head_copies = shorts.extract_head_copy_candidates(answer)
+    assert len(head_copies) == 3
+    assert all(
+        max(policy.validate_headline_pixel_width(shorts.head_copy_lines(value))["line_widths_px"])
+        <= policy.HEADLINE_SAFE_WIDTH_PX
+        for value in head_copies
+    )
+
+    script, _ = shorts.extract_script(answer)
+    assert policy.validate_shorts_verbatim_claims(script)["status"] == "pass"
+    for ordinal in ("첫째", "둘째", "셋째", "넷째", "다섯째"):
+        assert f"\n{ordinal}," in script
+    final = shorts.finalize_script(script, 12)
+    report = shorts.cta_only_transform_report(script, final, 12)
+    assert report["notebooklm_body_preserved_exactly"] is True
+    assert report["content_rewrite_applied"] is False
+    assert report["body_sha256_before"] == report["body_sha256_after"]
+
+
+def test_forbidden_claim_gate_allows_attribution_and_conditional_caveats():
+    qualified = """제작자는 모든 소스를 받는다고 말했지만 공식 지원 범위는 확인해야 합니다.
+화자는 2클릭만으로 완성된다고 시연했지만 결과는 보장되지 않습니다.
+원본은 무료라고 소개했지만 현재 요금은 확인이 필요합니다.
+원본 화자는 5분에서 10분이면 생성된다고 말했지만 고정 시간은 아닙니다.
+제작자는 Repurpose로 인스타, 틱톡, 유튜브 쇼츠에 자동 배포했다고 시연했지만 NotebookLM 자체 기능은 아닙니다."""
+    assert policy.find_forbidden_shorts_claims(qualified) == {}
+    assert policy.validate_shorts_verbatim_claims(qualified)["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "제작자는 화면 구성을 소개했지만 이 도구는 어떤 자료든 처리합니다.",
+        "이 도구는 무료지만 지원 범위는 확인이 필요합니다.",
+        "모든 SNS 채널에 자동으로 배포됩니다.",
+        "클릭 두 번이면 영상이 완성됩니다.",
+        "버튼을 두 번 누르면 영상이 완성됩니다.",
+        "10분 안에 영상이 완성됩니다.",
+        "모든 종류의 파일을 처리합니다.",
+    ],
+)
+def test_forbidden_claim_gate_cannot_be_bypassed_by_unrelated_or_missing_forms(value):
+    assert policy.find_forbidden_shorts_claims(value)
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "이 도구는 무료가 아닙니다.",
+        "모든 소스를 지원하는 것은 아닙니다.",
+        "2클릭만으로 완성된다고 보장하지 않습니다.",
+        "5분에서 10분이면 완성된다는 뜻은 아닙니다.",
+        "NotebookLM에서 인스타와 틱톡으로 자동 배포되는 자체 기능은 아닙니다.",
+    ],
+)
+def test_forbidden_claim_gate_allows_directly_bound_negation(value):
+    assert policy.find_forbidden_shorts_claims(value) == {}
 
 
 def test_cta_only_transform_preserves_notebooklm_body_exactly():
@@ -332,13 +454,120 @@ def test_cta_only_transform_preserves_notebooklm_body_exactly():
 
 
 def test_cta_only_transform_rejects_any_body_rewrite():
-    original = "첫째, 원문\n둘째, 둘\n셋째, 셋\n넷째, 넷\n다섯째, 다섯"
+    original = "이 프로그램 대박입니다.\n첫째, 원문\n둘째, 둘\n셋째, 셋\n넷째, 넷\n다섯째, 다섯"
     rewritten = shorts.finalize_script(original, 5).replace("첫째, 원문", "첫째, 재작성")
     with pytest.raises(RuntimeError, match="CTA 교체 외에 변경"):
         shorts.cta_only_transform_report(original, rewritten, 5)
 
 
-def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch):
+@pytest.mark.parametrize(
+    "script",
+    [
+        "이 프로그램 대박입니다.\n첫째, 1\n둘째, 2\n셋째, 3\n넷째, 4",
+        "첫째, 1\n둘째, 2\n셋째, 3\n넷째, 4\n다섯째, 5",
+        "이 프로그램 대박입니다.\n첫째, 1\n둘째, 2\n셋째, 3\n넷째, 4\n다섯째, 5\n다섯째, 중복",
+        "이 프로그램 대박입니다.\n첫째, 1\n둘째, 2\n셋째, 3\n넷째, 4\n다섯째, 5\n[CTA] 임의 문구",
+        "이 프로그램 대박입니다.\n[00:12]\n첫째, 1\n둘째, 2\n셋째, 3\n넷째, 4\n다섯째, 5",
+    ],
+)
+def test_script_structure_fails_closed_without_exact_intro_and_first_through_fifth(script):
+    with pytest.raises(RuntimeError):
+        shorts.validate_script_structure(script)
+
+
+def test_cta_report_seals_provider_cleanup_parser_and_adopted_hash_stages():
+    provider = """### 스크립트
+이 프로그램 대박입니다.[1]
+
+첫째, 원문 하나 [2]
+
+둘째, 원문 둘
+
+셋째, 원문 셋
+
+넷째, 원문 넷
+
+다섯째, 원문 다섯"""
+    stripped = shorts.nlm._strip_citations(provider)
+    script, _ = shorts.extract_script(stripped)
+    final = shorts.finalize_script(script, 12)
+    report = shorts.cta_only_transform_report(
+        script,
+        final,
+        12,
+        provider_answer=provider,
+        citation_stripped_answer=stripped,
+    )
+    assert report["provider_answer_sha256"] != report["citation_stripped_answer_sha256"]
+    assert report["citation_cleanup_changed_provider_answer"] is True
+    assert report["adopted_body_sha256"] == report["final_adopted_body_sha256"]
+    assert report["notebooklm_body_preserved_exactly"] is True
+
+
+def test_same_instruction_attempt_is_blocked_before_second_provider_call(monkeypatch, tmp_path):
+    answer = (FIXTURE_ROOT / "v13_compliant.md").read_text(encoding="utf-8")
+    provider = mock.Mock(return_value=answer)
+    monkeypatch.setattr(shorts.nlm, "fetch_manuscript", provider)
+    monkeypatch.setattr(shorts, "get_video_duration", lambda _url: 12 * 60)
+    ledger = tmp_path / "attempt-ledger.json"
+    url = "https://www.youtube.com/watch?v=KJWaxYpcXoo"
+    shorts.fetch(url, attempt_ledger_path=ledger)
+    with pytest.raises(policy.ProductionPolicyError, match="재추출"):
+        shorts.fetch(url, attempt_ledger_path=ledger)
+    assert provider.call_count == 1
+
+
+def test_different_instruction_hash_does_not_block_retry_contract():
+    prior = [{
+        "source_key": "KJWaxYpcXoo",
+        "instruction_version": "v12.0",
+        "instruction_sha256": "old-hash",
+        "attempt_status": "substantive_failed",
+        "substantive_failure": True,
+    }]
+    assert policy.validate_shorts_notebook_retry("KJWaxYpcXoo", prior)["status"] == "pass"
+
+
+def test_attempt_reservation_is_atomic_for_same_source_and_instruction(tmp_path):
+    ledger = tmp_path / "attempt-ledger.json"
+
+    def reserve(attempt_id):
+        try:
+            shorts.reserve_shorts_attempt(
+                ledger,
+                "KJWaxYpcXoo",
+                attempt_id=attempt_id,
+            )
+            return "reserved"
+        except policy.ProductionPolicyError:
+            return "blocked"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(reserve, ("one", "two")))
+    assert sorted(results) == ["blocked", "reserved"]
+    payload = json.loads(ledger.read_text(encoding="utf-8"))
+    assert len(payload["attempts"]) == 1
+
+
+def test_existing_provider_evidence_blocks_same_instruction_before_reservation(tmp_path):
+    source_root = tmp_path / "outputs" / "KJWaxYpcXoo-20260905"
+    evidence = source_root / "shorts" / "canary" / "notebooklm-provider-evidence.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text(json.dumps({
+        "status": "ok",
+        "sourceUrl": "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+        "instructionEvidence": {
+            "version": policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION,
+            "sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+        },
+    }), encoding="utf-8")
+    ledger = source_root / "shorts" / "notebooklm-attempt-ledger.json"
+    records = shorts.load_shorts_attempt_evidence("KJWaxYpcXoo", ledger, source_root)
+    with pytest.raises(policy.ProductionPolicyError, match="재추출"):
+        policy.validate_shorts_notebook_retry("KJWaxYpcXoo", records)
+
+
+def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch, tmp_path):
     answer = """헤드카피라이팅
 1. 클로드가 다 한다고? / 자동화 핵심 5가지
 2. 반복 업무 아직 해요? / 클로드로 줄이는 법
@@ -365,7 +594,8 @@ def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch):
     monkeypatch.setattr(shorts, "get_video_duration", lambda url: 12 * 60)
 
     final, _format, minutes, raw, transform, _head_copies = shorts.fetch(
-        "https://www.youtube.com/watch?v=example"
+        "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+        attempt_ledger_path=tmp_path / "attempt-ledger.json",
     )
 
     assert raw == answer
@@ -375,15 +605,21 @@ def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch):
     assert final.endswith(shorts.fixed_cta(12))
     assert transform["status"] == "cta_only"
     assert transform["body_sha256_before"] == transform["body_sha256_after"]
+    assert transform["parser_normalized_body_sha256"]
+    assert transform["adopted_body_sha256"] == transform["final_adopted_body_sha256"]
+    ledger = json.loads((tmp_path / "attempt-ledger.json").read_text(encoding="utf-8"))
+    assert ledger["attempts"][0]["attempt_status"] == "passed"
 
 
 def test_numeric_sixth_is_cut():
-    original = "1. 하나\n2. 둘\n3. 셋\n4. 넷\n5. 다섯\n6. 여섯"
+    original = "이 프로그램 대박입니다.\n1. 하나\n2. 둘\n3. 셋\n4. 넷\n5. 다섯\n6. 여섯"
     assert "6. 여섯" not in shorts.finalize_script(original, 10)
 
 
 def test_fifth_item_paragraphs_are_preserved_until_an_explicit_cta():
-    original = """첫째, 하나
+    original = """이 프로그램 대박입니다.
+
+첫째, 하나
 
 둘째, 둘
 
@@ -434,7 +670,7 @@ def test_generic_explanatory_hook_is_rejected():
 
 def test_extracts_three_ranked_two_line_head_copies():
     answer = """### 헤드카피라이팅
-1. 클로드가 영상도 만든다고? / 디자인 AI 티 없애는법
+1. 클로드가 디자인한다고? / 디자인 AI 티 지우는법
 2. 이거 그냥 쓰면 손해 / 클로드 디자인 바꾸는법
 3. 5단계면 충분합니다 / AI 모션그래픽 개선법
 
@@ -444,7 +680,7 @@ def test_extracts_three_ranked_two_line_head_copies():
 """
     candidates = shorts.extract_head_copy_candidates(answer)
     assert candidates == [
-        "클로드가 영상도 만든다고?\n디자인 AI 티 없애는법",
+        "클로드가 디자인한다고?\n디자인 AI 티 지우는법",
         "이거 그냥 쓰면 손해\n클로드 디자인 바꾸는법",
         "5단계면 충분합니다\nAI 모션그래픽 개선법",
     ]
@@ -452,7 +688,7 @@ def test_extracts_three_ranked_two_line_head_copies():
 
 def test_extracts_plain_notebooklm_headings_without_markdown_hashes():
     answer = """헤드카피라이팅
-1. 클로드가 영상도 만든다고? / 디자인 AI 티 없애는법
+1. 클로드가 디자인한다고? / 디자인 AI 티 지우는법
 2. 이거 그냥 쓰면 손해 / 클로드 디자인 바꾸는법
 3. 5단계면 충분합니다 / AI 모션그래픽 개선법
 
@@ -467,9 +703,9 @@ def test_extracts_plain_notebooklm_headings_without_markdown_hashes():
 
 def test_extracts_three_unnumbered_notebooklm_head_copies():
     answer = """헤드카피라이팅
-고딩이 월 2만 불 벌어?! / 클로드로 24시간 자동 영업
-매달 제안서 쓰다 밤새워?! / 클로드로 5분 만에 완성함
-에이아이 매번 새로 가르쳐?! / 옵시디언으로 뇌 이식하기
+고딩이 돈을 벌었다고?! / 클로드로 자동 영업
+제안서 쓰다 밤새워?! / 클로드로 5분 완성
+매번 새로 가르쳐?! / 옵시디언에 기억 저장
 스크립트
 이 남자 미쳤습니다.
 다음 문장입니다.
@@ -494,7 +730,7 @@ def test_head_copy_must_connect_to_the_script_opening():
 클로드로 디자인의 AI 티를 지우는 방법입니다.
 모션그래픽 5가지를 저장하고 끝까지 보세요."""
     assert shorts.validate_head_copy_connection(
-        "클로드가 디자인도 한다고? / AI 티 없애는법", script
+        "클로드가 디자인한다고? / AI 티 지우는법", script
     )
     with pytest.raises(RuntimeError, match="연결되지"):
         shorts.validate_head_copy_connection(
@@ -508,6 +744,22 @@ def test_head_copy_rejects_hashtags_and_long_lines():
     with pytest.raises(RuntimeError, match="18자"):
         shorts.validate_head_copy(
             "이것은 한 줄이 열여덟 글자를 확실하게 넘습니다 / AI 수익화"
+        )
+
+
+def test_head_copy_uses_exact_90px_font_width_to_prevent_three_visible_lines():
+    evidence = policy.validate_headline_pixel_width(
+        ("예산이 부족하다고?!", "내 몸값 깎지 마세요")
+    )
+    assert evidence["visible_line_count"] == 2
+    assert max(evidence["line_widths_px"]) <= 920
+    with pytest.raises(policy.ProductionPolicyError, match="안전폭"):
+        policy.validate_headline_pixel_width(
+            ("맨날 몸값 깎이고 덤핑당해?!", "AI 에이전시로 월 2만 불 받기")
+        )
+    with pytest.raises(RuntimeError, match="안전폭"):
+        shorts.validate_head_copy(
+            "맨날 몸값 깎이고 덤핑당해?! / AI 에이전시로 월 2만 불 받기"
         )
 
 

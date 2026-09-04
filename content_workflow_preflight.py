@@ -28,6 +28,8 @@ REQUIRED_TRACKED_FILES = (
     "cafe_manifest_publisher.py",
     "naver_cafe_fresh_publish_fallback.py",
     "run_content_link.command",
+    "test_fixtures/notebooklm_shorts/v12_bad_dcl.md",
+    "test_fixtures/notebooklm_shorts/v13_compliant.md",
     "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py",
     "outputs/uX6zwf4b8sM-20260829/shorts/renderer/aimax_video_pipeline.py",
     "outputs/uX6zwf4b8sM-20260829/shorts/renderer/assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3",
@@ -141,6 +143,40 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
             account="u0",
             title=policy.SHORTS_NOTEBOOK["title"],
             notebook_id=policy.SHORTS_NOTEBOOK["id"],
+        )
+    )
+    checks["shorts_notebook_instruction_contract"] = (
+        policy.SHORTS_NOTEBOOK_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
+        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v13.0"
+        and policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION)
+        == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
+        and "### 헤드카피라이팅" in policy.SHORTS_NOTEBOOK_INSTRUCTION
+        and all(
+            marker in policy.SHORTS_NOTEBOOK_INSTRUCTION
+            for marker in policy.SHORTS_NOTEBOOK_REQUIRED_MARKERS
+        )
+    )
+    checks["shorts_headline_pixel_gate"] = (
+        policy.HEADLINE["font_size"] == 90
+        and policy.HEADLINE_SAFE_WIDTH_PX == 920
+        and policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
+        and policy.SHORTS_TITLE_FONT_PATH.is_file()
+    )
+    shorts_runtime_source = (project / "notebooklm_shorts.py").read_text(encoding="utf-8")
+    checks["shorts_attempt_ledger_fail_closed"] = (
+        "shorts-notebook-attempt-ledger/v1" in shorts_runtime_source
+        and "validate_shorts_notebook_retry" in shorts_runtime_source
+        and "unknown_after_provider_start" in policy.SHORTS_ATTEMPT_BLOCKING_STATUSES
+        and "substantive_failed" in policy.SHORTS_ATTEMPT_BLOCKING_STATUSES
+    )
+    checks["shorts_verbatim_hash_stages"] = all(
+        marker in shorts_runtime_source
+        for marker in (
+            "provider_answer_sha256",
+            "citation_stripped_answer_sha256",
+            "parser_normalized_body_sha256",
+            "adopted_body_sha256",
+            "final_adopted_body_sha256",
         )
     )
 
