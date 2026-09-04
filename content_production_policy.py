@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urljoin
 
 
 ASIDE_ACCOUNT = "u0"
@@ -101,6 +103,55 @@ SCHEDULE = {
 
 class ProductionPolicyError(RuntimeError):
     """Raised before a nonconforming artifact can reach a provider."""
+
+
+def validate_community_provider_text(
+    expected_text: str,
+    source_url: str,
+    runs: Iterable[dict[str, Any]],
+    *,
+    provider_origin: str = "https://www.youtube.com",
+) -> dict[str, Any]:
+    """Verify canonical copy when YouTube truncates a visible link run."""
+
+    rebuilt: list[str] = []
+    endpoints: list[str] = []
+    truncated_runs = 0
+    for raw_run in runs:
+        run = raw_run if isinstance(raw_run, dict) else {}
+        shown = str(run.get("text") or "")
+        navigation = run.get("navigationEndpoint") or {}
+        endpoint = str(
+            ((navigation.get("urlEndpoint") or {}).get("url"))
+            or ((navigation.get("commandMetadata") or {}).get("webCommandMetadata") or {}).get("url")
+            or ""
+        )
+        resolved = urljoin(provider_origin, endpoint) if endpoint else ""
+        if resolved:
+            endpoints.append(resolved)
+        if endpoint and "..." in shown:
+            rebuilt.append(resolved)
+            truncated_runs += 1
+        else:
+            rebuilt.append(shown)
+
+    def normalize(value: str) -> str:
+        return re.sub(r"\n{2,}", "\n\n", str(value or "").replace("\r", "")).strip()
+
+    reconstructed = "".join(rebuilt)
+    checks = {
+        "body_exact": normalize(reconstructed) == normalize(expected_text),
+        "source_url_endpoint_exact": source_url in endpoints,
+        "source_url_in_reconstructed_body": source_url in reconstructed,
+    }
+    if not all(checks.values()):
+        raise ProductionPolicyError("Community 공급자 본문 또는 원본 링크 endpoint가 정본과 다릅니다.")
+    return {
+        "checks": checks,
+        "endpoint_urls": endpoints,
+        "rendered_text_was_truncated": truncated_runs > 0,
+        "truncated_run_count": truncated_runs,
+    }
 
 
 def _cardnews_field(slide: dict[str, Any], *names: str) -> str:

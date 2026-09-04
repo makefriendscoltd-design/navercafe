@@ -101,6 +101,48 @@ def test_replacement_sequence_is_fail_closed():
         ])
 
 
+def test_community_provider_text_uses_exact_endpoint_for_truncated_url():
+    source_url = "https://www.youtube.com/watch?v=dCLW6IQt06M"
+    expected = f"본문입니다.\n\n원본 영상: {source_url}"
+    runs = [
+        {"text": "본문입니다.\n\n원본 영상: "},
+        {
+            "text": "https://www.youtube.com/watch?v=dCLW6...",
+            "navigationEndpoint": {"urlEndpoint": {"url": "/watch?v=dCLW6IQt06M"}},
+        },
+    ]
+
+    evidence = policy.validate_community_provider_text(expected, source_url, runs)
+
+    assert evidence["checks"] == {
+        "body_exact": True,
+        "source_url_endpoint_exact": True,
+        "source_url_in_reconstructed_body": True,
+    }
+    assert evidence["rendered_text_was_truncated"] is True
+    assert evidence["truncated_run_count"] == 1
+
+
+def test_community_provider_text_rejects_missing_or_wrong_endpoint():
+    source_url = "https://www.youtube.com/watch?v=dCLW6IQt06M"
+    expected = f"원본 영상: {source_url}"
+    with pytest.raises(policy.ProductionPolicyError, match="endpoint"):
+        policy.validate_community_provider_text(
+            expected,
+            source_url,
+            [{"text": "원본 영상: https://www.youtube.com/watch?v=dCLW6..."}],
+        )
+    with pytest.raises(policy.ProductionPolicyError, match="endpoint"):
+        policy.validate_community_provider_text(
+            expected,
+            source_url,
+            [{
+                "text": "원본 영상: https://www.youtube.com/watch?v=dCLW6...",
+                "navigationEndpoint": {"urlEndpoint": {"url": "/watch?v=WRONG"}},
+            }],
+        )
+
+
 def test_self_contained_v7_bundle_passes_upload_policy(tmp_path):
     video = tmp_path / "final.mp4"
     video.write_bytes(b"self-contained-test-video")
