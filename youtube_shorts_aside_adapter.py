@@ -51,6 +51,30 @@ AsideRunner = Callable[..., Mapping[str, Any]]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _compose_provider_javascript(
+    js_common: str,
+    payload_expression: str,
+    body: str,
+) -> str:
+    """Compose one provider program without sharing lexical names with JS_COMMON.
+
+    ``run_repl`` evaluates the returned program inside an async function.  A
+    nested block keeps task-local ``let``/``const`` declarations out of the
+    common helper scope while preserving access to ``payload``, ``sleep``, and
+    ``emit``.  This prevents a selector adapter from failing before execution
+    merely because it chose the same helper name as ``JS_COMMON``.
+    """
+
+    return (
+        js_common
+        + "\nconst payload="
+        + payload_expression
+        + ";\n{\n"
+        + body
+        + "\n}\n"
+    )
+
+
 def _kst_now() -> datetime:
     return datetime.now(KST)
 
@@ -76,7 +100,11 @@ def _default_aside_runner() -> AsideRunner:
         )
 
     def run(body: str, payload: Mapping[str, Any], *, cwd: Path, timeout: int) -> Mapping[str, Any]:
-        code = JS_COMMON + "\nconst payload=" + _payload_expression(dict(payload)) + ";\n" + body
+        code = _compose_provider_javascript(
+            JS_COMMON,
+            _payload_expression(dict(payload)),
+            body,
+        )
         return run_repl(code, cwd=cwd, timeout=timeout, account=ACCOUNT)
 
     return run

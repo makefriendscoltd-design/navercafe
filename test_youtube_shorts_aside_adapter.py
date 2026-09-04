@@ -228,6 +228,69 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
 
 
 @pytest.mark.parametrize(
+    "name,body",
+    [
+        pytest.param("inventory", adapter.INVENTORY_JS, id="inventory"),
+        pytest.param("attach", adapter.ATTACH_JS, id="attach"),
+        pytest.param("schedule", adapter.SCHEDULE_JS, id="schedule"),
+        pytest.param("direct", adapter.DIRECT_JS, id="direct"),
+    ],
+)
+def test_every_actual_composed_provider_program_passes_node_syntax_check(
+    name: str,
+    body: str,
+) -> None:
+    from aside_browser import JS_COMMON, _payload_expression
+
+    composed = adapter._compose_provider_javascript(
+        JS_COMMON,
+        _payload_expression({"syntax_probe": name}),
+        body,
+    )
+    wrapped_as_run_repl = f"(async()=>{{\n{composed}\n}})();\n"
+    completed = subprocess.run(
+        ["node", "--check", "-"],
+        input=wrapped_as_run_repl,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_composed_provider_programs_remain_isolated_in_a_persistent_scope() -> None:
+    from aside_browser import JS_COMMON, _payload_expression
+
+    programs = [
+        adapter._compose_provider_javascript(
+            JS_COMMON,
+            _payload_expression({"syntax_probe": index}),
+            body,
+        )
+        for index, body in enumerate(
+            (
+                adapter.INVENTORY_JS,
+                adapter.ATTACH_JS,
+                adapter.SCHEDULE_JS,
+                adapter.DIRECT_JS,
+            ),
+            1,
+        )
+    ]
+    persistent_script = "\n".join(
+        f"(async()=>{{\n{program}\n}})();" for program in programs
+    )
+    completed = subprocess.run(
+        ["node", "--check", "-"],
+        input=persistent_script,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
     "mutation",
     [
         lambda value: value.update(pagination_complete=False),
