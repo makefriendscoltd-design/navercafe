@@ -32,6 +32,7 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
         "images": [f"images/{index}.jpg" for index in range(1, 6)],
         "provider_editor_opened": False,
         "provider_mutation": False,
+        "notebooklm_answer": "notebooklm/notebooklm-answer.md",
         "tail": {
             "cta_text": publisher.EXPECTED_CTA_TEXT,
             "family_day_url": publisher.EXPECTED_CTA_URL,
@@ -41,6 +42,17 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
         },
     }
     write_json(manifest_path, manifest)
+    (cafe / "notebooklm").mkdir(parents=True)
+    (cafe / "notebooklm/notebooklm-answer.md").write_text("검증된 NotebookLM 카페 원고", encoding="utf-8")
+    write_json(
+        cafe / "notebooklm/notebooklm-provider-evidence.json",
+        {
+            "status": "pass",
+            "account": "u0",
+            "notebookTitle": "민수대표님_카페글",
+            "sourceUrl": "https://www.youtube.com/watch?v=sampleKey01",
+        },
+    )
     local_path = cafe / "11_local_validation.json"
     write_json(local_path, {"status": "pass", "source_key": "sampleKey01"})
     manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -100,6 +112,19 @@ def test_validate_only_has_no_provider_or_crm_side_effect(tmp_path, monkeypatch,
     assert result["status"] == "pass"
     assert not (manifest_path.parent / "provider/13_provider_evidence.json").exists()
     assert not (manifest_path.parent / "provider/14_crm_evidence.json").exists()
+
+
+def test_missing_notebooklm_answer_and_provider_evidence_fail_closed(tmp_path, monkeypatch):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    (manifest_path.parent / "notebooklm/notebooklm-answer.md").unlink()
+    (manifest_path.parent / "notebooklm/notebooklm-provider-evidence.json").unlink()
+    _, _, provider, evidence = publisher.resolve_manifest(str(manifest_path))
+
+    result = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
+
+    assert result["status"] == "fail"
+    assert "notebooklm_answer_present" in result["failures"]
+    assert "notebooklm_provider_evidence_exact" in result["failures"]
 
 
 def test_provider_verification_and_crm_order_remain_fail_closed():

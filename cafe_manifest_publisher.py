@@ -117,6 +117,76 @@ def resolve_manifest(raw: str) -> tuple[Path, Path, Path, Path]:
     return manifest_path, base, provider, evidence
 
 
+def _resolve_cafe_relative(manifest_path: Path, raw: object) -> Path | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    candidate = Path(raw)
+    return candidate if candidate.is_absolute() else manifest_path.parent / candidate
+
+
+def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, cafe_local: dict) -> dict:
+    source_key = str(manifest.get("source_key") or "")
+    long_url = f"https://www.youtube.com/watch?v={source_key}"
+    notebook = manifest.get("notebooklm") if isinstance(manifest.get("notebooklm"), dict) else {}
+    answer_path = _resolve_cafe_relative(
+        manifest_path,
+        manifest.get("notebook_answer")
+        or manifest.get("notebooklm_answer")
+        or notebook.get("answer")
+        or "notebooklm/notebooklm-answer.md",
+    )
+    answer_present = bool(
+        answer_path
+        and answer_path.is_file()
+        and answer_path.read_text(encoding="utf-8").strip()
+    )
+
+    canonical_path = manifest_path.parent / "notebooklm/notebooklm-provider-evidence.json"
+    canonical = read_json(canonical_path) if canonical_path.is_file() else {}
+    canonical_source = str(
+        canonical.get("sourceUrl")
+        or canonical.get("source_url")
+        or canonical.get("targetSourceUrl")
+        or ""
+    )
+    canonical_exact = bool(
+        canonical
+        and canonical.get("account") == "u0"
+        and canonical.get("notebookTitle") == "민수대표님_카페글"
+        and canonical_source == long_url
+        and canonical.get("status") in {"ok", "pass", "ok_recovered_after_cli_timeout"}
+    )
+
+    recovery_candidates = [
+        _resolve_cafe_relative(manifest_path, manifest.get("notebooklm_recovery_evidence")),
+        manifest_path.parent / "notebooklm_evidence/notebooklm-interrupted-answer-recovery.json",
+        manifest_path.parent / "notebooklm-evidence/interrupted-source-recovery-cleanup.json",
+    ]
+    recovery_exact = False
+    for recovery_path in recovery_candidates:
+        if not recovery_path or not recovery_path.is_file():
+            continue
+        recovery = read_json(recovery_path)
+        if (
+            recovery.get("account") == "u0"
+            and recovery.get("notebookTitle") == "민수대표님_카페글"
+            and recovery.get("bindingOk") is True
+            and recovery.get("answerDone") is True
+            and int(recovery.get("answerChars") or 0) > 0
+            and (
+                cafe_local.get("checks", {}).get("notebook_answer_recovered") is True
+                or cafe_local.get("checks", {}).get("notebook_recovery_exact") is True
+            )
+        ):
+            recovery_exact = True
+            break
+
+    return {
+        "answer_present": answer_present,
+        "provider_evidence_exact": canonical_exact or recovery_exact,
+    }
+
+
 def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Path) -> dict:
     manifest = read_json(manifest_path)
     cafe_local = read_json(manifest_path.parent / "11_local_validation.json")
@@ -127,6 +197,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     source_url = f"https://youtu.be/{source_key}"
     source_long_url = f"https://www.youtube.com/watch?v={source_key}"
     tail = manifest.get("tail", {})
+    notebooklm = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
     checks = {
         "canonical_manifest_exact": approval.get("sourceOfTruth") == str(manifest_path.relative_to(PROJECT)),
         "canonical_manifest_sha256": approval.get("manifestSha256") == sha256(manifest_path),
@@ -142,6 +213,8 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "quote_count_exact": manifest.get("expected_quotes") == 5 and len(manifest.get("expected_quote_texts", [])) == 5,
         "image_count_exact": manifest.get("expected_images") == 5 and len(manifest.get("images", [])) == 5,
         "cafe_local_validation_pass": cafe_local.get("status") == "pass" and cafe_local.get("source_key") == source_key,
+        "notebooklm_answer_present": notebooklm["answer_present"],
+        "notebooklm_provider_evidence_exact": notebooklm["provider_evidence_exact"],
         "approval_gate_pass": approval.get("status") == "pass" and not approval.get("failures"),
         "launch_consistency_pass": launch.get("status") == "pass" and launch.get("summary", {}).get("issues") == 0,
         "launch_manifest_sha256": launch.get("manifestSha256") == sha256(manifest_path),
