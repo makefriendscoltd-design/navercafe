@@ -312,27 +312,45 @@ def validate_head_copy_connection(value: str, script: str) -> str:
 
 
 def extract_head_copy_candidates(answer: str) -> list[str]:
-    """Extract and validate three ranked two-line candidates from NotebookLM."""
+    """Extract three ranked two-line candidates and keep the ones that pass.
+
+    NotebookLM must still offer exactly three, but a single candidate that
+    breaks the 90px safe width no longer discards the other two.  Only the
+    first accepted candidate is rendered; the rest are human alternates, so
+    losing one alternate must not fail an otherwise usable response.
+    """
     match = HEAD_COPY_HEADER_RE.search(answer or "")
     if not match:
         raise RuntimeError("노트북 응답에 '### 헤드카피라이팅' 절이 없습니다.")
     tail = (answer[match.end():] or "").strip()
     script_heading = SCRIPT_HEADER_RE.search(tail)
     block = tail[:script_heading.start()].strip() if script_heading else tail
-    candidates = []
+    offered = []
     for line in block.splitlines():
         if not line.strip():
             continue
         item = HEAD_COPY_ITEM_RE.match(line)
         if item:
-            candidates.append(validate_head_copy(item.group(1)))
+            offered.append(item.group(1))
         elif "/" in line or "／" in line:
-            candidates.append(validate_head_copy(line))
-    if len(candidates) != 3:
+            offered.append(line)
+    if len(offered) != 3:
         raise RuntimeError("쇼츠 헤드카피 후보가 정확히 3개가 아닙니다.")
-    if len(set(candidates)) != 3:
-        raise RuntimeError("쇼츠 헤드카피 후보 3개가 서로 달라야 합니다.")
-    return candidates
+    accepted = []
+    rejections = []
+    for raw in offered:
+        try:
+            accepted.append(validate_head_copy(raw))
+        except RuntimeError as exc:
+            rejections.append(str(exc))
+    if not accepted:
+        raise RuntimeError(
+            "쇼츠 헤드카피 후보 3개가 모두 검증에 실패했습니다: "
+            + "; ".join(dict.fromkeys(rejections))
+        )
+    if len(set(accepted)) != len(accepted):
+        raise RuntimeError("쇼츠 헤드카피 후보가 서로 달라야 합니다.")
+    return accepted
 
 
 def _raw_script_body(answer: str) -> str:

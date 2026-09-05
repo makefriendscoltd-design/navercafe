@@ -1326,3 +1326,38 @@ def test_shorts_title_removes_all_trailing_hashtags():
         "클로드 디자인 5단계 #AI #Shorts"
     ) == "클로드 디자인 5단계"
     assert shorts_video.normalize_shorts_title("클로드 디자인 5단계") == "클로드 디자인 5단계"
+
+
+def test_one_oversized_head_copy_no_longer_discards_the_usable_candidates():
+    """A single 90px overflow must not fail a response whose other lines fit."""
+    answer = """### 헤드카피라이팅
+1. 아직도 밤새며 고객 검색해? / 클로드로 무인 영업망 구축
+2. 며칠씩 걸리던 고객 수집? / 대화 한 번에 메일까지 끝
+3. 스팸 메일 이제 그만 보내 / 초개인화 맞춤 영업의 비밀
+
+### 스크립트
+이 남자 미쳤습니다.
+다음 문장입니다.
+"""
+    # Candidate 1 breaks the 90px safe width and candidate 3 is not spoken-tone,
+    # so the live LU6KGMfXqB8 response leaves exactly one usable headline.
+    candidates = shorts.extract_head_copy_candidates(answer)
+    assert candidates == ["며칠씩 걸리던 고객 수집?\n대화 한 번에 메일까지 끝"]
+    for value in candidates:
+        widths = policy.validate_headline_pixel_width(shorts.head_copy_lines(value))
+        assert max(widths["line_widths_px"]) <= policy.HEADLINE_SAFE_WIDTH_PX
+
+
+def test_all_oversized_head_copies_still_fail_closed():
+    """Dropping bad alternates must never let an all-bad response through."""
+    answer = """### 헤드카피라이팅
+1. 아직도 밤새 영상 편집해?! / 2클릭으로 숏폼 영상 완성
+2. 매번 대본 쓰다 지치나요?! / 원클릭 자동 숏폼 생성 비결
+3. 남들은 쉽게 쇼츠 만드는데?! / 주소만 넣으면 쇼츠 자동 추출
+
+### 스크립트
+이 남자 미쳤습니다.
+다음 문장입니다.
+"""
+    with pytest.raises(RuntimeError, match="90px 안전폭 920px"):
+        shorts.extract_head_copy_candidates(answer)
