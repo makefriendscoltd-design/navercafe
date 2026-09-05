@@ -386,21 +386,34 @@ def validate_script_structure(script: str) -> dict:
     }
 
 
-def validate_notebooklm_script_layout(script: str) -> dict:
-    """Require the v16 provider body to survive innerText as six paragraphs."""
+def canonicalize_notebooklm_script_layout(script: str) -> tuple[str, dict]:
+    """Validate six logical v16 blocks and canonicalize only their separators."""
     text = str(script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     paragraphs = re.split(r"\n[ \t]*\n", text) if text else []
+    boundary_mode = "markdown_blank_lines"
+    if len(paragraphs) == 6:
+        if any("\n" in paragraph for paragraph in paragraphs):
+            raise RuntimeError(
+                f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
+                "각 논리 문단은 innerText에서 한 줄이어야 합니다."
+            )
+    else:
+        logical_lines = text.splitlines()
+        if len(logical_lines) == 6 and all(line.strip() for line in logical_lines):
+            paragraphs = logical_lines
+            boundary_mode = "innertext_logical_lines"
+        else:
+            raise RuntimeError(
+                f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트는 "
+                "도입과 첫째~다섯째의 정확히 6개 논리 문단이어야 합니다."
+            )
+    paragraphs = [paragraph.strip() for paragraph in paragraphs]
     if len(paragraphs) != 6:
         raise RuntimeError(
             f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트는 "
-            "도입과 첫째~다섯째의 정확히 6개 Markdown 문단이어야 합니다."
+            "도입과 첫째~다섯째의 정확히 6개 논리 문단이어야 합니다."
         )
-    if any("\n" in paragraph for paragraph in paragraphs):
-        raise RuntimeError(
-            f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
-            "각 Markdown 문단은 innerText에서 한 줄이어야 합니다."
-        )
-    intro = paragraphs[0].strip()
+    intro = paragraphs[0]
     if not intro:
         raise RuntimeError(
             f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트에 "
@@ -417,13 +430,23 @@ def validate_notebooklm_script_layout(script: str) -> dict:
             f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
             "다섯째 문단 뒤에 버전·지침·주석 메타데이터가 남아 있습니다."
         )
-    structure = validate_script_structure(text)
-    return {
+    canonical = "\n\n".join(paragraphs)
+    structure = validate_script_structure(canonical)
+    return canonical, {
         **structure,
         "markdown_paragraph_count": 6,
+        "logical_paragraph_count": 6,
+        "provider_boundary_mode": boundary_mode,
+        "separator_canonicalized": boundary_mode == "innertext_logical_lines",
         "ordinal_paragraphs_start_exactly": True,
         "post_fifth_content_present": False,
     }
+
+
+def validate_notebooklm_script_layout(script: str) -> dict:
+    """Require exactly six v16 logical blocks before any citation cleanup."""
+    _canonical, evidence = canonicalize_notebooklm_script_layout(script)
+    return evidence
 
 
 def keep_through_fifth(script: str) -> str:
@@ -520,7 +543,7 @@ def cta_only_transform_report(
         "deterministic_extraction": (
             "provider innerText outer trim -> citation markers/source-list cleanup -> "
             "script-heading slice -> trailing-space and marker-only-line cleanup -> "
-            "blank-run normalization -> sixth/later and prior CTA suffix cut"
+            "exact six-block separator canonicalization -> sixth/later and prior CTA suffix cut"
         ),
         "adopted_body_is_exact_final_prefix": True,
     }
@@ -611,6 +634,7 @@ def fetch(
         citation_stripped_answer = nlm._strip_citations(provider_answer)
         head_copies = extract_head_copy_candidates(citation_stripped_answer)
         script, chosen = extract_script(citation_stripped_answer)
+        script, _layout = canonicalize_notebooklm_script_layout(script)
         adopted_body = keep_through_fifth(script)
         validate_shorts_verbatim_claims(adopted_body)
         minutes = duration_minutes(get_video_duration(url))

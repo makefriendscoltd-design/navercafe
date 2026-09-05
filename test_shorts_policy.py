@@ -377,7 +377,7 @@ def test_exact_stored_v15_flattened_response_is_rejected_by_structure_gate():
     )
     with pytest.raises(RuntimeError, match="first 항목은 정확히 1개"):
         shorts.validate_script_structure(script)
-    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+    with pytest.raises(RuntimeError, match="정확히 6개 논리 문단"):
         shorts.validate_notebooklm_script_layout(script)
 
 
@@ -399,8 +399,39 @@ def test_v16_paragraph_separated_innertext_passes_existing_structure_gate():
     assert shorts.validate_script_structure(script)["status"] == "pass"
     layout = shorts.validate_notebooklm_script_layout(script)
     assert layout["markdown_paragraph_count"] == 6
+    assert layout["provider_boundary_mode"] == "markdown_blank_lines"
+    assert layout["separator_canonicalized"] is False
     assert layout["post_fifth_content_present"] is False
     assert script.endswith("다섯째, 다섯 번째 내용입니다.")
+
+
+def test_exact_v16_line_separated_provider_body_is_canonicalized_without_rewrite():
+    provider_body = (FIXTURE_ROOT / "v16_dcl_line_separated.txt").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert provider_body.count("\n") == 5
+    canonical, layout = shorts.canonicalize_notebooklm_script_layout(provider_body)
+    assert layout["provider_boundary_mode"] == "innertext_logical_lines"
+    assert layout["separator_canonicalized"] is True
+    assert canonical.count("\n\n") == 5
+    assert canonical.replace("\n\n", "\n") == provider_body
+    assert shorts.validate_script_structure(canonical)["status"] == "pass"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "출처: https://example.com",
+        "버전: v16.0",
+        "여섯째, 추가 내용",
+    ],
+)
+def test_v16_line_separated_layout_rejects_any_seventh_line(extra):
+    provider_body = (FIXTURE_ROOT / "v16_dcl_line_separated.txt").read_text(
+        encoding="utf-8"
+    ).strip()
+    with pytest.raises(RuntimeError, match="정확히 6개 논리 문단"):
+        shorts.canonicalize_notebooklm_script_layout(f"{provider_body}\n{extra}")
 
 
 def test_v16_layout_rejects_any_paragraph_after_fifth():
@@ -417,7 +448,7 @@ def test_v16_layout_rejects_any_paragraph_after_fifth():
 다섯째, 다섯
 
 버전: v16.0"""
-    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+    with pytest.raises(RuntimeError, match="정확히 6개 논리 문단"):
         shorts.validate_notebooklm_script_layout(script)
 
 
@@ -481,7 +512,7 @@ def test_fetch_rejects_raw_seventh_citation_paragraph_before_cleanup(monkeypatch
     )
     monkeypatch.setattr(shorts.nlm, "fetch_manuscript", lambda *args, **kwargs: answer)
     monkeypatch.setattr(shorts, "get_video_duration", lambda _url: 12 * 60)
-    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+    with pytest.raises(RuntimeError, match="정확히 6개 논리 문단"):
         shorts.fetch(
             "https://www.youtube.com/watch?v=KJWaxYpcXoo",
             evidence_dir=tmp_path / "outputs/KJWaxYpcXoo-20260905/shorts/provider",
