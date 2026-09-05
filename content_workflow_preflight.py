@@ -180,6 +180,22 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         and "그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다"
         in policy.SHORTS_NOTEBOOK_INSTRUCTION
     )
+    shorts_v7_path = project / "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py"
+    shorts_v7_source = (
+        shorts_v7_path.read_text(encoding="utf-8") if shorts_v7_path.is_file() else ""
+    )
+    checks["shorts_v7_paired_narration_preflight"] = all(
+        marker in shorts_v7_source
+        for marker in (
+            'NARRATION_GENERATION_PROTOCOL = "paired_intro_cta_preflight_full_candidate_v0"',
+            "NARRATION_PAIR_PREFLIGHT_MAX = 1.08",
+            "_select_intro_cta_pair(sections)",
+            '"pair_disposition": "selected" if passed else "discard_both"',
+            'previous_text=sections[5], next_text=None',
+            'previous_text=None, next_text=sections[1]',
+            'NARRATION["last_to_first_pace_ratio_max"]',
+        )
+    )
     checks["shorts_verbatim_hash_stages"] = all(
         marker in shorts_runtime_source
         for marker in (

@@ -28,6 +28,7 @@ from content_production_policy import (
     MINSOO_VOICE_ID,
     MINSOO_VOICE_SETTINGS,
     NARRATION,
+    TAILBITE,
     strip_subtitle_edge_punctuation,
     validate_presenter_asset,
     validate_shorts_bundle_for_upload,
@@ -49,6 +50,11 @@ BGM = ASSET_ROOT / "bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3"
 SFX = ASSET_ROOT / "sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3"
 TITLE_FONT = ASSET_ROOT / "fonts/BMHANNA_11yrs_ttf.ttf"
 BODY_FONT = ASSET_ROOT / "fonts/Cafe24Ohsquare.ttf"
+NARRATION_GENERATION_PROTOCOL = "paired_intro_cta_preflight_full_candidate_v0"
+NARRATION_PAIR_PREFLIGHT_MAX = 1.08
+NARRATION_PAIR_MAX_ATTEMPTS = 6
+NARRATION_PAIR_SEED_BASE = 2_026_090_400
+NARRATION_SECTION_NAMES = ("intro", "first", "second", "third", "fourth", "fifth", "cta")
 
 
 def run(args: list[object], *, capture: bool = True, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -170,6 +176,48 @@ def parse_srt(path: Path) -> list[dict]:
 def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -> dict:
     script_text = SCRIPT.read_text(encoding="utf-8").strip()
     evidence = json.loads((ROOT / "narration_alignment.json").read_text(encoding="utf-8"))
+    pair_summary = json.loads(
+        (ROOT / "narration_pair_preflight/summary.json").read_text(encoding="utf-8")
+    )
+    selected_pair = str(pair_summary.get("selected_pair") or "")
+    selected_result = next(
+        (item for item in pair_summary.get("pairs") or [] if item.get("pair") == selected_pair),
+        None,
+    )
+    selected_ratio = selected_result.get("last_to_first_ratio") if selected_result else None
+    selected_pair_root = ROOT / "narration_pair_preflight" / selected_pair
+    active_section_root = ROOT / "narration_sections"
+    selected_pair_files_match = bool(selected_pair) and all(
+        sha(selected_pair_root / filename) == sha(active_section_root / filename)
+        for filename in (
+            "01_intro.mp3",
+            "01_intro_alignment.json",
+            "07_cta.mp3",
+            "07_cta_alignment.json",
+        )
+    )
+    pair_preflight_pass = bool(
+        pair_summary.get("protocol") == NARRATION_GENERATION_PROTOCOL
+        and pair_summary.get("status") == "pass"
+        and pair_summary.get("preflight_maximum") == NARRATION_PAIR_PREFLIGHT_MAX
+        and pair_summary.get("exact_runtime_maximum")
+        == NARRATION["last_to_first_pace_ratio_max"]
+        and selected_result
+        and selected_result.get("status") == "pass"
+        and selected_result.get("pair_disposition") == "selected"
+        and isinstance(selected_ratio, (int, float))
+        and selected_ratio <= NARRATION_PAIR_PREFLIGHT_MAX
+        and pair_summary.get("selected_pair_preflight_ratio") == selected_ratio
+        and evidence.get("generation_protocol") == NARRATION_GENERATION_PROTOCOL
+        and evidence.get("selected_pair") == selected_pair
+        and evidence.get("selected_pair_preflight_ratio") == selected_ratio
+        and selected_pair_files_match
+        and all(
+            item.get("pair_disposition") == "discard_both"
+            for item in pair_summary.get("pairs") or []
+            if item.get("pair") != selected_pair
+        )
+    )
     alignment = evidence["alignment"]
     chars = alignment["characters"]
     starts = [float(value) for value in alignment["character_start_times_seconds"]]
@@ -205,7 +253,10 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
     whole_tokens = actual_caption_tokens == expected_caption_tokens
     pace_pass = ratio <= NARRATION["last_to_first_pace_ratio_max"]
     result = {
-        "status": "pass" if hash_match and count_match and whole_tokens and pace_pass else "fail",
+        "status": (
+            "pass" if hash_match and count_match and whole_tokens and pace_pass
+            and pair_preflight_pass else "fail"
+        ),
         "script_alignment_hash_match": hash_match,
         "caption_count_matches_script_tokens": count_match,
         "caption_tokens_are_whole": whole_tokens,
@@ -219,6 +270,20 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
             "last_to_first_ratio": round(ratio, 6),
             "maximum": NARRATION["last_to_first_pace_ratio_max"],
         },
+        "recovery_protocol": {
+            "name": NARRATION_GENERATION_PROTOCOL,
+            "paired_preflight_status": "pass" if pair_preflight_pass else "fail",
+            "paired_preflight_maximum": NARRATION_PAIR_PREFLIGHT_MAX,
+            "selected_pair": selected_pair,
+            "selected_pair_preflight_ratio": selected_ratio,
+            "selected_pair_files_match": selected_pair_files_match,
+            "selected_pair_reused_only_within_same_candidate": True,
+            "failed_take_reuse": False,
+            "atempo_used": False,
+            "pitch_correction_used": False,
+            "threshold_relaxed": False,
+            "fixed_cta_changed": False,
+        },
         "all_section_profiles": profiles,
         "script_sha256": hashlib.sha256(script_text.encode("utf-8")).hexdigest(),
         "alignment_sha256": sha(ROOT / "narration_alignment.json"),
@@ -230,13 +295,27 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
     return result
 
 
-def generate_minsoo_section(script: str, audio_path: Path, alignment_path: Path) -> None:
+def generate_minsoo_section(
+    script: str,
+    audio_path: Path,
+    alignment_path: Path,
+    *,
+    previous_text: str | None,
+    next_text: str | None,
+    seed: int,
+) -> None:
     """Generate one of seven locked sections; stored keys are quota retries, not voice fallbacks."""
-    payload = json.dumps({
+    request_payload = {
         "text": script,
         "model_id": MINSOO_MODEL_ID,
         "voice_settings": MINSOO_VOICE_SETTINGS,
-    }, ensure_ascii=False).encode("utf-8")
+        "seed": seed,
+    }
+    if previous_text is not None:
+        request_payload["previous_text"] = previous_text
+    if next_text is not None:
+        request_payload["next_text"] = next_text
+    payload = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
     keys = shorts_video._elevenlabs_api_keys()
     if not keys:
         raise RuntimeError("no ElevenLabs key; refusing TTS fallback")
@@ -275,6 +354,16 @@ def generate_minsoo_section(script: str, audio_path: Path, alignment_path: Path)
         "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
         "script": script,
         "alignment": alignment,
+        "generation_protocol": NARRATION_GENERATION_PROTOCOL,
+        "seed": seed,
+        "previous_text_sha256": (
+            hashlib.sha256(previous_text.encode("utf-8")).hexdigest()
+            if previous_text is not None else None
+        ),
+        "next_text_sha256": (
+            hashlib.sha256(next_text.encode("utf-8")).hexdigest()
+            if next_text is not None else None
+        ),
     })
 
 
@@ -297,38 +386,203 @@ def split_seven_sections(script: str) -> list[str]:
     return sections
 
 
-def combine_section_audio_and_alignment(sections: list[str]) -> tuple[Path, Path, list[dict]]:
-    section_root = ROOT / "narration_sections"
-    section_root.mkdir(exist_ok=True)
-    names = ("intro", "first", "second", "third", "fourth", "fifth", "cta")
-    records = []
-    audio_paths = []
-    for index, (name, text) in enumerate(zip(names, sections), 1):
-        audio = section_root / f"{index:02d}_{name}.mp3"
-        alignment = section_root / f"{index:02d}_{name}_alignment.json"
-        if not audio.is_file() or not alignment.is_file():
-            generate_minsoo_section(text, audio, alignment)
-        evidence = json.loads(alignment.read_text(encoding="utf-8"))
-        if evidence.get("voice_id") != MINSOO_VOICE_ID or evidence.get("model_id") != MINSOO_MODEL_ID:
-            raise RuntimeError("section voice/model provenance mismatch")
-        if evidence.get("settings") != MINSOO_VOICE_SETTINGS:
-            raise RuntimeError("section voice settings mismatch")
-        if evidence.get("script_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
-            raise RuntimeError("section script hash mismatch")
-        audio_duration = duration(audio)
-        records.append({
-            "index": index,
-            "name": name,
-            "script": text,
-            "script_sha256": evidence["script_sha256"],
-            "audio": str(audio),
-            "audio_sha256": sha(audio),
-            "alignment": str(alignment),
-            "alignment_sha256": sha(alignment),
-            "duration_seconds": audio_duration,
-        })
-        audio_paths.append(audio)
+def narration_pace_profile(audio: Path, alignment: Path, name: str) -> dict:
+    evidence = json.loads(alignment.read_text(encoding="utf-8"))
+    aligned = evidence.get("alignment") or {}
+    points = [
+        (character, float(start), float(end))
+        for character, start, end in zip(
+            aligned.get("characters") or [],
+            aligned.get("character_start_times_seconds") or [],
+            aligned.get("character_end_times_seconds") or [],
+        )
+        if not str(character).isspace()
+    ]
+    if not points:
+        raise RuntimeError(f"no aligned speech characters for {name}")
+    audio_duration = duration(audio)
+    silences = tailbite.detect_silences(
+        audio,
+        threshold_db=TAILBITE["threshold_db"],
+        minimum=TAILBITE["minimum"],
+    )
+    segments = tailbite.build_segments(
+        audio_duration,
+        silences,
+        retained_gap=TAILBITE["retained_gap"],
+    )
+    mapped_start = tailbite.map_time(points[0][1], segments)
+    mapped_end = tailbite.map_time(points[-1][2], segments)
+    spoken_seconds = max(0.001, mapped_end - mapped_start)
+    return {
+        "name": name,
+        "character_count": len(points),
+        "spoken_seconds": round(spoken_seconds, 6),
+        "characters_per_second": round(len(points) / spoken_seconds, 6),
+        "tailbite": {
+            "threshold_db": TAILBITE["threshold_db"],
+            "minimum_seconds": TAILBITE["minimum"],
+            "retained_gap_seconds": TAILBITE["retained_gap"],
+        },
+    }
 
+
+def _section_record(
+    index: int,
+    name: str,
+    text: str,
+    audio: Path,
+    alignment: Path,
+    *,
+    previous_text: str | None,
+    next_text: str | None,
+) -> dict:
+    evidence = json.loads(alignment.read_text(encoding="utf-8"))
+    expected_previous = (
+        hashlib.sha256(previous_text.encode("utf-8")).hexdigest()
+        if previous_text is not None else None
+    )
+    expected_next = (
+        hashlib.sha256(next_text.encode("utf-8")).hexdigest()
+        if next_text is not None else None
+    )
+    if evidence.get("voice_id") != MINSOO_VOICE_ID or evidence.get("model_id") != MINSOO_MODEL_ID:
+        raise RuntimeError("section voice/model provenance mismatch")
+    if evidence.get("settings") != MINSOO_VOICE_SETTINGS:
+        raise RuntimeError("section voice settings mismatch")
+    if evidence.get("script_sha256") != hashlib.sha256(text.encode("utf-8")).hexdigest():
+        raise RuntimeError("section script hash mismatch")
+    if evidence.get("generation_protocol") != NARRATION_GENERATION_PROTOCOL:
+        raise RuntimeError("section paired generation protocol mismatch")
+    if evidence.get("previous_text_sha256") != expected_previous:
+        raise RuntimeError("section previous_text context mismatch")
+    if evidence.get("next_text_sha256") != expected_next:
+        raise RuntimeError("section next_text context mismatch")
+    return {
+        "index": index,
+        "name": name,
+        "script": text,
+        "script_sha256": evidence["script_sha256"],
+        "audio": str(audio),
+        "audio_sha256": sha(audio),
+        "alignment": str(alignment),
+        "alignment_sha256": sha(alignment),
+        "duration_seconds": duration(audio),
+    }
+
+
+def _generate_intro_cta_pair(pair_root: Path, sections: list[str], seed: int) -> dict:
+    pair_root.mkdir(parents=True, exist_ok=False)
+    intro_audio = pair_root / "01_intro.mp3"
+    intro_alignment = pair_root / "01_intro_alignment.json"
+    cta_audio = pair_root / "07_cta.mp3"
+    cta_alignment = pair_root / "07_cta_alignment.json"
+    generate_minsoo_section(
+        sections[0], intro_audio, intro_alignment,
+        previous_text=None, next_text=sections[1], seed=seed,
+    )
+    generate_minsoo_section(
+        sections[6], cta_audio, cta_alignment,
+        previous_text=sections[5], next_text=None, seed=seed,
+    )
+    early = narration_pace_profile(intro_audio, intro_alignment, "intro")
+    late = narration_pace_profile(cta_audio, cta_alignment, "cta")
+    ratio = late["characters_per_second"] / early["characters_per_second"]
+    passed = ratio <= NARRATION_PAIR_PREFLIGHT_MAX
+    result = {
+        "status": "pass" if passed else "fail",
+        "early": early,
+        "late": late,
+        "last_to_first_ratio": round(ratio, 6),
+        "preflight_maximum": NARRATION_PAIR_PREFLIGHT_MAX,
+        "exact_runtime_maximum": NARRATION["last_to_first_pace_ratio_max"],
+        "pair_disposition": "selected" if passed else "discard_both",
+        "failed_take_reuse": False,
+        "atempo_used": False,
+        "pitch_correction_used": False,
+        "threshold_relaxed": False,
+        "fixed_cta_changed": False,
+        "seed": seed,
+    }
+    dump(pair_root / "pair_gate.json", result)
+    return result
+
+
+def _select_intro_cta_pair(sections: list[str]) -> tuple[Path, dict]:
+    pair_root = ROOT / "narration_pair_preflight"
+    pair_root.mkdir(parents=True, exist_ok=False)
+    results = []
+    for attempt in range(1, NARRATION_PAIR_MAX_ATTEMPTS + 1):
+        candidate = pair_root / f"pair-{attempt:02d}"
+        result = _generate_intro_cta_pair(
+            candidate,
+            sections,
+            NARRATION_PAIR_SEED_BASE + attempt - 1,
+        )
+        results.append({"pair": candidate.name, **result})
+        summary = {
+            "protocol": NARRATION_GENERATION_PROTOCOL,
+            "status": "pass" if result["status"] == "pass" else "searching",
+            "preflight_maximum": NARRATION_PAIR_PREFLIGHT_MAX,
+            "exact_runtime_maximum": NARRATION["last_to_first_pace_ratio_max"],
+            "selected_pair": candidate.name if result["status"] == "pass" else None,
+            "selected_pair_preflight_ratio": (
+                result["last_to_first_ratio"] if result["status"] == "pass" else None
+            ),
+            "pairs": results,
+        }
+        dump(pair_root / "summary.json", summary)
+        if result["status"] == "pass":
+            return candidate, summary
+    summary["status"] = "fail"
+    dump(pair_root / "summary.json", summary)
+    raise RuntimeError(
+        f"no intro/CTA pair passed {NARRATION_PAIR_PREFLIGHT_MAX:.2f} preflight reserve"
+    )
+
+
+def _prepare_narration_sections(sections: list[str]) -> tuple[list[dict], dict]:
+    selected_pair, pair_summary = _select_intro_cta_pair(sections)
+    section_root = ROOT / "narration_sections"
+    section_root.mkdir(exist_ok=False)
+    for index, name in ((1, "intro"), (7, "cta")):
+        shutil.copy2(selected_pair / f"{index:02d}_{name}.mp3", section_root / f"{index:02d}_{name}.mp3")
+        shutil.copy2(
+            selected_pair / f"{index:02d}_{name}_alignment.json",
+            section_root / f"{index:02d}_{name}_alignment.json",
+        )
+    seed = int(next(
+        pair["seed"] for pair in pair_summary["pairs"]
+        if pair["pair"] == pair_summary["selected_pair"]
+    ))
+    for index in range(2, 7):
+        name = NARRATION_SECTION_NAMES[index - 1]
+        generate_minsoo_section(
+            sections[index - 1],
+            section_root / f"{index:02d}_{name}.mp3",
+            section_root / f"{index:02d}_{name}_alignment.json",
+            previous_text=sections[index - 2],
+            next_text=sections[index],
+            seed=seed,
+        )
+    records = [
+        _section_record(
+            index,
+            name,
+            text,
+            section_root / f"{index:02d}_{name}.mp3",
+            section_root / f"{index:02d}_{name}_alignment.json",
+            previous_text=sections[index - 2] if index > 1 else None,
+            next_text=sections[index] if index < len(sections) else None,
+        )
+        for index, (name, text) in enumerate(zip(NARRATION_SECTION_NAMES, sections), 1)
+    ]
+    return records, pair_summary
+
+
+def combine_section_audio_and_alignment(sections: list[str]) -> tuple[Path, Path, list[dict]]:
+    records, pair_summary = _prepare_narration_sections(sections)
+    audio_paths = [Path(record["audio"]) for record in records]
     combined_audio = ROOT / "narration_seven_sections.mp3"
     command: list[object] = ["ffmpeg", "-hide_banner", "-y"]
     for audio in audio_paths:
@@ -380,8 +634,11 @@ def combine_section_audio_and_alignment(sections: list[str]) -> tuple[Path, Path
         "settings": MINSOO_VOICE_SETTINGS,
         "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
         "generation_mode": NARRATION["generation_mode"],
+        "generation_protocol": NARRATION_GENERATION_PROTOCOL,
         "section_count": NARRATION["section_count"],
         "section_gap_seconds": NARRATION["section_gap_seconds"],
+        "selected_pair": pair_summary["selected_pair"],
+        "selected_pair_preflight_ratio": pair_summary["selected_pair_preflight_ratio"],
         "sections": records,
         "alignment": {
             "characters": characters,
@@ -401,8 +658,16 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
     sections = split_seven_sections(script)
     combined, alignment, records = combine_section_audio_and_alignment(sections)
     source_duration = duration(combined)
-    silences = tailbite.detect_silences(combined, threshold_db=-35.0, minimum=0.08)
-    segments = tailbite.build_segments(source_duration, silences, retained_gap=0.06)
+    silences = tailbite.detect_silences(
+        combined,
+        threshold_db=TAILBITE["threshold_db"],
+        minimum=TAILBITE["minimum"],
+    )
+    segments = tailbite.build_segments(
+        source_duration,
+        silences,
+        retained_gap=TAILBITE["retained_gap"],
+    )
     tailbite.render_audio(combined, cut, segments)
     raw_tokens = [x for x in re.split(r"\s+", script) if x]
     timings = tailbite.aligned_words(alignment)
@@ -431,8 +696,11 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
         "model_id": MINSOO_MODEL_ID,
         "voice_settings": MINSOO_VOICE_SETTINGS,
         "generation_mode": NARRATION["generation_mode"],
+        "generation_protocol": NARRATION_GENERATION_PROTOCOL,
         "section_count": NARRATION["section_count"],
         "section_gap_seconds": NARRATION["section_gap_seconds"],
+        "selected_pair": alignment_json["selected_pair"],
+        "selected_pair_preflight_ratio": alignment_json["selected_pair_preflight_ratio"],
         "sections": records,
         "combined_take": str(combined),
         "combined_take_sha256": sha(combined),
@@ -442,7 +710,11 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
         "tailbite_audio_sha256": sha(cut),
         "source_duration_seconds": source_duration,
         "output_duration_seconds": duration(cut),
-        "tailbite": {"threshold_db": -35.0, "minimum_seconds": 0.08, "retained_gap_seconds": 0.06},
+        "tailbite": {
+            "threshold_db": TAILBITE["threshold_db"],
+            "minimum_seconds": TAILBITE["minimum"],
+            "retained_gap_seconds": TAILBITE["retained_gap"],
+        },
         "silence_count": len(silences),
         "segment_count": len(segments),
         "caption_mode": "one_full_token_no_midword_split",
