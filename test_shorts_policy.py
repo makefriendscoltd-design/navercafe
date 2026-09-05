@@ -434,6 +434,50 @@ def test_v16_line_separated_layout_rejects_any_seventh_line(extra):
         shorts.canonicalize_notebooklm_script_layout(f"{provider_body}\n{extra}")
 
 
+def test_factpack_recovery_report_is_explicit_and_fail_closed():
+    provider_body = (FIXTURE_ROOT / "v16_dcl_line_separated.txt").read_text(
+        encoding="utf-8"
+    ).strip()
+    recovered = """이 기능 대박입니다. 검증된 다섯 단계를 정리했습니다.
+
+첫째, 소스를 넣습니다.
+
+둘째, 소스 기반 영상을 만듭니다.
+
+셋째, CTA를 요청할 수 있습니다. CTA 반영은 영상 제작자의 시연 사례입니다. 결과는 보장되지 않습니다.
+
+넷째, 형식을 고릅니다.
+
+다섯째, 파일을 다운로드합니다."""
+    report = shorts.factpack_recovery_report(
+        provider_body,
+        recovered,
+        factpack_sha256="a" * 64,
+        source_gate={"status": "pass"},
+    )
+    assert report["status"] == "pass"
+    assert report["recovery_mode"] == "verified_factpack_rebuild"
+    assert report["provider_retry_performed"] is False
+    assert report["notebooklm_body_preserved_exactly"] is False
+    assert report["content_rewrite_applied"] is True
+    assert report["verified_factpack_only"] is True
+
+    with pytest.raises(RuntimeError, match="factpack SHA-256"):
+        shorts.factpack_recovery_report(
+            provider_body,
+            recovered,
+            factpack_sha256="not-a-hash",
+            source_gate={"status": "pass"},
+        )
+    with pytest.raises(RuntimeError, match="사실·장면 게이트"):
+        shorts.factpack_recovery_report(
+            provider_body,
+            recovered,
+            factpack_sha256="a" * 64,
+            source_gate={"status": "failed"},
+        )
+
+
 def test_v16_layout_rejects_any_paragraph_after_fifth():
     script = """이 프로그램 대박입니다.
 

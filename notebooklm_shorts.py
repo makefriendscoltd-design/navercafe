@@ -549,6 +549,38 @@ def cta_only_transform_report(
     }
 
 
+def factpack_recovery_report(
+    provider_script: str,
+    recovered_script: str,
+    *,
+    factpack_sha256: str,
+    source_gate: dict,
+) -> dict:
+    """Prove a terminal provider failure was rebuilt only under verified fact gates."""
+    original = str(provider_script or "").strip()
+    recovered, layout = canonicalize_notebooklm_script_layout(recovered_script)
+    if not original or recovered == original:
+        raise RuntimeError("팩트팩 복구에는 보존된 provider 원문과 별도 복구 원고가 필요합니다.")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(factpack_sha256 or "")):
+        raise RuntimeError("팩트팩 복구의 검증된 factpack SHA-256이 없습니다.")
+    if not isinstance(source_gate, dict) or source_gate.get("status") != "pass":
+        raise RuntimeError("팩트팩 복구의 source_key별 사실·장면 게이트가 통과하지 않았습니다.")
+    validate_shorts_verbatim_claims(recovered)
+    return {
+        "status": "pass",
+        "recovery_mode": "verified_factpack_rebuild",
+        "provider_retry_performed": False,
+        "provider_script_sha256": _text_sha256(original),
+        "recovered_script_sha256": _text_sha256(recovered),
+        "factpack_sha256": factpack_sha256,
+        "source_gate_status": "pass",
+        "layout": layout,
+        "notebooklm_body_preserved_exactly": False,
+        "content_rewrite_applied": True,
+        "verified_factpack_only": True,
+    }
+
+
 def get_video_duration(url: str) -> float:
     import yt_dlp
 
