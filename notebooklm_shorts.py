@@ -54,6 +54,13 @@ ORDINAL_LINE_PATTERNS = {
     "fourth": re.compile(r"(?m)^\s*(?:[-*>#]+\s*)?(?:4\s*(?:번|번째)?\s*[.)、:]|④|넷째\s*[,.:]?)"),
     "fifth": re.compile(r"(?m)^\s*(?:[-*>#]+\s*)?(?:5\s*(?:번|번째)?\s*[.)、:]|⑤|다섯째\s*[,.:]?)"),
 }
+NOTEBOOKLM_SCRIPT_PARAGRAPH_LABELS = ("첫째,", "둘째,", "셋째,", "넷째,", "다섯째,")
+POST_FIFTH_METADATA_RE = re.compile(
+    r"(?i)(?:버전|지침\s*요약|메타데이터|메타\s*주석|주석)\s*:|"
+    r"\[(?:버전|지침\s*요약|메타데이터|주석)\]|"
+    r"(?:[.!?]\s+)(?:버전\s+v?\d|지침\s*요약\s+(?:완료|준수)|"
+    r"메타데이터\s+(?:없음|완료)|주석\s+(?:없음|완료))"
+)
 SCRIPT_META_RE = re.compile(
     r"(?mi)^\s*(?:#{1,6}\s+|\[(?:훅|본문|결론|CTA|메타[^\]]*)\]|"
     r"(?:훅|본문|결론|CTA|메타\s*주석)\s*:|\[?\d{1,2}:\d{2}(?::\d{2})?\]?)"
@@ -379,6 +386,46 @@ def validate_script_structure(script: str) -> dict:
     }
 
 
+def validate_notebooklm_script_layout(script: str) -> dict:
+    """Require the v16 provider body to survive innerText as six paragraphs."""
+    text = str(script or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    paragraphs = re.split(r"\n[ \t]*\n", text) if text else []
+    if len(paragraphs) != 6:
+        raise RuntimeError(
+            f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트는 "
+            "도입과 첫째~다섯째의 정확히 6개 Markdown 문단이어야 합니다."
+        )
+    if any("\n" in paragraph for paragraph in paragraphs):
+        raise RuntimeError(
+            f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
+            "각 Markdown 문단은 innerText에서 한 줄이어야 합니다."
+        )
+    intro = paragraphs[0].strip()
+    if not intro:
+        raise RuntimeError(
+            f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트에 "
+            "별도 도입 문단이 없습니다."
+        )
+    for paragraph, label in zip(paragraphs[1:], NOTEBOOKLM_SCRIPT_PARAGRAPH_LABELS):
+        if not paragraph.startswith(label):
+            raise RuntimeError(
+                f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
+                f"{label[:-1]} 항목은 자기 Markdown 문단의 첫 글자로 시작해야 합니다."
+            )
+    if POST_FIFTH_METADATA_RE.search(paragraphs[-1]):
+        raise RuntimeError(
+            f"Shorts NotebookLM {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} 스크립트의 "
+            "다섯째 문단 뒤에 버전·지침·주석 메타데이터가 남아 있습니다."
+        )
+    structure = validate_script_structure(text)
+    return {
+        **structure,
+        "markdown_paragraph_count": 6,
+        "ordinal_paragraphs_start_exactly": True,
+        "post_fifth_content_present": False,
+    }
+
+
 def keep_through_fifth(script: str) -> str:
     """Cut at item six and remove any prior CTA before appending ours."""
     text = (script or "").strip()
@@ -559,6 +606,8 @@ def fetch(
         status="provider_response_received",
     )
     try:
+        provider_script_body = _raw_script_body(provider_answer)
+        validate_notebooklm_script_layout(provider_script_body)
         citation_stripped_answer = nlm._strip_citations(provider_answer)
         head_copies = extract_head_copy_candidates(citation_stripped_answer)
         script, chosen = extract_script(citation_stripped_answer)

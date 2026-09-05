@@ -30,8 +30,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v15.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v15.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v16.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v16.0
 
 ## 작업 원칙
 
@@ -97,7 +97,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 ### 형식 규칙
 
 1. 타임스탬프, `[훅]`·`[본문]`·`[결론]` 같은 레이블, 메타 주석, 이름의 영문 병기를 쓰지 않는다.
-2. 스크립트는 문장이 끝날 때마다 줄을 바꾼다.
+2. `### 스크립트` 아래에는 도입, 첫째, 둘째, 셋째, 넷째, 다섯째의 정확히 6개 Markdown 문단만 쓴다. 도입과 각 서수 항목은 서로 다른 문단이어야 하며 문단 사이는 빈 줄 하나로 구분한다. 한 문단 안의 문장은 같은 줄에 이어 쓴다.
 3. 본문은 자연스러운 한국어 구어체로 쓰고 볼드 강조를 쓰지 않는다.
 4. 헤드카피 후보는 정확히 3개다. 각 후보는 `첫째 줄 / 둘째 줄` 형식의 정확히 2줄이고, 각 줄은 공백 포함 18자 이하다.
 5. 헤드카피 3안의 모든 줄은 BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하여야 한다. 실측을 보장할 수 없으면 공백 포함 13자 이하로 줄여 안전폭을 확보한다.
@@ -109,8 +109,9 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다.
 2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다. 첫째부터 다섯째의 제목과 핵심 행동은 원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다. 출처의 구체적 행동을 `자료 준비`, `기능 활용`, `자동화하기` 같은 일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다. 어느 항목인지 원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다.
 3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
-4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. `첫째,`부터 `다섯째,`까지를 각각 새 줄 첫 머리에 표시하고, 여섯째 이후는 출력하지 않는다.
+4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. 도입을 첫 번째 Markdown 문단으로 쓴 뒤 빈 줄 하나를 넣고, `첫째,`부터 `다섯째,`까지가 각각 자기 Markdown 문단의 첫 글자로 시작하게 쓴다. 각 문단 사이에는 빈 줄 하나를 넣는다. 도입이나 첫째~다섯째를 한 개의 평탄화된 문단에 이어 쓰지 않으며, 여섯째 이후는 출력하지 않는다.
 5. 원본 CTA의 실제 문구나 임의의 CTA를 스크립트에 출력하지 않는다. 원본의 핵심 지점이 CTA 입력·요청을 다룬다면 행동만 설명하고 위의 시연 사례·비보장 두 문장을 정확히 쓴다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
+6. `다섯째,` 문단이 최종 출력의 마지막 문단이다. 그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다.
 
 ## STEP 5: 최종 검증
 
@@ -118,7 +119,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 - 원본에 없는 숫자·성과·수익·연봉·지위·인과·보장을 추가하지 않았는가?
 - 헤드카피가 정확히 3개이며 각 후보가 2줄·줄당 18자 이하·90px 실측 920px 이하인가?
 - 타임스탬프·섹션 레이블·메타 주석·영문 병기가 없는가?
-- 도입과 첫째~다섯째만 있고, 각 항목이 새 줄에서 시작하며, 원본 CTA가 없는가?
+- 도입과 첫째~다섯째만 정확히 6개 Markdown 문단으로 있고, 각 문단 사이에 빈 줄 하나가 있으며, 각 서수가 자기 문단의 첫 글자로 시작하고, 평탄화된 한 문단이나 원본 CTA가 없는가?
 - 지원 범위 일반화·보장된 2클릭·무료·고정 생성 시간·자동 다중 플랫폼 배포 표현이 없는가?
 - Repurpose나 플랫폼 배포를 언급했다면 지정된 두 문장만 글자 그대로 썼고, 긍정·부정·제작자 귀속·조건·이중부정을 포함한 다른 관련 문장을 하나도 덧붙이지 않았는가?
 - 원본 분석의 다섯 지점에 Repurpose나 플랫폼 배포가 있다면 이를 생략하거나 다운로드만으로 바꾸지 않았는가?
@@ -140,12 +141,20 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 3. [첫째 줄] / [둘째 줄]
 
 ### 스크립트
-[레이블 없이 스크립트 본문]
+[도입 문단]
 
-버전: v15.0 (원본 시간 순서·CTA 시연 경계·Repurpose 지점 보존·90px 안전폭 고정)
+첫째, [첫 번째 내용 문단]
+
+둘째, [두 번째 내용 문단]
+
+셋째, [세 번째 내용 문단]
+
+넷째, [네 번째 내용 문단]
+
+다섯째, [다섯 번째 내용 문단]
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "ba512b89aeef41c9edf1a61b7d792a703910674c8e405da52da0c3d35aff86f9"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "f08aa788417fdc1cd7958dc0f8530c8482128f0d0c5625b103ae6a66a5862146"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
@@ -164,6 +173,10 @@ SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "원본과 일대일로 대응할 수 없으면",
     "첫째부터 다섯째까지만",
     "고정 CTA만 붙는다",
+    "정확히 6개 Markdown 문단만 쓴다",
+    "문단 사이는 빈 줄 하나로 구분한다",
+    "평탄화된 문단",
+    "그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다",
 )
 
 SHORTS_FORBIDDEN_CLAIM_PATTERNS = {
@@ -613,13 +626,15 @@ def validate_shorts_notebook_instruction(
     missing = [marker for marker in SHORTS_NOTEBOOK_REQUIRED_MARKERS if marker not in normalized]
     if missing:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침에 v15 사전 금지 계약이 없습니다. "
+            f"Shorts NotebookLM 맞춤 지침에 {SHORTS_NOTEBOOK_INSTRUCTION_VERSION} "
+            "사전 금지·문단 형식 계약이 없습니다. "
             "소스 추가 전 중단합니다."
         )
     actual = notebook_instruction_sha256(value)
     if actual != SHORTS_NOTEBOOK_INSTRUCTION_SHA256:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침이 정본 v15.0과 다릅니다. 소스 추가 전 중단합니다."
+            "Shorts NotebookLM 맞춤 지침이 정본 "
+            f"{SHORTS_NOTEBOOK_INSTRUCTION_VERSION}과 다릅니다. 소스 추가 전 중단합니다."
         )
     if goal != "맞춤":
         raise ProductionPolicyError("Shorts NotebookLM 응답 목표가 '맞춤'이 아닙니다.")

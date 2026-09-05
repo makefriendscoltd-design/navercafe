@@ -149,7 +149,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     )
     checks["shorts_notebook_instruction_contract"] = (
         policy.SHORTS_NOTEBOOK_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
-        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v15.0"
+        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v16.0"
         and policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION)
         == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
         and "### 헤드카피라이팅" in policy.SHORTS_NOTEBOOK_INSTRUCTION
@@ -170,6 +170,15 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         and "validate_shorts_notebook_retry" in shorts_runtime_source
         and "unknown_after_provider_start" in policy.SHORTS_ATTEMPT_BLOCKING_STATUSES
         and "substantive_failed" in policy.SHORTS_ATTEMPT_BLOCKING_STATUSES
+    )
+    checks["shorts_v16_six_paragraph_gate"] = (
+        "provider_script_body = _raw_script_body(provider_answer)" in shorts_runtime_source
+        and "validate_notebooklm_script_layout(provider_script_body)" in shorts_runtime_source
+        and "markdown_paragraph_count" in shorts_runtime_source
+        and "post_fifth_content_present" in shorts_runtime_source
+        and "정확히 6개 Markdown 문단" in policy.SHORTS_NOTEBOOK_INSTRUCTION
+        and "그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다"
+        in policy.SHORTS_NOTEBOOK_INSTRUCTION
     )
     checks["shorts_verbatim_hash_stages"] = all(
         marker in shorts_runtime_source

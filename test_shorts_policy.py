@@ -318,10 +318,10 @@ def test_shorts_uses_the_simple_notebooklm_request():
     assert shorts.SHORTS_PROMPT == policy.SHORTS_NOTEBOOK_PROMPT
 
 
-def test_shorts_notebook_instruction_v15_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v15.0"
+def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v16.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "ba512b89aeef41c9edf1a61b7d792a703910674c8e405da52da0c3d35aff86f9"
+        "f08aa788417fdc1cd7958dc0f8530c8482128f0d0c5625b103ae6a66a5862146"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -344,6 +344,148 @@ def test_shorts_notebook_instruction_v15_is_hash_pinned_and_fail_closed():
             policy.SHORTS_NOTEBOOK_INSTRUCTION,
             goal="맞춤",
             response_length="짧게",
+        )
+
+
+def test_v16_instruction_ends_with_exact_six_paragraph_script_template():
+    script_template = policy.SHORTS_NOTEBOOK_INSTRUCTION.split("### 스크립트\n", 1)[1].rstrip("\n")
+    assert script_template == """[도입 문단]
+
+첫째, [첫 번째 내용 문단]
+
+둘째, [두 번째 내용 문단]
+
+셋째, [세 번째 내용 문단]
+
+넷째, [네 번째 내용 문단]
+
+다섯째, [다섯 번째 내용 문단]"""
+    assert "버전:" not in script_template
+
+
+def test_exact_stored_v15_flattened_response_is_rejected_by_structure_gate():
+    answer = (FIXTURE_ROOT / "v15_failed_dcl_flattened.md").read_text(
+        encoding="utf-8"
+    ).strip()
+    assert hashlib.sha256(answer.encode("utf-8")).hexdigest() == (
+        "02b911f425d4404295a429693d3b6588012a2f8fc53a3fe20534837dbed7de78"
+    )
+    script, _ = shorts.extract_script(answer)
+    assert "\n\n첫째," not in script
+    assert script.endswith(
+        "버전: v15.0 (원본 시간 순서·CTA 시연 경계·Repurpose 지점 보존·90px 안전폭 고정)"
+    )
+    with pytest.raises(RuntimeError, match="first 항목은 정확히 1개"):
+        shorts.validate_script_structure(script)
+    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+        shorts.validate_notebooklm_script_layout(script)
+
+
+def test_v16_paragraph_separated_innertext_passes_existing_structure_gate():
+    answer = """### 스크립트
+이 프로그램 대박입니다. 도입은 하나의 Markdown 문단입니다.
+
+첫째, 첫 번째 내용입니다.
+
+둘째, 두 번째 내용입니다.
+
+셋째, 세 번째 내용입니다.
+
+넷째, 네 번째 내용입니다.
+
+다섯째, 다섯 번째 내용입니다."""
+    script, _ = shorts.extract_script(answer)
+    assert script.count("\n\n") == 5
+    assert shorts.validate_script_structure(script)["status"] == "pass"
+    layout = shorts.validate_notebooklm_script_layout(script)
+    assert layout["markdown_paragraph_count"] == 6
+    assert layout["post_fifth_content_present"] is False
+    assert script.endswith("다섯째, 다섯 번째 내용입니다.")
+
+
+def test_v16_layout_rejects_any_paragraph_after_fifth():
+    script = """이 프로그램 대박입니다.
+
+첫째, 하나
+
+둘째, 둘
+
+셋째, 셋
+
+넷째, 넷
+
+다섯째, 다섯
+
+버전: v16.0"""
+    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+        shorts.validate_notebooklm_script_layout(script)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "버전: v16.0",
+        "버전 v16.0",
+        "지침 요약: 문단 형식 준수",
+        "지침 요약 완료",
+        "메타데이터: v16",
+        "메타데이터 없음",
+        "[주석] 형식 검증 완료",
+        "주석 없음",
+    ],
+)
+def test_v16_layout_rejects_inline_metadata_suffix_after_fifth(suffix):
+    script = f"""이 프로그램 대박입니다.
+
+첫째, 하나
+
+둘째, 둘
+
+셋째, 셋
+
+넷째, 넷
+
+다섯째, 다섯. {suffix}"""
+    with pytest.raises(RuntimeError, match="메타데이터가 남아"):
+        shorts.validate_notebooklm_script_layout(script)
+
+
+def test_fetch_rejects_raw_seventh_citation_paragraph_before_cleanup(monkeypatch, tmp_path):
+    answer = """### 헤드카피라이팅
+1. 영상 개요가 대박?! / 소스 기반 제작법
+2. 영상 만들기 어렵죠? / 개요 생성 순서
+3. 이 기능 놓치면 손해 / 영상 개요 활용법
+
+### 스크립트
+이 프로그램 대박입니다. 소스 기반 영상 개요를 만드는 순서입니다.
+
+첫째, 사용할 소스를 추가합니다.
+
+둘째, Video Overview를 선택합니다.
+
+셋째, 형식을 정합니다.
+
+넷째, 지시문으로 초점을 정합니다.
+
+다섯째, Generate를 눌러 생성합니다.
+
+### 출처
+1. https://example.com/source
+2. https://example.com/second"""
+    stripped = shorts.nlm._strip_citations(answer)
+    assert shorts.validate_notebooklm_script_layout(
+        shorts._raw_script_body(stripped)
+    )["status"] == "pass"
+    monkeypatch.setattr(
+        shorts, "load_shorts_config", lambda: ({"prompt": shorts.SHORTS_PROMPT}, "")
+    )
+    monkeypatch.setattr(shorts.nlm, "fetch_manuscript", lambda *args, **kwargs: answer)
+    monkeypatch.setattr(shorts, "get_video_duration", lambda _url: 12 * 60)
+    with pytest.raises(RuntimeError, match="정확히 6개 Markdown 문단"):
+        shorts.fetch(
+            "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+            evidence_dir=tmp_path / "outputs/KJWaxYpcXoo-20260905/shorts/provider",
+            attempt_ledger_path=tmp_path / "attempt-ledger.json",
         )
 
 
@@ -435,7 +577,7 @@ def test_repurpose_boundary_sentences_must_each_appear_exactly_once(duplicate_in
         policy.validate_shorts_verbatim_claims(value)
 
 
-def test_v15_instruction_requires_source_order_and_consequential_points_without_global_overfit():
+def test_v16_instruction_requires_source_order_and_consequential_points_without_global_overfit():
     instruction = policy.SHORTS_NOTEBOOK_INSTRUCTION
     assert "첫째부터 다섯째의 제목과 핵심 행동" in instruction
     assert "원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다" in instruction
@@ -447,7 +589,7 @@ def test_v15_instruction_requires_source_order_and_consequential_points_without_
     assert "dCLW6IQt06M" not in instruction
 
 
-def test_cta_action_requires_both_exact_v15_boundary_sentences():
+def test_cta_action_requires_both_exact_v16_boundary_sentences():
     value = "프롬프트에 콜투액션을 입력합니다."
     hits = policy.find_forbidden_shorts_claims(value)
     assert hits["cta_boundary_missing"] == sorted(policy.SHORTS_CTA_BOUNDARY_SENTENCES)
@@ -835,7 +977,23 @@ def test_cta_report_seals_provider_cleanup_parser_and_adopted_hash_stages():
 
 
 def test_same_instruction_attempt_is_blocked_before_second_provider_call(monkeypatch, tmp_path):
-    answer = (FIXTURE_ROOT / "v13_compliant.md").read_text(encoding="utf-8")
+    answer = """### 헤드카피라이팅
+1. 영상 개요가 대박?! / 소스 기반 제작법
+2. 영상 만들기 어렵죠? / 개요 생성 순서
+3. 이 기능 놓치면 손해 / 영상 개요 활용법
+
+### 스크립트
+이 프로그램 대박입니다. NotebookLM에서 소스 기반 영상 개요를 만드는 순서입니다.
+
+첫째, 사용할 소스를 NotebookLM에 추가합니다.
+
+둘째, Studio에서 Video Overview를 선택합니다.
+
+셋째, 형식과 언어, 스타일을 목적에 맞게 정합니다.
+
+넷째, 지시문으로 영상이 다룰 초점을 정합니다.
+
+다섯째, Generate를 눌러 소스 기반 영상 개요를 생성합니다."""
     provider = mock.Mock(return_value=answer)
     monkeypatch.setattr(shorts.nlm, "fetch_manuscript", provider)
     monkeypatch.setattr(shorts, "get_video_duration", lambda _url: 12 * 60)
@@ -897,16 +1055,14 @@ def test_existing_provider_evidence_blocks_same_instruction_before_reservation(t
         policy.validate_shorts_notebook_retry("KJWaxYpcXoo", records)
 
 
-def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch, tmp_path):
+def test_fetch_preserves_v16_notebooklm_body_and_appends_fixed_cta(monkeypatch, tmp_path):
     answer = """헤드카피라이팅
 1. 클로드가 다 한다고? / 자동화 핵심 5가지
 2. 반복 업무 아직 해요? / 클로드로 줄이는 법
 3. 이 기능 대박입니다 / 클로드 자동화 공개
 
 스크립트
-이 프로그램 대박입니다.
-클로드가 반복 업무를 처리하는 흐름입니다.
-다섯 가지 방법, 저장하고 끝까지 보세요!
+이 프로그램 대박입니다. 클로드가 반복 업무를 처리하는 흐름입니다. 다섯 가지 방법, 저장하고 끝까지 보세요!
 
 첫째, 원문 하나
 
@@ -916,9 +1072,7 @@ def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch, tmp_path
 
 넷째, 원문 넷
 
-다섯째, 원문 다섯
-
-이 자료가 궁금하신 분들은 채널을 구독하세요."""
+다섯째, 원문 다섯"""
     monkeypatch.setattr(shorts, "load_shorts_config", lambda: ({"prompt": shorts.SHORTS_PROMPT}, ""))
     monkeypatch.setattr(shorts.nlm, "fetch_manuscript", lambda url, cfg, log=print: answer)
     monkeypatch.setattr(shorts, "get_video_duration", lambda url: 12 * 60)
@@ -930,8 +1084,7 @@ def test_fetch_keeps_notebooklm_body_and_only_replaces_cta(monkeypatch, tmp_path
 
     assert raw == answer
     assert minutes == 12
-    assert final.startswith("이 프로그램 대박입니다.\n클로드가 반복 업무를 처리하는 흐름입니다.")
-    assert "채널을 구독하세요" not in final
+    assert final.startswith("이 프로그램 대박입니다. 클로드가 반복 업무를 처리하는 흐름입니다.")
     assert final.endswith(shorts.fixed_cta(12))
     assert transform["status"] == "cta_only"
     assert transform["body_sha256_before"] == transform["body_sha256_after"]
