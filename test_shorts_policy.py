@@ -318,10 +318,10 @@ def test_shorts_uses_the_simple_notebooklm_request():
     assert shorts.SHORTS_PROMPT == policy.SHORTS_NOTEBOOK_PROMPT
 
 
-def test_shorts_notebook_instruction_v14_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v14.0"
+def test_shorts_notebook_instruction_v15_is_hash_pinned_and_fail_closed():
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v15.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "503d5c7eb8564e5dd517154b876ecb8ad654f8092f3bf869f3f6b493f7a02f12"
+        "ba512b89aeef41c9edf1a61b7d792a703910674c8e405da52da0c3d35aff86f9"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -363,6 +363,7 @@ def test_captured_v12_dcl_response_is_an_exact_rejection_fixture():
         "free_or_unlimited",
         "fixed_generation_time",
         "automatic_cross_platform_distribution",
+        "cta_boundary_missing",
         "repurpose_boundary_missing",
         "repurpose_or_platform_distribution_extra",
     }
@@ -434,13 +435,78 @@ def test_repurpose_boundary_sentences_must_each_appear_exactly_once(duplicate_in
         policy.validate_shorts_verbatim_claims(value)
 
 
-def test_v14_instruction_requires_source_ordered_points_without_global_overfit():
+def test_v15_instruction_requires_source_order_and_consequential_points_without_global_overfit():
     instruction = policy.SHORTS_NOTEBOOK_INSTRUCTION
     assert "첫째부터 다섯째의 제목과 핵심 행동" in instruction
     assert "원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다" in instruction
     assert "일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다" in instruction
     assert "원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다" in instruction
+    assert "해당 지점을 생략하거나 다운로드만으로 바꾸지 않는다" in instruction
+    assert "CTA 반영은 영상 제작자의 시연 사례입니다." in instruction
+    assert "결과는 보장되지 않습니다." in instruction
     assert "dCLW6IQt06M" not in instruction
+
+
+def test_cta_action_requires_both_exact_v15_boundary_sentences():
+    value = "프롬프트에 콜투액션을 입력합니다."
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert hits["cta_boundary_missing"] == sorted(policy.SHORTS_CTA_BOUNDARY_SENTENCES)
+    with pytest.raises(policy.ProductionPolicyError, match="금지 주장"):
+        policy.validate_shorts_verbatim_claims(value)
+
+
+def test_exact_cta_attribution_and_non_guarantee_boundaries_pass():
+    value = """프롬프트에 CTA 요청을 입력합니다.
+CTA 반영은 영상 제작자의 시연 사례입니다.
+결과는 보장되지 않습니다."""
+    assert policy.find_forbidden_shorts_claims(value) == {}
+    assert policy.validate_shorts_verbatim_claims(value)["status"] == "pass"
+
+
+def test_captured_v14_cta_guarantee_is_rejected_for_the_correct_reason():
+    value = (
+        "이렇게 적어둔 콜투액션 문장은 제작되는 비디오의 마지막 부분에 "
+        "유용한 안내 자막이나 음성으로 자연스럽게 반영됩니다."
+    )
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "guaranteed_cta" in hits
+    assert "cta_boundary_missing" in hits
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "제작자의 시연 사례는 아니지만 CTA는 반영됩니다.",
+        "웹사이트 안내 문구가 마지막 자막에 반영됩니다.",
+    ],
+)
+def test_exact_cta_boundaries_do_not_waive_positive_or_implicit_guarantees(extra):
+    first, second = policy.SHORTS_CTA_BOUNDARY_SENTENCES
+    value = "프롬프트에 CTA 요청을 입력합니다.\n" + first + "\n" + second + "\n" + extra
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "cta_boundary_missing" not in hits
+    assert "guaranteed_cta" in hits
+
+
+@pytest.mark.parametrize("duplicate_index", [0, 1, 2])
+def test_cta_boundary_sentences_must_each_appear_exactly_once(duplicate_index):
+    first, second = policy.SHORTS_CTA_BOUNDARY_SENTENCES
+    extras = {0: first, 1: second, 2: first + "\n" + second}[duplicate_index]
+    value = "프롬프트에 CTA 요청을 입력합니다.\n" + first + "\n" + second + "\n" + extras
+    hits = policy.find_forbidden_shorts_claims(value)
+    assert "cta_boundary_missing" not in hits
+    assert "cta_boundary_cardinality" in hits
+
+
+def test_dcl_captured_v14_body_fixture_is_raw_and_fails_global_cta_gate():
+    fixture = FIXTURE_ROOT / "v14_failed_dcl_adopted.md"
+    body = fixture.read_bytes()
+    assert hashlib.sha256(body).hexdigest() == (
+        "014f441005403902566a2aeb3960ce297093462589e24690b8176ddfaf3f86d1"
+    )
+    hits = policy.find_forbidden_shorts_claims(body.decode("utf-8"))
+    assert "guaranteed_cta" in hits
+    assert "cta_boundary_missing" in hits
 
 
 @pytest.mark.parametrize(

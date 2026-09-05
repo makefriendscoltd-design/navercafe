@@ -30,8 +30,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v14.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v14.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v15.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v15.0
 
 ## 작업 원칙
 
@@ -47,12 +47,19 @@ SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타�
 4. `5분에서 10분이면 완성`처럼 생성 시간을 고정하는 표현
 5. NotebookLM이 인스타·틱톡·유튜브 쇼츠 등 여러 플랫폼에 자동·동시·무인 배포한다는 표현. 별도 도구의 역할을 NotebookLM 기능으로 합치지 않는다.
 
-Repurpose 또는 플랫폼 배포를 스크립트에서 언급해야 한다면 아래 두 문장을 글자 그대로 모두 쓴다.
+STEP 1에서 확인한 다섯 지점 중 Repurpose 또는 플랫폼 배포가 있으면 해당 지점을 생략하거나 다운로드만으로 바꾸지 않는다. 대응하는 스크립트 항목에는 아래 두 문장을 글자 그대로 모두 쓴다.
 
 `Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.`
 `별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.`
 
 이 두 문장 외에는 Repurpose 또는 플랫폼 배포에 관한 문장을 어떤 형태로도 덧붙이지 않는다. 긍정·부정·제작자 귀속·조건·이중부정 표현도 모두 금지한다. `한 번 연결`, `영상 하나를 올리는 즉시`, `모든 채널`, `자동 배포`, `동시 배포`, `무인 유포`처럼 한 번의 업로드가 곧 전체 플랫폼 발행으로 이어진다고 쓰지 않는다.
+
+CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시를 스크립트에서 설명한다면 아래 두 문장을 글자 그대로 모두 쓴다.
+
+`CTA 반영은 영상 제작자의 시연 사례입니다.`
+`결과는 보장되지 않습니다.`
+
+원본의 CTA 문구가 특정 응답에 반영된 사례를 일반 기능이나 보장된 결과로 바꾸지 않는다.
 
 ## STEP 1: 영상 분석
 
@@ -103,7 +110,7 @@ Repurpose 또는 플랫폼 배포를 스크립트에서 언급해야 한다면 �
 2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다. 첫째부터 다섯째의 제목과 핵심 행동은 원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다. 출처의 구체적 행동을 `자료 준비`, `기능 활용`, `자동화하기` 같은 일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다. 어느 항목인지 원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다.
 3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
 4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. `첫째,`부터 `다섯째,`까지를 각각 새 줄 첫 머리에 표시하고, 여섯째 이후는 출력하지 않는다.
-5. 원본이나 임의의 CTA를 스크립트에 출력하지 않는다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
+5. 원본 CTA의 실제 문구나 임의의 CTA를 스크립트에 출력하지 않는다. 원본의 핵심 지점이 CTA 입력·요청을 다룬다면 행동만 설명하고 위의 시연 사례·비보장 두 문장을 정확히 쓴다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
 
 ## STEP 5: 최종 검증
 
@@ -114,6 +121,8 @@ Repurpose 또는 플랫폼 배포를 스크립트에서 언급해야 한다면 �
 - 도입과 첫째~다섯째만 있고, 각 항목이 새 줄에서 시작하며, 원본 CTA가 없는가?
 - 지원 범위 일반화·보장된 2클릭·무료·고정 생성 시간·자동 다중 플랫폼 배포 표현이 없는가?
 - Repurpose나 플랫폼 배포를 언급했다면 지정된 두 문장만 글자 그대로 썼고, 긍정·부정·제작자 귀속·조건·이중부정을 포함한 다른 관련 문장을 하나도 덧붙이지 않았는가?
+- 원본 분석의 다섯 지점에 Repurpose나 플랫폼 배포가 있다면 이를 생략하거나 다운로드만으로 바꾸지 않았는가?
+- CTA나 행동 지시를 설명했다면 시연 사례·비보장 두 문장을 글자 그대로 모두 썼는가?
 
 하나라도 아니면 과장해서 고치지 말고, 원본 범위 안에서 다시 작성한다.
 
@@ -133,10 +142,10 @@ Repurpose 또는 플랫폼 배포를 스크립트에서 언급해야 한다면 �
 ### 스크립트
 [레이블 없이 스크립트 본문]
 
-버전: v14.0 (Repurpose 외부 경계·90px 안전폭·금지 주장·다섯째/CTA 계약 고정)
+버전: v15.0 (원본 시간 순서·CTA 시연 경계·Repurpose 지점 보존·90px 안전폭 고정)
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "503d5c7eb8564e5dd517154b876ecb8ad654f8092f3bf869f3f6b493f7a02f12"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "ba512b89aeef41c9edf1a61b7d792a703910674c8e405da52da0c3d35aff86f9"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
@@ -146,8 +155,11 @@ SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "자동·동시·무인 배포",
     "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
     "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
+    "해당 지점을 생략하거나 다운로드만으로 바꾸지 않는다",
     "긍정·부정·제작자 귀속·조건·이중부정 표현도 모두 금지",
     "영상 하나를 올리는 즉시",
+    "CTA 반영은 영상 제작자의 시연 사례입니다.",
+    "결과는 보장되지 않습니다.",
     "첫째부터 다섯째의 제목과 핵심 행동",
     "원본과 일대일로 대응할 수 없으면",
     "첫째부터 다섯째까지만",
@@ -337,6 +349,10 @@ SHORTS_REPURPOSE_BOUNDARY_SENTENCES = (
     "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
     "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
 )
+SHORTS_CTA_BOUNDARY_SENTENCES = (
+    "CTA 반영은 영상 제작자의 시연 사례입니다.",
+    "결과는 보장되지 않습니다.",
+)
 SHORTS_DISTRIBUTION_PREDICATE = (
     r"(?:게시(?!물)|배포|(?<!다운)업로드|유포|발행(?!물)|"
     r"올리|올립|내보내|내보낼|전송|공유|송출)"
@@ -385,6 +401,31 @@ def _is_platform_distribution_sentence(sentence: str) -> bool:
     return bool(platform_marker)
 
 
+def _is_cta_or_action_instruction_sentence(sentence: str) -> bool:
+    """Identify source CTA/action instructions without matching ordinary prompts."""
+
+    if re.search(r"(?:CTA|콜\s*투\s*액션|행동\s*(?:유도|지침))", sentence, re.IGNORECASE):
+        return True
+    if re.search(
+        r"(?:웹사이트|사이트|링크|주소|혜택|구독|프로필|안내\s*문구)"
+        r"[^,;.!?\n]{0,80}(?:마지막|끝|자막|음성|멘트)"
+        r"[^,;.!?\n]{0,64}(?:반영|삽입|추가|포함|들어가)",
+        sentence,
+        re.IGNORECASE,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"(?:프롬프트|입력란|지시)[^,;.!?\n]{0,64}"
+            r"(?:사이트|링크|주소|혜택|구독|프로필|안내\s*문구|멘트)|"
+            r"(?:사이트|링크|주소|혜택|구독|프로필|안내\s*문구|멘트)"
+            r"[^,;.!?\n]{0,64}(?:프롬프트|입력|지시|요청)",
+            sentence,
+            re.IGNORECASE,
+        )
+    )
+
+
 def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
     """Find source-independent claim shapes; source fact gates remain additive."""
     text = normalize_notebook_instruction(value)
@@ -404,6 +445,45 @@ def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
         }
         if values:
             hits[name] = sorted(values)
+
+    cta_boundaries = set(SHORTS_CTA_BOUNDARY_SENTENCES)
+    cta_context = any(_is_cta_or_action_instruction_sentence(sentence) for sentence in sentences)
+    if cta_context:
+        missing_cta = [boundary for boundary in cta_boundaries if boundary not in sentences]
+        if missing_cta:
+            hits["cta_boundary_missing"] = sorted(missing_cta)
+        duplicate_cta = {
+            boundary: sentences.count(boundary)
+            for boundary in cta_boundaries
+            if sentences.count(boundary) > 1
+        }
+        if duplicate_cta:
+            hits["cta_boundary_cardinality"] = [
+                f"{boundary} count={count}"
+                for boundary, count in sorted(duplicate_cta.items())
+            ]
+        guaranteed_cta = [
+            sentence
+            for sentence in sentences
+            if sentence not in cta_boundaries
+            and (
+                re.search(r"(?:CTA|콜\s*투\s*액션|행동\s*유도)", sentence, re.IGNORECASE)
+                or re.search(
+                    r"(?:웹사이트|사이트|링크|주소|혜택|구독|프로필|안내\s*문구)"
+                    r"[^,;.!?\n]{0,80}(?:마지막|끝|자막|음성|멘트)",
+                    sentence,
+                    re.IGNORECASE,
+                )
+            )
+            and re.search(
+                r"(?:반영|삽입|추가|포함)(?:됐|되었|됩|돼|되며|되어|되는|됩니다|해\s*줍)|"
+                r"(?:들어갑|나옵)",
+                sentence,
+                re.IGNORECASE,
+            )
+        ]
+        if guaranteed_cta:
+            hits["guaranteed_cta"] = sorted(set(guaranteed_cta))
 
     exact_boundaries = set(SHORTS_REPURPOSE_BOUNDARY_SENTENCES)
     repurpose_mentioned = any(
@@ -533,13 +613,13 @@ def validate_shorts_notebook_instruction(
     missing = [marker for marker in SHORTS_NOTEBOOK_REQUIRED_MARKERS if marker not in normalized]
     if missing:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침에 v14 사전 금지 계약이 없습니다. "
+            "Shorts NotebookLM 맞춤 지침에 v15 사전 금지 계약이 없습니다. "
             "소스 추가 전 중단합니다."
         )
     actual = notebook_instruction_sha256(value)
     if actual != SHORTS_NOTEBOOK_INSTRUCTION_SHA256:
         raise ProductionPolicyError(
-            "Shorts NotebookLM 맞춤 지침이 정본 v14.0과 다릅니다. 소스 추가 전 중단합니다."
+            "Shorts NotebookLM 맞춤 지침이 정본 v15.0과 다릅니다. 소스 추가 전 중단합니다."
         )
     if goal != "맞춤":
         raise ProductionPolicyError("Shorts NotebookLM 응답 목표가 '맞춤'이 아닙니다.")

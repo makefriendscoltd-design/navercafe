@@ -31,6 +31,7 @@ REQUIRED_TRACKED_FILES = (
     "test_fixtures/notebooklm_shorts/v12_bad_dcl.md",
     "test_fixtures/notebooklm_shorts/v13_compliant.md",
     "test_fixtures/notebooklm_shorts/v13_failed_dcl_provider.md",
+    "test_fixtures/notebooklm_shorts/v14_failed_dcl_adopted.md",
     "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py",
     "outputs/uX6zwf4b8sM-20260829/shorts/renderer/aimax_video_pipeline.py",
     "outputs/uX6zwf4b8sM-20260829/shorts/renderer/assets/bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3",
@@ -148,7 +149,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     )
     checks["shorts_notebook_instruction_contract"] = (
         policy.SHORTS_NOTEBOOK_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
-        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v14.0"
+        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v15.0"
         and policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION)
         == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
         and "### 헤드카피라이팅" in policy.SHORTS_NOTEBOOK_INSTRUCTION
