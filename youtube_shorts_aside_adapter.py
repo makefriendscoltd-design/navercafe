@@ -37,7 +37,8 @@ PROVIDER_LOCK = Path("/tmp/aimax-aside-u0-provider.lock")
 TRACKER = Path("/Users/apple/orca/projects/aimax-crm-observability/bin/aimax-crm-track")
 CRM_DB = Path("/Users/apple/Library/Application Support/AIMAX CRM Observability/events.sqlite3")
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-INVENTORY_DIRECT_CHUNK_SIZE = 12
+INVENTORY_DIRECT_CHUNK_SIZE = 48
+INVENTORY_DIRECT_CONCURRENCY = 8
 INVENTORY_CHUNK_MAX_AGE = timedelta(minutes=5)
 INVENTORY_CHUNK_FUTURE_SKEW = timedelta(minutes=1)
 
@@ -168,8 +169,8 @@ def _timezone_contract_present(value: object) -> bool:
     )
 
 
-INVENTORY_JS = r"""
-let list=null,edit=null;
+INVENTORY_SEED_JS = r"""
+let list=null;
 const pages=[],all=[],seen=new Set(),states=['public','scheduled','private','draft'];
 const counts={public:0,scheduled:0,private:0,draft:0};
 const visible=el=>{if(!el)return false;const r=el.getBoundingClientRect(),s=getComputedStyle(el);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
@@ -187,23 +188,33 @@ try{
   await next.click();let changed=false,end=Date.now()+15000;while(Date.now()<end&&!changed){await sleep(300);const after=list.locator('ytcp-video-row');if(await after.count()){const candidate=await rowOf(after.nth(0),pageIndex+1,0);changed=candidate.identity!==first.identity;}}if(!changed)throw new Error(`pagination-did-not-advance:${pageIndex}`);
  }
  if(!pages.length||pages.at(-1).next_disabled!==true)throw new Error('pagination-limit-before-next-disabled');await list.close();list=null;
- const chunkStart=Number(payload.chunk_start),chunkEnd=Number(payload.chunk_end),chunkIndex=Number(payload.chunk_index),chunkTotal=Number(payload.chunk_total),expectedIdentities=payload.expected_identities;
- if(!Number.isInteger(chunkStart)||!Number.isInteger(chunkEnd)||chunkStart<0||chunkEnd<chunkStart||chunkEnd>all.length)throw new Error('inventory-chunk-range-invalid');
- if(!Number.isInteger(chunkIndex)||!Number.isInteger(chunkTotal)||chunkIndex<0||chunkTotal<1||chunkIndex>=chunkTotal)throw new Error('inventory-chunk-index-invalid');
- if(!Array.isArray(expectedIdentities))throw new Error('inventory-chunk-identities-missing');
- const directChunk=all.slice(chunkStart,chunkEnd),directIdentities=directChunk.map(row=>row.identity);
- if(JSON.stringify(directIdentities)!==JSON.stringify(expectedIdentities))throw new Error('inventory-chunk-identities-changed');
- const uploadFlowIds=new Set();for(const tab of await listBrowserTabs()){if(!String(tab.url||'').startsWith('https://studio.youtube.com/'))continue;let flow=null;try{flow=await attachBrowserTab(tab.targetId);const dialogs=flow.locator('ytcp-uploads-dialog');if(await dialogs.count()!==1||!await dialogs.isVisible())continue;const titles=dialogs.locator('#title-textarea #textbox');if(await titles.count()!==1||!await titles.isVisible())continue;const flowTitle=((await titles.innerText())||'').trim();if(![payload.sentinel,payload.title].includes(flowTitle))continue;const body=(await dialogs.innerText())||'',values=await dialogs.locator('a[href],input').evaluateAll(nodes=>nodes.map(x=>x.href||x.value||'')),id=([...values,body].join('\n').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/video\/)([A-Za-z0-9_-]{11})/)||[])[1]||'';const badges=dialogs.locator('#step-badge-3');if(id&&await badges.count()===1&&await badges.isVisible())uploadFlowIds.add(id);}catch(_){}}
- const rows=[];
- for(const seed of directChunk){
-  edit=await openTab(`https://studio.youtube.com/video/${seed.provider_id}/edit?strict_metadata=${Date.now()}`);await context(edit,'edit');const route=(edit.url().match(/\/video\/([A-Za-z0-9_-]{11})\/edit/)||[])[1]||'';if(route!==seed.provider_id)throw new Error(`direct-route-mismatch:${seed.provider_id}`);
-  const titleBox=await one(edit,'#title-textarea #textbox','metadata-title'),descriptionBox=await one(edit,'#description-textarea #textbox','metadata-description'),title=((await titleBox.innerText())||'').trim(),description=((await descriptionBox.innerText())||'').trim();
-  const noKidsSet=edit.locator('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"],[role="radio"][name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]'),visibilitySet=edit.locator('ytcp-video-metadata-visibility #container'),visibilityCount=await visibilitySet.count();if(visibilityCount>1)throw new Error(`visibility-control-cardinality:${seed.provider_id}:${visibilityCount}`);let scheduled_at='',scheduleDate='',scheduleTime='',timezoneEvidence='';if(seed.status==='scheduled'){if(visibilityCount!==1||!await visibilitySet.isVisible())throw new Error(`schedule-visibility-missing:${seed.provider_id}`);await visibilitySet.click();await sleep(450);const date=await one(edit,'#datepicker-trigger','schedule-date'),timeInput=await one(edit,'#time-of-day-container input','schedule-time'),tz=await one(edit,'#timezone-select-button,#timezone-select-trigger','schedule-timezone');scheduleDate=((await date.innerText())||'').replace(/\s+/g,' ').trim();scheduleTime=await timeInput.inputValue();timezoneEvidence=((await tz.innerText())||'').replace(/\s+/g,' ').trim();if(!timezoneEvidence)throw new Error(`schedule-timezone-empty:${seed.provider_id}`);}
-  const noKidsCount=await noKidsSet.count();if(noKidsCount>1)throw new Error(`no-kids-cardinality:${seed.provider_id}:${noKidsCount}`);rows.push({...seed,title,description,urls:[...new Set([...seed.urls,...((description.match(/https?:\/\/[^\s]+/g))||[])])],direct_metadata_inspected:true,visibility_control_present:visibilityCount===1||uploadFlowIds.has(seed.provider_id),upload_flow_present:uploadFlowIds.has(seed.provider_id),scheduled_at,schedule_date:scheduleDate,schedule_time:scheduleTime,timezone_evidence:timezoneEvidence,no_kids:noKidsCount===1&&(await noKidsSet.getAttribute('aria-checked'))==='true',published_at:seed.status==='public'?seed.publishedRaw:''});await edit.close();edit=null;
- }
- emit({status:'pass',account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,chunk_index:chunkIndex,chunk_total:chunkTotal,chunk_start:chunkStart,chunk_end:chunkEnd,captured_at:new Date().toISOString(),pagination_complete:true,terminal_reason:'next_disabled',pages_scanned:pages.length,pages,scanned_states:states,status_counts:counts,seed_rows:all,rows});
-}catch(error){emit({status:'blocked',account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,chunk_index:payload.chunk_index,chunk_total:payload.chunk_total,chunk_start:payload.chunk_start,chunk_end:payload.chunk_end,captured_at:new Date().toISOString(),pagination_complete:false,terminal_reason:'error',pages_scanned:pages.length,pages,scanned_states:states,status_counts:counts,seed_rows:all,rows:[],error:String(error?.message||error)});}finally{try{if(edit)await edit.close();}catch(_){}try{if(list)await list.close();}catch(_){}}
+ emit({status:'pass',inventory_mode:'seed',seed_phase:payload.seed_phase,account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,captured_at:new Date().toISOString(),pagination_complete:true,terminal_reason:'next_disabled',pages_scanned:pages.length,pages,scanned_states:states,status_counts:counts,seed_rows:all});
+}catch(error){emit({status:'blocked',inventory_mode:'seed',seed_phase:payload.seed_phase,account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,captured_at:new Date().toISOString(),pagination_complete:false,terminal_reason:'error',pages_scanned:pages.length,pages,scanned_states:states,status_counts:counts,seed_rows:all,error:String(error?.message||error)});}finally{try{if(list)await list.close();}catch(_){}}
 """
+
+
+INVENTORY_DIRECT_JS = r"""
+const states=['public','scheduled','private','draft'];
+const one=async(root,selector,label,{mustBeVisible=true}={})=>{const loc=root.locator(selector);const count=await loc.count();if(count!==1)throw new Error(`${label}-cardinality:${count}`);if(mustBeVisible&&!await loc.isVisible())throw new Error(`${label}-not-visible`);return loc;};
+const context=async p=>{const end=Date.now()+30000;let state={};while(Date.now()<end){state=await p.evaluate(channel=>{const vis=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';},host=location.hostname,path=location.pathname+location.search,signinRedirect=host==='accounts.google.com'||(host==='studio.youtube.com'&&/(?:^|\/)(?:signin|login)(?:\/|$)/i.test(path)),lines=(document.body?.innerText||'').split('\n').map(x=>x.trim()),avatar=[...document.querySelectorAll('#avatar-btn,button[aria-label*="계정"],button[aria-label*="Account"]')].filter(vis),title=[...document.querySelectorAll('#title-textarea #textbox')].filter(vis),description=[...document.querySelectorAll('#description-textarea #textbox')].filter(vis);return{host,path,signinRedirect,channelExact:lines.includes(channel),avatarCount:avatar.length,titleCount:title.length,descriptionCount:description.length,ready:host==='studio.youtube.com'&&!signinRedirect&&lines.includes(channel)&&avatar.length===1&&title.length===1&&description.length===1};},payload.channel);if(state.ready||state.signinRedirect)break;await sleep(300);}if(state.signinRedirect)throw new Error(`login-required:${state.host}${state.path}`);if(!state.ready)throw new Error(`studio-context-unverified:edit:${JSON.stringify(state)}`);return state;};
+try{
+ const chunkStart=Number(payload.chunk_start),chunkEnd=Number(payload.chunk_end),chunkIndex=Number(payload.chunk_index),chunkTotal=Number(payload.chunk_total),expectedIdentities=payload.expected_identities,directChunk=payload.expected_rows,concurrency=Number(payload.concurrency);
+ if(!Number.isInteger(chunkStart)||!Number.isInteger(chunkEnd)||chunkStart<0||chunkEnd<=chunkStart)throw new Error('inventory-chunk-range-invalid');
+ if(!Number.isInteger(chunkIndex)||!Number.isInteger(chunkTotal)||chunkIndex<0||chunkTotal<1||chunkIndex>=chunkTotal)throw new Error('inventory-chunk-index-invalid');
+ if(!Number.isInteger(concurrency)||concurrency<1||concurrency>16)throw new Error('inventory-chunk-concurrency-invalid');
+ if(!Array.isArray(expectedIdentities)||!Array.isArray(directChunk)||directChunk.length!==chunkEnd-chunkStart)throw new Error('inventory-chunk-input-missing');
+ const directIdentities=directChunk.map(row=>row&&row.identity);if(JSON.stringify(directIdentities)!==JSON.stringify(expectedIdentities))throw new Error('inventory-chunk-identities-changed');
+ if(new Set(directIdentities).size!==directIdentities.length||directChunk.some(row=>!row||row.identity!==row.provider_id||!states.includes(row.status)||!Number.isInteger(row.page)||row.page<1||typeof row.title!=='string'||typeof row.publishedRaw!=='string'||!Array.isArray(row.urls)||row.urls.some(url=>typeof url!=='string')))throw new Error('inventory-chunk-seeds-invalid');
+ const uploadFlowIds=new Set();for(const tab of await listBrowserTabs()){if(!String(tab.url||'').startsWith('https://studio.youtube.com/'))continue;let flow=null;try{flow=await attachBrowserTab(tab.targetId);const dialogs=flow.locator('ytcp-uploads-dialog');if(await dialogs.count()!==1||!await dialogs.isVisible())continue;const titles=dialogs.locator('#title-textarea #textbox');if(await titles.count()!==1||!await titles.isVisible())continue;const flowTitle=((await titles.innerText())||'').trim();if(![payload.sentinel,payload.title].includes(flowTitle))continue;const body=(await dialogs.innerText())||'',values=await dialogs.locator('a[href],input').evaluateAll(nodes=>nodes.map(x=>x.href||x.value||'')),id=([...values,body].join('\n').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/video\/)([A-Za-z0-9_-]{11})/)||[])[1]||'';const badges=dialogs.locator('#step-badge-3');if(id&&await badges.count()===1&&await badges.isVisible())uploadFlowIds.add(id);}catch(_){}}
+ const inspect=async seed=>{let edit=null;try{edit=await openTab(`https://studio.youtube.com/video/${seed.provider_id}/edit?strict_metadata=${Date.now()}`);await context(edit);const route=(edit.url().match(/\/video\/([A-Za-z0-9_-]{11})\/edit/)||[])[1]||'';if(route!==seed.provider_id)throw new Error(`direct-route-mismatch:${seed.provider_id}`);const titleBox=await one(edit,'#title-textarea #textbox','metadata-title'),descriptionBox=await one(edit,'#description-textarea #textbox','metadata-description'),title=((await titleBox.innerText())||'').trim(),description=((await descriptionBox.innerText())||'').trim();if(title!==seed.title)throw new Error(`metadata-title-drift:${seed.provider_id}`);const noKidsSet=edit.locator('tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"],[role="radio"][name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]'),visibilitySet=edit.locator('ytcp-video-metadata-visibility #container'),visibilityCount=await visibilitySet.count();if(visibilityCount>1)throw new Error(`visibility-control-cardinality:${seed.provider_id}:${visibilityCount}`);let scheduled_at='',scheduleDate='',scheduleTime='',timezoneEvidence='';if(seed.status==='scheduled'){if(visibilityCount!==1||!await visibilitySet.isVisible())throw new Error(`schedule-visibility-missing:${seed.provider_id}`);await visibilitySet.click();await sleep(450);const date=await one(edit,'#datepicker-trigger','schedule-date'),timeInput=await one(edit,'#time-of-day-container input','schedule-time'),tz=await one(edit,'#timezone-select-button,#timezone-select-trigger','schedule-timezone');scheduleDate=((await date.innerText())||'').replace(/\s+/g,' ').trim();scheduleTime=await timeInput.inputValue();timezoneEvidence=((await tz.innerText())||'').replace(/\s+/g,' ').trim();if(!timezoneEvidence)throw new Error(`schedule-timezone-empty:${seed.provider_id}`);}const noKidsCount=await noKidsSet.count();if(noKidsCount>1)throw new Error(`no-kids-cardinality:${seed.provider_id}:${noKidsCount}`);const seedUrls=[...seed.urls];return {...seed,list_title:seed.title,seed_urls:seedUrls,title,description,urls:[...new Set([...seedUrls,...((description.match(/https?:\/\/[^\s]+/g))||[])])],direct_metadata_inspected:true,visibility_control_present:visibilityCount===1||uploadFlowIds.has(seed.provider_id),upload_flow_present:uploadFlowIds.has(seed.provider_id),scheduled_at,schedule_date:scheduleDate,schedule_time:scheduleTime,timezone_evidence:timezoneEvidence,no_kids:noKidsCount===1&&(await noKidsSet.getAttribute('aria-checked'))==='true',published_at:seed.status==='public'?seed.publishedRaw:''};}finally{try{if(edit)await edit.close();}catch(_){}}};
+ const rows=[];for(let offset=0;offset<directChunk.length;offset+=concurrency){const settled=await Promise.allSettled(directChunk.slice(offset,offset+concurrency).map(inspect)),failed=settled.find(item=>item.status==='rejected');if(failed)throw failed.reason;rows.push(...settled.map(item=>item.value));}
+ emit({status:'pass',inventory_mode:'direct',account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,chunk_index:chunkIndex,chunk_total:chunkTotal,chunk_start:chunkStart,chunk_end:chunkEnd,expected_identities:expectedIdentities,captured_at:new Date().toISOString(),rows});
+}catch(error){emit({status:'blocked',inventory_mode:'direct',account:'u0',headless:true,channel:payload.channel,scan_token:payload.scan_token,chunk_nonce:payload.chunk_nonce,chunk_index:payload.chunk_index,chunk_total:payload.chunk_total,chunk_start:payload.chunk_start,chunk_end:payload.chunk_end,expected_identities:payload.expected_identities,captured_at:new Date().toISOString(),rows:[],error:String(error?.message||error)});}
+"""
+
+
+# Backward-compatible name for code that inspects the exhaustive list program.
+INVENTORY_JS = INVENTORY_SEED_JS
 
 
 ATTACH_JS = r"""
@@ -269,35 +280,54 @@ class AsideHeadlessU0Provider:
         # into one fail-closed logical scan with this token.
         scan_token = uuid.uuid4().hex
 
-        def call_chunk(
-            *,
-            start: int,
-            end: int,
-            index: int,
-            total: int,
-            expected_identities: list[str],
-        ) -> tuple[
-            Mapping[str, Any],
-            list[Mapping[str, Any]],
-            list[Mapping[str, Any]],
-            list[Mapping[str, Any]],
-            datetime,
-        ]:
+        def seed_binding(value: Mapping[str, Any]) -> dict[str, Any]:
+            if not isinstance(value, Mapping):
+                raise AdapterEvidenceError("inventory seed row is not an object")
+            identity = value.get("identity")
+            provider_id = value.get("provider_id")
+            status = value.get("status")
+            page = value.get("page")
+            title = value.get("title")
+            published_raw = value.get("publishedRaw")
+            urls = value.get("urls")
+            if (
+                not isinstance(identity, str)
+                or not VIDEO_ID_RE.fullmatch(identity)
+                or provider_id != identity
+            ):
+                raise AdapterEvidenceError("inventory seed identity binding is invalid")
+            if status not in publisher.STATES:
+                raise AdapterEvidenceError("inventory seed state is invalid")
+            if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+                raise AdapterEvidenceError("inventory seed page is invalid")
+            if not isinstance(title, str) or not isinstance(published_raw, str):
+                raise AdapterEvidenceError("inventory seed text binding is invalid")
+            if not isinstance(urls, list) or any(
+                not isinstance(url, str) for url in urls
+            ):
+                raise AdapterEvidenceError("inventory seed URLs are invalid")
+            return {
+                "identity": identity,
+                "provider_id": provider_id,
+                "status": status,
+                "page": page,
+                "list_title": title,
+                "publishedRaw": published_raw,
+                "seed_urls": list(urls),
+            }
+
+        def call_seed(
+            *, seed_phase: str
+        ) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]], datetime]:
             nonce = uuid.uuid4().hex
             raw = self._run(
-                INVENTORY_JS,
+                INVENTORY_SEED_JS,
                 {
                     "list_url": STUDIO_SHORTS_URL,
                     "channel": manifest.expected_channel,
-                    "sentinel": manifest.draft_sentinel,
-                    "title": manifest.title,
                     "scan_token": scan_token,
                     "chunk_nonce": nonce,
-                    "chunk_start": start,
-                    "chunk_end": end,
-                    "chunk_index": index,
-                    "chunk_total": total,
-                    "expected_identities": expected_identities,
+                    "seed_phase": seed_phase,
                 },
                 cwd=manifest.video.parent,
                 # Stay below the observed daemon disconnect window.  A timeout
@@ -306,11 +336,13 @@ class AsideHeadlessU0Provider:
             )
             if (
                 raw.get("status") != "pass"
+                or raw.get("inventory_mode") != "seed"
+                or raw.get("seed_phase") != seed_phase
                 or raw.get("pagination_complete") is not True
                 or raw.get("terminal_reason") != "next_disabled"
             ):
                 raise AdapterEvidenceError(
-                    "exhaustive Studio inventory chunk failed: "
+                    "exhaustive Studio inventory seed failed: "
                     f"{raw.get('error') or raw.get('status')}"
                 )
             binding = (
@@ -319,37 +351,31 @@ class AsideHeadlessU0Provider:
                 raw.get("channel") == manifest.expected_channel,
                 raw.get("scan_token") == scan_token,
                 raw.get("chunk_nonce") == nonce,
-                raw.get("chunk_index") == index,
-                raw.get("chunk_total") == total,
-                raw.get("chunk_start") == start,
-                raw.get("chunk_end") == end,
             )
             if not all(binding):
-                raise AdapterEvidenceError("inventory chunk binding differs or is stale")
+                raise AdapterEvidenceError("inventory seed binding differs or is stale")
             try:
                 captured = datetime.fromisoformat(
                     str(raw.get("captured_at") or "").replace("Z", "+00:00")
                 )
             except ValueError as exc:
-                raise AdapterEvidenceError("inventory chunk timestamp is invalid") from exc
+                raise AdapterEvidenceError("inventory seed timestamp is invalid") from exc
             now = self._clock()
             if captured.tzinfo is None or now.tzinfo is None:
-                raise AdapterEvidenceError("inventory chunk timestamp must be timezone-aware")
+                raise AdapterEvidenceError("inventory seed timestamp must be timezone-aware")
             age = now.astimezone(KST) - captured.astimezone(KST)
-            if age > INVENTORY_CHUNK_MAX_AGE or age < -INVENTORY_CHUNK_FUTURE_SKEW:
-                raise AdapterEvidenceError("inventory chunk evidence is stale")
+            if age >= INVENTORY_CHUNK_MAX_AGE or age < -INVENTORY_CHUNK_FUTURE_SKEW:
+                raise AdapterEvidenceError("inventory seed evidence is stale")
 
             pages = raw.get("pages")
             seeds = raw.get("seed_rows")
-            rows = raw.get("rows")
             if (
                 not isinstance(pages, list)
                 or not pages
                 or not isinstance(seeds, list)
                 or not seeds
-                or not isinstance(rows, list)
             ):
-                raise AdapterEvidenceError("inventory chunk pages or rows are missing")
+                raise AdapterEvidenceError("inventory seed pages or rows are missing")
             if int(raw.get("pages_scanned") or 0) != len(pages):
                 raise AdapterEvidenceError("inventory page cardinality differs")
             if pages[-1].get("next_disabled") is not True:
@@ -359,14 +385,14 @@ class AsideHeadlessU0Provider:
             page_numbers = [int(item.get("page") or 0) for item in pages]
             if page_numbers != list(range(1, len(pages) + 1)):
                 raise AdapterEvidenceError("inventory page sequence is not exhaustive")
-            seed_ids = [str(item.get("identity") or "") for item in seeds]
-            if (
-                any(not VIDEO_ID_RE.fullmatch(value) for value in seed_ids)
-                or len(set(seed_ids)) != len(seed_ids)
-            ):
+            seed_bindings = [seed_binding(item) for item in seeds]
+            seed_ids = [item["identity"] for item in seed_bindings]
+            if len(set(seed_ids)) != len(seed_ids):
                 raise AdapterEvidenceError("inventory seed identities are invalid or duplicated")
+            if any(item["page"] > len(pages) for item in seed_bindings):
+                raise AdapterEvidenceError("inventory seed page is outside the exhaustive range")
             calculated_seed_counts = {
-                state: sum(str(item.get("status") or "") == state for item in seeds)
+                state: sum(item["status"] == state for item in seed_bindings)
                 for state in publisher.STATES
             }
             supplied = raw.get("status_counts") or {}
@@ -379,12 +405,147 @@ class AsideHeadlessU0Provider:
                 )
             if set(raw.get("scanned_states") or []) != publisher.STATES:
                 raise AdapterEvidenceError("inventory did not scan all four provider states")
-            if seed_ids[start:end] != expected_identities:
-                raise AdapterEvidenceError("inventory chunk seed slice changed")
-            row_ids = [str(item.get("identity") or "") for item in rows]
+            for page_number, page in enumerate(pages, 1):
+                page_seeds = [
+                    item for item in seed_bindings if item["page"] == page_number
+                ]
+                if int(page.get("row_count") or -1) != len(page_seeds):
+                    raise AdapterEvidenceError("inventory page row count differs")
+                page_counts = page.get("state_counts") or {}
+                if any(
+                    int(page_counts.get(state, -1))
+                    != sum(item["status"] == state for item in page_seeds)
+                    for state in publisher.STATES
+                ):
+                    raise AdapterEvidenceError("inventory page state counts differ")
+            return pages, seeds, captured.astimezone(KST)
+
+        def call_direct(
+            *,
+            start: int,
+            end: int,
+            index: int,
+            total: int,
+            expected_seeds: list[Mapping[str, Any]],
+        ) -> tuple[list[Mapping[str, Any]], datetime]:
+            nonce = uuid.uuid4().hex
+            expected_identities = [
+                str(value.get("identity") or "") for value in expected_seeds
+            ]
+            raw = self._run(
+                INVENTORY_DIRECT_JS,
+                {
+                    "channel": manifest.expected_channel,
+                    "sentinel": manifest.draft_sentinel,
+                    "title": manifest.title,
+                    "scan_token": scan_token,
+                    "chunk_nonce": nonce,
+                    "chunk_start": start,
+                    "chunk_end": end,
+                    "chunk_index": index,
+                    "chunk_total": total,
+                    "expected_identities": expected_identities,
+                    "expected_rows": [dict(value) for value in expected_seeds],
+                    "concurrency": INVENTORY_DIRECT_CONCURRENCY,
+                },
+                cwd=manifest.video.parent,
+                timeout=100,
+            )
+            binding = (
+                raw.get("status") == "pass",
+                raw.get("inventory_mode") == "direct",
+                raw.get("account") == ACCOUNT,
+                raw.get("headless") is True,
+                raw.get("channel") == manifest.expected_channel,
+                raw.get("scan_token") == scan_token,
+                raw.get("chunk_nonce") == nonce,
+                raw.get("chunk_index") == index,
+                raw.get("chunk_total") == total,
+                raw.get("chunk_start") == start,
+                raw.get("chunk_end") == end,
+                raw.get("expected_identities") == expected_identities,
+            )
+            if not all(binding):
+                raise AdapterEvidenceError(
+                    "inventory direct chunk failed, differs, or is stale: "
+                    f"{raw.get('error') or raw.get('status')}"
+                )
+            try:
+                captured = datetime.fromisoformat(
+                    str(raw.get("captured_at") or "").replace("Z", "+00:00")
+                )
+            except ValueError as exc:
+                raise AdapterEvidenceError("inventory direct timestamp is invalid") from exc
+            now = self._clock()
+            if captured.tzinfo is None or now.tzinfo is None:
+                raise AdapterEvidenceError(
+                    "inventory direct timestamp must be timezone-aware"
+                )
+            age = now.astimezone(KST) - captured.astimezone(KST)
+            if age >= INVENTORY_CHUNK_MAX_AGE or age < -INVENTORY_CHUNK_FUTURE_SKEW:
+                raise AdapterEvidenceError("inventory direct evidence is stale")
+            rows = raw.get("rows")
+            if not isinstance(rows, list):
+                raise AdapterEvidenceError("inventory direct chunk rows are missing")
+            row_ids = [
+                str(item.get("identity") or "")
+                for item in rows
+                if isinstance(item, Mapping)
+            ]
             if row_ids != expected_identities or len(rows) != end - start:
                 raise AdapterEvidenceError("inventory direct chunk is missing or reordered")
-            return raw, pages, seeds, rows, captured.astimezone(KST)
+            for row, expected_seed in zip(rows, expected_seeds, strict=True):
+                if not isinstance(row, Mapping):
+                    raise AdapterEvidenceError("inventory direct row is not an object")
+                expected = seed_binding(expected_seed)
+                actual = {
+                    "identity": row.get("identity"),
+                    "provider_id": row.get("provider_id"),
+                    "status": row.get("status"),
+                    "page": row.get("page"),
+                    "list_title": row.get("list_title"),
+                    "publishedRaw": row.get("publishedRaw"),
+                    "seed_urls": row.get("seed_urls"),
+                }
+                if actual != expected:
+                    raise AdapterEvidenceError(
+                        "inventory direct row differs from its exact seed binding"
+                    )
+                if row.get("title") != expected["list_title"]:
+                    raise AdapterEvidenceError(
+                        "inventory direct metadata title differs from the list seed"
+                    )
+                direct_urls = row.get("urls")
+                if not isinstance(direct_urls, list) or any(
+                    not isinstance(url, str) for url in direct_urls
+                ):
+                    raise AdapterEvidenceError("inventory direct URLs are invalid")
+                relevant_seed_urls = list(dict.fromkeys(expected["seed_urls"]))
+                description = row.get("description")
+                if not isinstance(description, str):
+                    raise AdapterEvidenceError(
+                        "inventory direct description is invalid"
+                    )
+                expected_direct_urls = list(
+                    dict.fromkeys(
+                        [
+                            *relevant_seed_urls,
+                            *re.findall(r"https?://[^\s]+", description),
+                        ]
+                    )
+                )
+                if direct_urls != expected_direct_urls:
+                    raise AdapterEvidenceError(
+                        "inventory direct URLs differ from the list seed"
+                    )
+                expected_published = (
+                    expected["publishedRaw"] if expected["status"] == "public" else ""
+                )
+                if row.get("published_at") != expected_published:
+                    raise AdapterEvidenceError(
+                        "inventory direct published evidence differs from the list seed"
+                    )
+            return rows, captured.astimezone(KST)
 
         def stable_snapshot(
             pages: list[Mapping[str, Any]], seeds: list[Mapping[str, Any]]
@@ -400,27 +561,28 @@ class AsideHeadlessU0Provider:
                         "title": str(value.get("title") or ""),
                         "page": int(value.get("page") or 0),
                         "published_raw": str(value.get("publishedRaw") or ""),
+                        "urls": list(value.get("urls") or []),
                         # Preserve duplicate-relevant plain-text URLs while
                         # excluding volatile views/comments metrics.
-                        "list_urls": sorted(set(re.findall(r"https?://[^\s]+", text))),
+                        "list_urls": re.findall(r"https?://[^\s]+", text),
                     }
                 )
             value = {"pages": pages, "rows": stable_rows}
             return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-        _seed_raw, pages, seeds, empty_rows, captured = call_chunk(
-            start=0,
-            end=0,
-            index=0,
-            total=1,
-            expected_identities=[],
-        )
-        if empty_rows:
-            raise AdapterEvidenceError("inventory seed call unexpectedly inspected direct rows")
+        logical_started = self._clock()
+        if logical_started.tzinfo is None:
+            raise AdapterEvidenceError("inventory start timestamp must be timezone-aware")
+        logical_started = logical_started.astimezone(KST)
+        pages, seeds, captured = call_seed(seed_phase="initial")
+        if captured < logical_started:
+            raise AdapterEvidenceError("inventory initial seed predates the logical scan")
         baseline = stable_snapshot(pages, seeds)
         identities = [str(value.get("identity") or "") for value in seeds]
         if INVENTORY_DIRECT_CHUNK_SIZE < 1:
             raise AdapterEvidenceError("inventory direct chunk size must be positive")
+        if not 1 <= INVENTORY_DIRECT_CONCURRENCY <= 16:
+            raise AdapterEvidenceError("inventory direct concurrency is outside its safety bound")
         total = (len(identities) + INVENTORY_DIRECT_CHUNK_SIZE - 1) // INVENTORY_DIRECT_CHUNK_SIZE
         if total < 1:
             raise AdapterEvidenceError("inventory seed scan returned no rows")
@@ -431,28 +593,36 @@ class AsideHeadlessU0Provider:
         for index in range(total):
             start = index * INVENTORY_DIRECT_CHUNK_SIZE
             end = min(len(identities), start + INVENTORY_DIRECT_CHUNK_SIZE)
-            expected = identities[start:end]
-            _raw, current_pages, current_seeds, direct_rows, captured = call_chunk(
+            direct_rows, captured = call_direct(
                 start=start,
                 end=end,
                 index=index,
                 total=total,
-                expected_identities=expected,
+                expected_seeds=seeds[start:end],
             )
-            if stable_snapshot(current_pages, current_seeds) != baseline:
-                raise AdapterEvidenceError(
-                    "Studio inventory changed during direct metadata chunks"
-                )
             if captured < previous_captured:
                 raise AdapterEvidenceError(
                     "Studio inventory chunk timestamps are out of order"
                 )
-            if captured - first_captured > INVENTORY_CHUNK_MAX_AGE:
+            if captured - first_captured >= INVENTORY_CHUNK_MAX_AGE:
                 raise AdapterEvidenceError(
                     "Studio inventory logical scan exceeded its freshness window"
                 )
             previous_captured = captured
             rows.extend(direct_rows)
+
+        final_pages, final_seeds, final_captured = call_seed(seed_phase="final")
+        if stable_snapshot(final_pages, final_seeds) != baseline:
+            raise AdapterEvidenceError(
+                "Studio inventory changed between initial and final seed scans"
+            )
+        if final_captured < previous_captured:
+            raise AdapterEvidenceError("Studio inventory timestamps are out of order")
+        if final_captured - logical_started >= INVENTORY_CHUNK_MAX_AGE:
+            raise AdapterEvidenceError(
+                "Studio inventory logical scan exceeded its freshness window"
+            )
+        pages, seeds, captured = final_pages, final_seeds, final_captured
 
         normalized: list[dict[str, Any]] = []
         for value in rows:

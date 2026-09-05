@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -26,8 +27,6 @@ CURRENT_UI_FIXTURE = json.loads(
         encoding="utf-8"
     )
 )
-
-
 def make_manifest(root: Path) -> tuple[Path, publisher.PublishManifest]:
     video = root / "shorts" / "final.mp4"
     video.parent.mkdir(parents=True)
@@ -92,6 +91,9 @@ def inventory_fixture() -> dict[str, Any]:
         raw_row("privat00001", "private", page=2),
         raw_row("draft000001", "draft", page=2),
     ]
+    rows[0]["urls"] = [
+        "https://studio.youtube.com/video/public00001/edit"
+    ]
     return {
         "status": "pass",
         "account": "u0",
@@ -121,7 +123,7 @@ def inventory_fixture() -> dict[str, Any]:
 
 
 def chunked_inventory_response(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the adapter's exact seed/chunk envelope for the static UI rows."""
+    """Return exact seed or direct-chunk evidence for the static UI rows."""
 
     base = inventory_fixture()
     direct_rows = base.pop("rows")
@@ -139,19 +141,49 @@ def chunked_inventory_response(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "publishedRaw": row.get("published_at", ""),
             }
         )
-    start = int(payload["chunk_start"])
-    end = int(payload["chunk_end"])
-    return {
-        **base,
+    common = {
+        "status": "pass",
+        "account": "u0",
+        "headless": True,
+        "channel": adapter.CHANNEL_NAME,
         "scan_token": payload["scan_token"],
         "chunk_nonce": payload["chunk_nonce"],
+        "captured_at": NOW.isoformat(),
+    }
+    if "seed_phase" in payload:
+        return {
+            **base,
+            **common,
+            "inventory_mode": "seed",
+            "seed_phase": payload["seed_phase"],
+            "seed_rows": seeds,
+        }
+    start = int(payload["chunk_start"])
+    end = int(payload["chunk_end"])
+    by_identity = {row["identity"]: row for row in direct_rows}
+    rows = []
+    for seed in payload["expected_rows"]:
+        row = dict(by_identity[seed["identity"]])
+        seed_urls = list(seed["urls"])
+        row.update(
+            list_title=seed["title"],
+            publishedRaw=seed["publishedRaw"],
+            seed_urls=seed_urls,
+            urls=list(dict.fromkeys([*seed_urls, *row["urls"]])),
+            published_at=(
+                seed["publishedRaw"] if seed["status"] == "public" else ""
+            ),
+        )
+        rows.append(row)
+    return {
+        **common,
+        "inventory_mode": "direct",
         "chunk_index": payload["chunk_index"],
         "chunk_total": payload["chunk_total"],
         "chunk_start": start,
         "chunk_end": end,
-        "captured_at": NOW.isoformat(),
-        "seed_rows": seeds,
-        "rows": direct_rows[start:end],
+        "expected_identities": list(payload["expected_identities"]),
+        "rows": rows,
     }
 
 
@@ -201,16 +233,15 @@ def test_inventory_exhaustively_preserves_pagination_and_four_state_evidence(
     assert all(row["direct_metadata_inspected"] is True for row in evidence["rows"])
     assert evidence["rows"][0]["published_date"] == "2026-09-04"
     assert evidence["rows"][1]["scheduled_at"] == "2026-09-06T11:00:00+09:00"
-    assert len(aside.calls) == 2
-    seed_payload = aside.calls[0]["payload"]
-    assert seed_payload["list_url"] == adapter.STUDIO_SHORTS_URL
-    assert seed_payload["channel"] == adapter.CHANNEL_NAME
-    assert seed_payload["sentinel"] == manifest.draft_sentinel
-    assert seed_payload["title"] == manifest.title
-    assert seed_payload["chunk_start"] == seed_payload["chunk_end"] == 0
-    assert seed_payload["expected_identities"] == []
+    assert len(aside.calls) == 3
+    initial_seed = aside.calls[0]["payload"]
+    assert initial_seed["list_url"] == adapter.STUDIO_SHORTS_URL
+    assert initial_seed["channel"] == adapter.CHANNEL_NAME
+    assert initial_seed["seed_phase"] == "initial"
     chunk_payload = aside.calls[1]["payload"]
-    assert chunk_payload["scan_token"] == seed_payload["scan_token"]
+    assert chunk_payload["scan_token"] == initial_seed["scan_token"]
+    assert chunk_payload["sentinel"] == manifest.draft_sentinel
+    assert chunk_payload["title"] == manifest.title
     assert chunk_payload["chunk_start"] == 0
     assert chunk_payload["chunk_end"] == 4
     assert chunk_payload["expected_identities"] == [
@@ -219,8 +250,13 @@ def test_inventory_exhaustively_preserves_pagination_and_four_state_evidence(
         "privat00001",
         "draft000001",
     ]
+    assert chunk_payload["concurrency"] == adapter.INVENTORY_DIRECT_CONCURRENCY
+    assert aside.calls[2]["payload"]["seed_phase"] == "final"
+    assert aside.calls[2]["payload"]["scan_token"] == initial_seed["scan_token"]
     assert all(call["timeout"] == 100 for call in aside.calls)
     assert "#navigate-after" in aside.calls[0]["body"]
+    assert "#navigate-after" not in aside.calls[1]["body"]
+    assert "strict_inventory" not in aside.calls[1]["body"]
 
 
 def test_recorded_logged_in_signin_text_does_not_drive_the_login_gate() -> None:
@@ -232,7 +268,8 @@ def test_recorded_logged_in_signin_text_does_not_drive_the_login_gate() -> None:
     assert recorded["title_control_count"] == 1
     assert recorded["description_control_count"] == 1
     for body in (
-        adapter.INVENTORY_JS,
+        adapter.INVENTORY_SEED_JS,
+        adapter.INVENTORY_DIRECT_JS,
         adapter.ATTACH_JS,
         adapter.SCHEDULE_JS,
         adapter.DIRECT_JS,
@@ -258,7 +295,8 @@ def test_recorded_generic_timezone_label_preserves_exact_kst_date_and_time() -> 
 def test_provider_js_checks_raw_selector_cardinality_before_element_selection() -> None:
     row_contract = CURRENT_UI_FIXTURE["shorts_list_row"]
     for body in (
-        adapter.INVENTORY_JS,
+        adapter.INVENTORY_SEED_JS,
+        adapter.INVENTORY_DIRECT_JS,
         adapter.ATTACH_JS,
         adapter.SCHEDULE_JS,
         adapter.DIRECT_JS,
@@ -268,25 +306,31 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
         assert "cardinality" in body
     assert "upload_flow_preserved:true" in adapter.ATTACH_JS
     assert "listBrowserTabs()" in adapter.SCHEDULE_JS
-    assert "row-title-not-visible" in adapter.INVENTORY_JS
-    assert "row-date-cardinality" in adapter.INVENTORY_JS
-    assert "row-date-not-visible" in adapter.INVENTORY_JS
+    assert "row-title-not-visible" in adapter.INVENTORY_SEED_JS
+    assert "row-date-cardinality" in adapter.INVENTORY_SEED_JS
+    assert "row-date-not-visible" in adapter.INVENTORY_SEED_JS
     assert row_contract["rows_inspected"] == 30
     assert row_contract["old_date_count_values"] == [0]
     assert row_contract["date_count_values"] == [1]
     assert row_contract["date_visible_count_values"] == [1]
     assert row_contract["status_count_values"] == [1]
     assert row_contract["status_visible_count_values"] == [1]
-    assert f"row.locator('{row_contract['date_selector']}')" in adapter.INVENTORY_JS
-    assert f"row.locator('{row_contract['old_date_selector']}')" not in adapter.INVENTORY_JS
-    assert "titles.count()!==1||!await titles.isVisible()" in adapter.INVENTORY_JS
+    assert f"row.locator('{row_contract['date_selector']}')" in adapter.INVENTORY_SEED_JS
+    assert (
+        f"row.locator('{row_contract['old_date_selector']}')"
+        not in adapter.INVENTORY_SEED_JS
+    )
+    assert "titles.count()!==1||!await titles.isVisible()" in adapter.INVENTORY_DIRECT_JS
     assert "titles.count()!==1||!await titles.isVisible()" in adapter.SCHEDULE_JS
 
 
 @pytest.mark.parametrize(
     "name,body",
     [
-        pytest.param("inventory", adapter.INVENTORY_JS, id="inventory"),
+        pytest.param("inventory_seed", adapter.INVENTORY_SEED_JS, id="inventory-seed"),
+        pytest.param(
+            "inventory_direct", adapter.INVENTORY_DIRECT_JS, id="inventory-direct"
+        ),
         pytest.param("attach", adapter.ATTACH_JS, id="attach"),
         pytest.param("schedule", adapter.SCHEDULE_JS, id="schedule"),
         pytest.param("direct", adapter.DIRECT_JS, id="direct"),
@@ -325,7 +369,8 @@ def test_composed_provider_programs_remain_isolated_in_a_persistent_scope() -> N
         )
         for index, body in enumerate(
             (
-                adapter.INVENTORY_JS,
+                adapter.INVENTORY_SEED_JS,
+                adapter.INVENTORY_DIRECT_JS,
                 adapter.ATTACH_JS,
                 adapter.SCHEDULE_JS,
                 adapter.DIRECT_JS,
@@ -360,9 +405,11 @@ def test_inventory_fails_closed_on_incomplete_or_unbound_evidence(
     mutation: Any, tmp_path: Path
 ) -> None:
     _path, manifest = make_manifest(tmp_path)
+
     def result(payload: Mapping[str, Any]) -> dict[str, Any]:
         raw = chunked_inventory_response(payload)
-        mutation(raw)
+        if "seed_phase" in payload:
+            mutation(raw)
         return raw
 
     port = adapter.AsideHeadlessU0Provider(
@@ -383,16 +430,199 @@ def test_inventory_merges_multiple_direct_metadata_chunks_under_one_scan_token(
     evidence = port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
 
     assert len(evidence["rows"]) == 4
-    assert len(aside.calls) == 3  # seed, rows 0:2, rows 2:4
+    assert len(aside.calls) == 4  # initial seed, two direct chunks, final seed
     assert {call["payload"]["scan_token"] for call in aside.calls} == {
         evidence["scan_id"]
     }
-    assert len({call["payload"]["chunk_nonce"] for call in aside.calls}) == 3
-    assert [call["payload"]["expected_identities"] for call in aside.calls] == [
-        [],
+    assert len({call["payload"]["chunk_nonce"] for call in aside.calls}) == 4
+    direct_calls = [call for call in aside.calls if "chunk_start" in call["payload"]]
+    assert [call["payload"]["expected_identities"] for call in direct_calls] == [
         ["public00001", "sched000001"],
         ["privat00001", "draft000001"],
     ]
+
+
+@pytest.mark.parametrize("row_count", [174, 175])
+def test_measured_174_plus_row_plan_covers_every_row_without_repeating_pagination(
+    row_count: int,
+    tmp_path: Path,
+) -> None:
+    _path, manifest = make_manifest(tmp_path)
+    states = ("public", "scheduled", "private", "draft")
+    seeds = [
+        {
+            "identity": f"v{index:010d}",
+            "provider_id": f"v{index:010d}",
+            "status": states[index % len(states)],
+            "title": f"title-{index}",
+            "listText": f"title-{index}",
+            "urls": [],
+            "page": index // 30 + 1,
+            "publishedRaw": "2026-09-04" if index % len(states) == 0 else "",
+        }
+        for index in range(row_count)
+    ]
+    pages = []
+    for page_number in range(1, 7):
+        page_rows = [row for row in seeds if row["page"] == page_number]
+        pages.append(
+            {
+                "page": page_number,
+                "row_count": len(page_rows),
+                "state_counts": {
+                    state: sum(row["status"] == state for row in page_rows)
+                    for state in states
+                },
+                "next_disabled": page_number == 6,
+            }
+        )
+
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        common = {
+            "status": "pass",
+            "account": "u0",
+            "headless": True,
+            "channel": adapter.CHANNEL_NAME,
+            "scan_token": payload["scan_token"],
+            "chunk_nonce": payload["chunk_nonce"],
+            "captured_at": NOW.isoformat(),
+        }
+        if "seed_phase" in payload:
+            return {
+                **common,
+                "inventory_mode": "seed",
+                "seed_phase": payload["seed_phase"],
+                "pagination_complete": True,
+                "terminal_reason": "next_disabled",
+                "pages_scanned": len(pages),
+                "pages": pages,
+                "scanned_states": list(states),
+                "status_counts": {
+                    state: sum(row["status"] == state for row in seeds)
+                    for state in states
+                },
+                "seed_rows": seeds,
+            }
+        direct_rows = []
+        for seed in payload["expected_rows"]:
+            seed_urls = list(seed["urls"])
+            row = {
+                **seed,
+                "list_title": seed["title"],
+                "seed_urls": seed_urls,
+                "description": "",
+                "urls": seed_urls,
+                "direct_metadata_inspected": True,
+                "visibility_control_present": seed["status"]
+                in {"scheduled", "private", "draft"},
+                "no_kids": True,
+                "published_at": (
+                    seed["publishedRaw"] if seed["status"] == "public" else ""
+                ),
+            }
+            if seed["status"] == "scheduled":
+                row["scheduled_at"] = "2026-09-06T11:00:00+09:00"
+                row["timezone_evidence"] = "시간대"
+            direct_rows.append(row)
+        return {
+            **common,
+            "inventory_mode": "direct",
+            "chunk_index": payload["chunk_index"],
+            "chunk_total": payload["chunk_total"],
+            "chunk_start": payload["chunk_start"],
+            "chunk_end": payload["chunk_end"],
+            "expected_identities": list(payload["expected_identities"]),
+            "rows": direct_rows,
+        }
+
+    aside = CapturingAsideRunner(result)
+    port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
+
+    evidence = port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
+
+    direct_calls = [call for call in aside.calls if "chunk_start" in call["payload"]]
+    assert len(evidence["rows"]) == row_count
+    assert [row["identity"] for row in evidence["rows"]] == [
+        row["identity"] for row in seeds
+    ]
+    assert len(aside.calls) == 6  # initial + four direct chunks + final
+    assert len(direct_calls) == math.ceil(
+        row_count / adapter.INVENTORY_DIRECT_CHUNK_SIZE
+    )
+    assert [
+        call["payload"].get("seed_phase")
+        for call in aside.calls
+        if "seed_phase" in call["payload"]
+    ] == ["initial", "final"]
+    assert all("#navigate-after" not in call["body"] for call in direct_calls)
+    assert all("Promise.allSettled" in call["body"] for call in direct_calls)
+    assert all(call["payload"]["concurrency"] == 8 for call in direct_calls)
+    # This is a hermetic coverage/cardinality test. Live timing observations
+    # are operational evidence, not a unit-test dependency.
+
+
+def _swap_private_and_draft_states(raw: dict[str, Any]) -> None:
+    by_identity = {row["identity"]: row for row in raw["rows"]}
+    by_identity["privat00001"]["status"] = "draft"
+    by_identity["draft000001"]["status"] = "private"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(_swap_private_and_draft_states, id="private-draft-state-swap"),
+        pytest.param(lambda raw: raw["rows"][0].update(page=99), id="page"),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(list_title="drifted-list-title"),
+            id="list-title",
+        ),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(title="drifted-direct-title"),
+            id="metadata-title",
+        ),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(provider_id="other000001"),
+            id="provider-id",
+        ),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(seed_urls=["https://invalid.example/"]),
+            id="seed-url-binding",
+        ),
+        pytest.param(lambda raw: raw["rows"][0].update(urls=[]), id="seed-url-prefix"),
+        pytest.param(
+            lambda raw: raw["rows"][0]["urls"].append("https://invalid.example/"),
+            id="unexpected-url",
+        ),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(publishedRaw="2026-09-03"),
+            id="published-raw",
+        ),
+        pytest.param(
+            lambda raw: raw["rows"][0].update(published_at="2026-09-03"),
+            id="published-at",
+        ),
+    ],
+)
+def test_inventory_rejects_direct_row_drift_from_exact_seed_binding(
+    mutation: Any,
+    tmp_path: Path,
+) -> None:
+    _path, manifest = make_manifest(tmp_path)
+
+    def result(payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw = chunked_inventory_response(payload)
+        if "chunk_start" in payload:
+            mutation(raw)
+        return raw
+
+    port = adapter.AsideHeadlessU0Provider(
+        runner=CapturingAsideRunner(result), clock=lambda: NOW
+    )
+    with pytest.raises(
+        publisher.PublisherSafetyError,
+        match="direct (row|metadata|URLs|published)",
+    ):
+        port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
 
 
 @pytest.mark.parametrize(
@@ -402,19 +632,45 @@ def test_inventory_merges_multiple_direct_metadata_chunks_under_one_scan_token(
             captured_at="2026-09-05T08:50:00+09:00"
         ),
         lambda value, payload: (
-            value["rows"].pop() if value["rows"] else None
+            value["rows"].pop()
+            if "chunk_start" in payload and value["rows"]
+            else None
         ),
         lambda value, payload: (
             value["rows"].append(dict(value["rows"][0]))
-            if value["rows"]
+            if "chunk_start" in payload and value["rows"]
             else None
         ),
-        lambda value, payload: value["seed_rows"][1].update(
-            identity=value["seed_rows"][0]["identity"]
+        lambda value, payload: (
+            value["rows"].reverse()
+            if "chunk_start" in payload and len(value["rows"]) > 1
+            else None
+        ),
+        lambda value, payload: (
+            value.update(chunk_nonce="stale-direct-nonce")
+            if "chunk_start" in payload
+            else None
+        ),
+        lambda value, payload: (
+            value["seed_rows"][1].update(
+                identity=value["seed_rows"][0]["identity"]
+            )
+            if "seed_phase" in payload
+            else None
         ),
         lambda value, payload: (
             value["seed_rows"][0].update(title="changed-during-chunks")
-            if payload["chunk_start"] >= 2
+            if payload.get("seed_phase") == "final"
+            else None
+        ),
+        lambda value, payload: (
+            value["seed_rows"].reverse()
+            if payload.get("seed_phase") == "final"
+            else None
+        ),
+        lambda value, payload: (
+            value["seed_rows"][0]["urls"].append("https://drift.invalid/")
+            if payload.get("seed_phase") == "final"
             else None
         ),
     ],
@@ -439,7 +695,9 @@ def test_inventory_chunks_fail_closed_on_stale_missing_duplicate_or_drifted_evid
         port.scan_inventory(manifest, phase="initial_recovery_or_duplicate_scan")
 
 
-def test_inventory_chunks_fail_closed_when_logical_scan_outlives_freshness_window(
+@pytest.mark.parametrize("final_offset_minutes", [5, 6])
+def test_inventory_chunks_fail_closed_at_or_beyond_freshness_window(
+    final_offset_minutes: int,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -448,12 +706,14 @@ def test_inventory_chunks_fail_closed_when_logical_scan_outlives_freshness_windo
     observed_now = [NOW]
 
     def result(payload: Mapping[str, Any]) -> dict[str, Any]:
-        if payload["chunk_start"] == payload["chunk_end"] == 0:
+        if payload.get("seed_phase") == "initial":
             captured = NOW
+        elif payload.get("seed_phase") == "final":
+            captured = NOW + timedelta(minutes=final_offset_minutes)
         elif payload["chunk_start"] == 0:
             captured = NOW + timedelta(minutes=3)
         else:
-            captured = NOW + timedelta(minutes=6)
+            captured = NOW + timedelta(minutes=4)
         observed_now[0] = captured
         raw = chunked_inventory_response(payload)
         raw["captured_at"] = captured.isoformat()
@@ -493,7 +753,7 @@ def test_inventory_discards_partial_chunks_when_a_later_aside_call_disconnects(
     _path, manifest = make_manifest(tmp_path)
 
     def result(payload: Mapping[str, Any]) -> dict[str, Any]:
-        if payload["chunk_start"] >= 2:
+        if payload.get("chunk_start", -1) >= 2:
             raise TimeoutError("simulated Aside daemon disconnect")
         return chunked_inventory_response(payload)
 
