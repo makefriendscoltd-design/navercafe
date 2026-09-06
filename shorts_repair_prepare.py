@@ -137,6 +137,12 @@ def prepare_provider(source_key, plan_path):
         'replacement': {'source_key': source_key, 'provider_id': entry['provider_id'],
             'title': old['title'], 'description_sha256': hashlib.sha256(old['description'].strip().encode()).hexdigest(),
             'scheduled_at': datetime.fromtimestamp(entry['schedule_epoch'], ZoneInfo('Asia/Seoul')).isoformat()}}
+    visual = json.loads((root / 'visual_validation.json').read_text())
+    if visual.get('status') != 'pass' or visual.get('video_sha256') != manifest['final_mp4_sha256']:
+        raise RuntimeError('Actual visual review must pass for the rendered video')
+    production['content_lineage']['video'] = binding(root / 'final.mp4')
+    production['content_lineage']['visual_validation'] = binding(root / 'visual_validation.json')
+    (root / 'production_manifest.json').write_text(json.dumps(production, ensure_ascii=False, indent=2))
     target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     publisher.validate_local_candidate(publisher.load_manifest(target))
     print(json.dumps({'status': 'provider_manifest_validated', 'manifest': str(target)}, ensure_ascii=False))
