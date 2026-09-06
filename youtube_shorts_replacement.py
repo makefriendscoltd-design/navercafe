@@ -28,11 +28,14 @@ try{
  const popup=await one('ytcp-video-visibility-edit-popup','visibility popup');
  const privateChoice=p.locator('ytcp-video-visibility-edit-popup #private-radio-button[name="PRIVATE"]');
  if(await privateChoice.count()!==1)throw new Error('private option cardinality');
- if((await privateChoice.getAttribute('aria-checked'))!=='true')await privateChoice.click();
+ // Scheduled videos are already private; the click explicitly clears the pending publication.
+ await privateChoice.click();
  if((await privateChoice.getAttribute('aria-checked'))!=='true')throw new Error('private choice not selected');
  if(payload.prepare_only){emit({status:'prepared',old_id:payload.old_id,save_clicks:0,preview:(await popup.innerText()).slice(0,900)});}
  else{
   await popup.locator('#save-button').click();await sleep(300);
+  const pendingVisibility=(await p.locator('ytcp-video-metadata-visibility').innerText()).trim();
+  if(!/비공개|Private/.test(pendingVisibility)||/예약|Scheduled/.test(pendingVisibility))throw new Error('pending visibility still scheduled');
   const save=await one('ytcp-button#save','editor save');
   if(!await save.isEnabled())throw new Error('save unavailable');
   saved=1;await save.click();
