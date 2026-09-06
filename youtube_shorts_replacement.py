@@ -41,6 +41,9 @@ try{
   saved=1;await save.click();
   const deadline=Date.now()+30000;while(Date.now()<deadline&&await save.isEnabled())await sleep(250);
   if(await save.isEnabled())throw new Error('save acknowledgement missing');
+  const toast=p.getByText('변경사항이 저장됨',{exact:true});const persistedEnd=Date.now()+30000;
+  while(Date.now()<persistedEnd&&(await toast.count()!==1||!await toast.isVisible()))await sleep(200);
+  if(await toast.count()!==1||!await toast.isVisible())throw new Error('provider saved notification missing');
   emit({status:'save_acknowledged',old_id:payload.old_id,save_clicks:saved});
  }
 }catch(e){emit({status:'blocked',old_id:payload.old_id,save_clicks:saved,error:String(e?.message||e)});}
