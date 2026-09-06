@@ -1011,7 +1011,11 @@ def run_live(manifest_path: str | Path) -> dict[str, Any]:
     # Resolve only; no Studio access occurs until the publisher has passed its
     # local candidate gate and acquired the shared lock.
     provider_port._runner = _default_aside_runner()
-    runner = publisher.YouTubeShortsPublisher(
+    runner_class = publisher.YouTubeShortsPublisher
+    if manifest.replacement:
+        from youtube_shorts_replacement import ReplacementPublisher
+        runner_class = ReplacementPublisher
+    runner = runner_class(
         provider_port,
         crm_port,
         lock_path=PROVIDER_LOCK,

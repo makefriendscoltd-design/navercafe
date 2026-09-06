@@ -177,6 +177,7 @@ class PublishManifest:
     original_urls: tuple[str, ...]
     expected_channel: str
     journal: Path
+    replacement: Mapping[str, Any] | None = None
 
     @property
     def canonical_urls(self) -> tuple[str, str]:
@@ -200,6 +201,7 @@ class PublishManifest:
                 "video_sha256": self.video_sha256,
                 "original_urls": self.original_urls,
                 "expected_channel": self.expected_channel,
+                **({"replacement": self.replacement} if self.replacement else {}),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -269,6 +271,7 @@ def load_manifest(path: str | Path) -> PublishManifest:
         original_urls=original_urls,
         expected_channel=channel,
         journal=journal,
+        replacement=raw.get("replacement"),
     )
 
 
@@ -932,6 +935,8 @@ class YouTubeShortsPublisher:
 
     def run(self, manifest_path: str | Path, *, now: datetime | None = None) -> dict[str, Any]:
         manifest = load_manifest(manifest_path)
+        if manifest.replacement and not getattr(self, "supports_replacement", False):
+            raise ManifestError("Replacement requires the explicit replacement coordinator")
         validate_local_candidate(manifest, gate=self.local_gate)
         fixed_now = now
         current = self._sample_now(fixed_now)
