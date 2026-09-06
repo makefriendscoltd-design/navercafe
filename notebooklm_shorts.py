@@ -719,7 +719,7 @@ def main(argv=None) -> int:
     if args.headline_out:
         headline_path = Path(args.headline_out).expanduser().resolve()
         headline_path.parent.mkdir(parents=True, exist_ok=True)
-        headline_path.write_text(head_copies[0] + "\n", encoding="utf-8")
+        headline_path.write_text("\n".join(f"{index}. " + " / ".join(head_copy_lines(candidate)) for index, candidate in enumerate(head_copies, 1)) + "\n", encoding="utf-8")
     if args.evidence_dir:
         evidence_path = Path(args.evidence_dir).expanduser().resolve()
         evidence_path.mkdir(parents=True, exist_ok=True)
