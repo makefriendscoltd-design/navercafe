@@ -70,7 +70,7 @@ OLD_CTA_RE = re.compile(
     r"프로필 링크|댓글에\s*\S+\s*남겨|무료\s*(?:가이드|자료|정보)).*$"
 )
 STRONG_HOOK_RE = re.compile(
-    r"^(?:여기,\s*)?이\s*(?:남자들?|사람들?|프로그램|도구|기능).*(?:"
+    r"^(?:여기,\s*)?이\s*(?:남자들?|여자들?|사람들?|프로그램|도구|기능).*(?:"
     r"미쳤습니다|대박입니다|천재입니다|신입니다|고수입니다|벌었습니다|만들었습니다)\.?$"
 )
 HEAD_COPY_ITEM_RE = re.compile(r"^\s*(?:[1-3]\s*[.)、:]|[①②③])\s*(.+?)\s*$")
@@ -498,7 +498,7 @@ def require_strong_hook(script: str) -> str:
     first_sentence = re.split(r"(?<=[.!?])\s+", first_line, maxsplit=1)[0]
     if not STRONG_HOOK_RE.match(first_sentence):
         raise RuntimeError(
-            "쇼츠 첫 문장이 기존 강한 후킹 구조(이 남자/이 프로그램)와 다릅니다."
+            "쇼츠 첫 문장이 기존 강한 후킹 구조(이 남자/이 여자/이 프로그램)와 다릅니다."
         )
     return first_sentence
 

@@ -46,3 +46,7 @@ def test_complete_script_is_generated_once_and_sections_only_label_timing(monkey
     with pytest.raises(RuntimeError, match='refusing overwrite'):
         builder.generate_single_take(sections)
     assert len(calls) == 1
+
+
+def test_female_speaker_original_keeps_the_same_strong_hook_contract():
+    scripts.validate_intro_promise('이 여자 미쳤습니다. 자신의 생산성과 일상 데이터를 인공지능에게 학습시켜 집중력을 높였습니다. 나만의 AI 집중 시스템 만드는 5가지 방법, 저장하고 끝까지 보세요!\n\n첫째, 기록합니다.')

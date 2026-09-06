@@ -51,7 +51,8 @@ def prepare(source_key, plan_path):
         source_video = root / 'source_original.mp4'
         if not source_video.exists():
             with yt_dlp.YoutubeDL({'format': '18', 'outtmpl': str(source_video),
-                                  'noplaylist': True, 'quiet': True, 'no_warnings': True,
+                                  'noplaylist': True, 'quiet': True, 'no_warnings': False,
+                                  'js_runtimes': {'node': {}},
                                   'extractor_args': {'youtube': {'player_client': ['mweb']}}}) as dl:
                 info = dl.extract_info(f'https://youtu.be/{source_key}', download=True)
             if info.get('id') != source_key:
@@ -113,9 +114,38 @@ def prepare(source_key, plan_path):
                       'next': 'render, inspect, then replace exact scheduled provider'}, ensure_ascii=False))
 
 
+def prepare_provider(source_key, plan_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    import youtube_shorts_publisher as publisher
+    plan = json.loads(Path(plan_path).read_text())
+    entry = next(x for x in plan if x['source_key'] == source_key)
+    root = Path(entry['candidate_root'])
+    target = root / '07_provider_manifest.json'
+    if target.exists():
+        raise RuntimeError('Provider manifest already exists; resume it without replacing its journal')
+    production = json.loads((root / 'production_manifest.json').read_text())
+    baseline = json.loads((PROJECT / 'outputs/workflow-repair-20260906/scheduled-shorts-audit/latest-inventory.json').read_text())
+    old = next(x for x in baseline['rows'] if x['provider_id'] == entry['provider_id'])
+    script = (root / '07_script_final.txt').read_text().strip()
+    urls = [f'https://youtu.be/{source_key}', f'https://www.youtube.com/watch?v={source_key}']
+    manifest = {'source_key': source_key, 'title': production['render_inputs']['upload_title'],
+        'description': script + '\n\n▶ 원본 영상\n' + '\n'.join(urls),
+        'final_mp4': str(root / 'final.mp4'), 'final_mp4_sha256': binding(root / 'final.mp4')['sha256'],
+        'original_urls': urls, 'expected_channel': '나민수 AI',
+        'journal': str(root / 'provider/journal.json'),
+        'replacement': {'source_key': source_key, 'provider_id': entry['provider_id'],
+            'title': old['title'], 'description_sha256': hashlib.sha256(old['description'].strip().encode()).hexdigest(),
+            'scheduled_at': datetime.fromtimestamp(entry['schedule_epoch'], ZoneInfo('Asia/Seoul')).isoformat()}}
+    target.write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
+    publisher.validate_local_candidate(publisher.load_manifest(target))
+    print(json.dumps({'status': 'provider_manifest_validated', 'manifest': str(target)}, ensure_ascii=False))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source_key')
     parser.add_argument('--plan', default=str(PROJECT / 'outputs/workflow-repair-20260906/scheduled-shorts-audit/sequential-replacement-plan.json'))
+    parser.add_argument('--provider-only', action='store_true', help='Bind a rendered and visually reviewed candidate to its original schedule')
     args = parser.parse_args()
-    prepare(args.source_key, args.plan)
+    (prepare_provider if args.provider_only else prepare)(args.source_key, args.plan)
