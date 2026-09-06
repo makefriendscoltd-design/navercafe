@@ -141,7 +141,8 @@ def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, caf
         and answer_path.read_text(encoding="utf-8").strip()
     )
 
-    canonical_path = manifest_path.parent / "notebooklm/notebooklm-provider-evidence.json"
+    canonical_path = _resolve_cafe_relative(manifest_path, manifest.get("notebooklm_provider_evidence")
+                                          or "notebooklm/notebooklm-provider-evidence.json")
     canonical = read_json(canonical_path) if canonical_path.is_file() else {}
     canonical_source = str(
         canonical.get("sourceUrl")
@@ -153,8 +154,10 @@ def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, caf
         canonical
         and canonical.get("account") == "u0"
         and canonical.get("notebookTitle") == "민수대표님_카페글"
-        and canonical_source == long_url
+        and canonical_source in {long_url, f"https://youtu.be/{source_key}"}
         and canonical.get("status") in {"ok", "pass", "ok_recovered_after_cli_timeout"}
+        and (not canonical.get("answer_sha256") or
+             (answer_present and sha256(answer_path) == canonical["answer_sha256"]))
     )
 
     recovery_candidates = [

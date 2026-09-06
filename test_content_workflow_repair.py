@@ -30,6 +30,16 @@ def test_empty_card_generation_cannot_be_filled_with_invented_content():
         pipeline.normalize_deck({'slides': []}, 'input', 'title')
 
 
+def test_approved_card_renderer_displays_closing_title_from_generation_schema():
+    import cardnews_renderer
+    builder = cardnews_renderer.load_builder()
+    markup = builder.slide_html(9, {'layoutType': 'cta', 'f': {
+        'title': '마감 제목 확인', 'sub': '마감 본문 확인', 'cta1': '댓글 AIMAX', 'cta2': '관련 정보 받기'
+    }}, '검증용 주제')
+    assert '마감 제목 확인' in markup
+    assert '마감 본문 확인' in markup
+
+
 def test_card_generation_requires_bound_notebooklm_input_before_api_call():
     with pytest.raises(RuntimeError, match='NotebookLM'):
         pipeline.make_card_deck('arbitrary text', 'title')

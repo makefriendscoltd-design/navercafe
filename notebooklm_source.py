@@ -3,21 +3,7 @@
 
 import re
 
-DEFAULT_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴 칼럼을 작성해줘.
-
-형식:
-- 소제목은 반드시 마크다운 '## 소제목' 형태로 쓸 것 (매우 중요)
-- 소제목은 4~6개, 각 소제목 아래 문단 2~3개
-- 전체 900~1500자
-- 문단과 문단 사이는 빈 줄로 구분
-
-문체:
-- 존댓말, 담백한 구어체. 문장은 짧게.
-- 이모지, 해시태그, 불릿포인트 금지
-- 영상에 나온 구체적인 숫자·도구명·회사명은 그대로 살릴 것
-- 영상에 없는 내용은 절대 지어내지 말 것
-
-제목이나 머리말 없이 본문만 출력해줘."""
+from content_production_policy import CAFE_NOTEBOOK_PROMPT as DEFAULT_PROMPT
 
 
 class NotebookLMError(RuntimeError):

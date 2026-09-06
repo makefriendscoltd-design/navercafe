@@ -117,8 +117,8 @@ def slide_html(index: int, slide: dict[str, Any], topic: str) -> str:
           <div class="rule"></div><div class="desc" data-safe-text data-role="body">{esc(f.get("sub"))}</div></div>'''
     elif kind == "cta":
         inner = f'''<div class="main"><div class="kicker" data-safe-text data-role="meta">NEXT STEP</div>
-          <div class="title" data-safe-text data-role="title">{esc(f.get("head"))}</div><div class="rule"></div>
-          <div class="desc" data-safe-text data-role="body">{esc(f.get("desc"))}</div>
+          <div class="title" data-safe-text data-role="title">{esc(f.get("head") or f.get("title"))}</div><div class="rule"></div>
+          <div class="desc" data-safe-text data-role="body">{esc(f.get("desc") or f.get("sub"))}</div>
           <div class="cta-box"><div class="cta-pill" data-safe-text data-role="cta">{esc(f.get("cta1"))}</div><div class="cta-pill alt" data-safe-text data-role="cta">{esc(f.get("cta2"))}</div></div></div>'''
     elif kind == "process":
         inner = f'''<div class="main"><div class="rail"><div class="hero-num" data-safe-text data-role="number">{esc(f.get("num", page))}</div></div>

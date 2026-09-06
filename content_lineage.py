@@ -27,6 +27,12 @@ def clean_cafe_answer(text: str) -> str:
     """Remove explicit citation/UI syntax, preserving all remaining prose in order."""
     from notebooklm_source import _strip_citations
     text = re.sub(r'\A\s*Thoughts\s*\nexpand_more\s*\n', '', text)
+    # Explicit title alternatives are response metadata, not the five body sections.
+    text = re.sub(
+        r'\A\s*제목 후보\s*1\s*:[^\n]+\n(?:\s*\d+\s*\n)*'
+        r'\s*제목 후보\s*2\s*:[^\n]+\n(?:\s*\d+\s*\n)*'
+        r'\s*제목 후보\s*3\s*:[^\n]+\n(?:\s*\d+\s*\n)*', '', text,
+    )
     # Numeric lines are citations only when followed by the UI expansion token
     # or detached sentence punctuation. A standalone factual number is retained.
     text = re.sub(r'\n(?:\d+\s*\n)+(?:more_horiz\s*\n)?(?=[.!?,])', '', text)

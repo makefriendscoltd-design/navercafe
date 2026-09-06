@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import importlib.util
 import json
+import html
 import subprocess
 import sys
 import threading
@@ -52,6 +53,11 @@ def render() -> None:
         expected = builder.layout_for(index, slide)
         if slide.get("layoutType") != expected:
             raise RuntimeError(f"{index + 1}번 카드 레이아웃 정본 불일치: {slide.get('layoutType')} != {expected}")
+        markup = builder.slide_html(index, slide, TOPIC)
+        for field in ("title", "head", "desc", "sub", "quote", "cta1", "cta2"):
+            value = slide.get("f", {}).get(field)
+            if value and html.escape(str(value), quote=True) not in markup:
+                raise RuntimeError(f"{index + 1}번 카드의 {field} 원고가 렌더 HTML에서 누락됐습니다.")
 
     (ROOT / "07_index.html").write_text(
         builder.make_html(SOURCE_ID, deck, TOPIC), encoding="utf-8"

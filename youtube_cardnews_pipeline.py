@@ -588,7 +588,7 @@ def normalize_deck(deck, manuscript, title, wanted=10):
     return deck
 
 
-def make_card_deck(manuscript, title, *, content_lineage=None):
+def make_card_deck(manuscript, title, *, content_lineage=None, evidence_dir=None):
     if not content_lineage or content_lineage.get("mode") != "notebooklm_cafe_summary":
         raise RuntimeError("카드뉴스는 출처가 연결된 카페 NotebookLM 입력만 사용합니다.")
     from content_lineage import bound_file, clean_cafe_answer
@@ -611,7 +611,12 @@ def make_card_deck(manuscript, title, *, content_lineage=None):
     failures = []
     try:
         print("[카드뉴스] Gemini JSON을 생성합니다.")
-        deck = normalize_deck(_gemini_card_deck(full_prompt), manuscript, title, wanted=10)
+        raw_deck = _gemini_card_deck(full_prompt)
+        if evidence_dir is not None:
+            Path(evidence_dir).mkdir(parents=True, exist_ok=True)
+            with (Path(evidence_dir) / "provider_deck_raw.json").open("x", encoding="utf-8") as stream:
+                json.dump(raw_deck, stream, ensure_ascii=False, indent=2)
+        deck = normalize_deck(raw_deck, manuscript, title, wanted=10)
         deck["content_lineage"] = content_lineage
         from content_lineage import validate_cardnews_origin
         validate_cardnews_origin(deck)

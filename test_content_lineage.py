@@ -22,6 +22,11 @@ def test_standalone_numbers_are_not_silently_deleted():
     assert lineage.clean_cafe_answer('설명입니다\n1\n2\nmore_horiz\n.') == '설명입니다.'
 
 
+def test_explicit_three_title_candidates_are_metadata_not_body():
+    raw = '제목 후보 1: 첫 제목\n1\n 제목 후보 2: 둘째 제목\n2\n 제목 후보 3: 셋째 제목\n3\n4\n첫 소제목\n본문입니다.'
+    assert lineage.clean_cafe_answer(raw) == '첫 소제목\n본문입니다.'
+
+
 def test_real_cafe_rewrite_is_rejected():
     root = Path(__file__).parent / 'outputs/0UFSZ_5OSIk-20260903/cafe'
     if not root.exists():

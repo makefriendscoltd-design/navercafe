@@ -129,6 +129,23 @@ def test_missing_notebooklm_answer_and_provider_evidence_fail_closed(tmp_path, m
     assert "notebooklm_provider_evidence_exact" in result["failures"]
 
 
+def test_recovered_answer_binds_absolute_provider_evidence_and_rejects_tampering(tmp_path, monkeypatch):
+    path = make_bundle(tmp_path, monkeypatch)
+    manifest = publisher.read_json(path)
+    answer = tmp_path / 'recovered/answer.md'
+    answer.parent.mkdir()
+    answer.write_text('실제 복구 원문')
+    evidence = answer.parent / 'provider.json'
+    write_json(evidence, {'status': 'ok', 'account': 'u0',
+                         'notebookTitle': '민수대표님_카페글',
+                         'sourceUrl': 'https://youtu.be/sampleKey01',
+                         'answer_sha256': publisher.sha256(answer)})
+    manifest.update(notebooklm_answer=str(answer), notebooklm_provider_evidence=str(evidence))
+    assert all(publisher.validate_notebooklm_cafe_provenance(path, manifest, {}).values())
+    answer.write_text('원문을 바꾼 본문')
+    assert not publisher.validate_notebooklm_cafe_provenance(path, manifest, {})['provider_evidence_exact']
+
+
 def test_provider_verification_and_crm_order_remain_fail_closed():
     source = Path(publisher.__file__).read_text(encoding="utf-8")
 
