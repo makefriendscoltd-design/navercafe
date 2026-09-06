@@ -1361,3 +1361,37 @@ def test_all_oversized_head_copies_still_fail_closed():
 """
     with pytest.raises(RuntimeError, match="90px 안전폭 920px"):
         shorts.extract_head_copy_candidates(answer)
+
+
+def test_source_url_and_search_term_input_are_not_cta_instructions():
+    """Feeding a search term or the source URL is ordinary operation, not a CTA."""
+    ordinary = [
+        # Live LU6KGMfXqB8 response: describes the old manual workflow.
+        "매번 웹사이트를 열고 클로드 채팅창에 수동으로 검색어를 입력하던 번거로운 일상에서 탈출해야 합니다.",
+        # v12 dCLW response: describes adding the source itself.
+        "내가 이미 작성한 블로그 글이나 유튜브 주소만 입력하면 인공지능이 알아서 숏폼 영상을 추출해 줍니다.",
+    ]
+    for sentence in ordinary:
+        assert not policy._is_cta_or_action_instruction_sentence(sentence)
+        assert "cta_boundary_missing" not in policy.find_forbidden_shorts_claims(sentence)
+
+
+def test_promotional_asset_input_is_still_a_cta_instruction():
+    """Putting the creator's own site or a free offer into the prompt stays a CTA."""
+    promotional = [
+        "셋째, 텍스트 옵션 창을 활용해 내 사이트 주소나 무료 혜택 링크를 정교하게 입력하는 것입니다.",
+        "마지막 부분에 행동 유도 문구를 추가하라고 명확하게 지시하면 시청자를 내 비즈니스로 모으는 통로가 됩니다.",
+    ]
+    for sentence in promotional:
+        assert policy._is_cta_or_action_instruction_sentence(sentence)
+        assert "cta_boundary_missing" in policy.find_forbidden_shorts_claims(sentence)
+
+
+def test_fixed_shorts_cta_never_trips_its_own_boundary_gate():
+    """The appended fixed CTA must not be read as a source CTA demonstration."""
+    cta = shorts.fixed_cta(12)
+    assert "구독" in cta and "프로필" in cta
+    for sentence in cta.splitlines():
+        if sentence.strip():
+            assert not policy._is_cta_or_action_instruction_sentence(sentence)
+    assert policy.find_forbidden_shorts_claims(cta) == {}

@@ -427,12 +427,17 @@ def _is_cta_or_action_instruction_sentence(sentence: str) -> bool:
         re.IGNORECASE,
     ):
         return True
+    # Only a promotional asset makes an input instruction a CTA.  A bare
+    # 사이트/링크/주소 near 입력 also describes the ordinary act of feeding a
+    # search term or the source URL itself, so it must not count on its own.
+    promo = (
+        r"(?:혜택|구독|프로필|안내\s*문구|멘트|"
+        r"(?<![가-힣])(?:내|제|자사|우리|본인)\s*(?:웹\s*)?(?:사이트|링크|주소))"
+    )
     return bool(
         re.search(
-            r"(?:프롬프트|입력란|지시)[^,;.!?\n]{0,64}"
-            r"(?:사이트|링크|주소|혜택|구독|프로필|안내\s*문구|멘트)|"
-            r"(?:사이트|링크|주소|혜택|구독|프로필|안내\s*문구|멘트)"
-            r"[^,;.!?\n]{0,64}(?:프롬프트|입력|지시|요청)",
+            r"(?:프롬프트|입력란|지시)[^,;.!?\n]{0,64}" + promo + r"|"
+            + promo + r"[^,;.!?\n]{0,64}(?:프롬프트|입력|지시|요청)",
             sentence,
             re.IGNORECASE,
         )
