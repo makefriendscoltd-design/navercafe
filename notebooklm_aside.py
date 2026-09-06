@@ -210,7 +210,8 @@ if(sourceAdded){
     if(!cleanupRestored)throw new Error('NotebookLM 소스 수/선택 상태가 원래대로 복구되지 않았습니다.');
   }catch(error){status='error';message=[message,String(error?.message||error)].filter(Boolean).join(' | ');}
 }
-await p.close();
+// Keep the verified notebook tab until its answer has been durably saved locally.
+// Closing the last headless tab can disconnect the daemon before emit is received.
 emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload.kind,notebookId:payload.notebookId,notebookTitle:payload.notebookTitle,targetLabel,targetNorm,sourceCountBefore:before.length,sourceCountAfterAdd:afterAdd.length,selectedBefore,selectedAfter,selectedRestored,sourceAdded,targetOnlyBefore,targetOnlyAfter,cleanupRestored,beforeSubmitScreenshotPath,afterResponseScreenshotPath,answer,instructionEvidence,instructionValue});
 '''
     PROVIDER_LOCK.touch(exist_ok=True)
