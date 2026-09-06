@@ -127,3 +127,10 @@
 - 업로드 창의 입력 문자열만으로 저장 성공을 판단하지 않는다. 정확한 새 provider ID 편집 화면에 제목/본문을 저장하고 새 화면에서 대조한다.
 - 예약 영상은 이미 PRIVATE 라디오가 선택되어 있어도 실제 클릭해야 예약이 해제된다. 저장 버튼 비활성화 직후 탭을 닫으면 저장이 유지되지 않았다. 실제 `변경사항이 저장됨` 공급자 알림 후 닫고 목록을 재조회한다. 실패/수정 시도 기록은 모두 보존했다.
 - 두 번째 NMYQt25otes부터 순차 제작 계속. 사용자의 build_outputs_index.py는 수정하지 않았다.
+
+## 2026-09-06 사용자 명시 Claude 후속 승인 및 전체 링크 범위
+
+- AGENTS.md 99895f3: 장애/토큰 한도 시 Claude가 현재 맥락을 이어받도록 요청 허용, 개인 프로젝트 금지보다 최신 사용자 지시 우선. 직접 첨부한 모든 레퍼런스 링크의 3채널까지 누락/중복 없이 순차 처리.
+- 예약 쇼츠 교체 2/21 완료: pw8 새 k6bHOyDm02Y(9/7 11시), NMY 새 TrknfkVSFxA(9/7 20시), 각각 기존ID private와CRM 확인. source별 정본에도 교체참조 연결.
+- p3 원응답의 UI citation bare1/줄바꿈 추출 단계가 막혀 아직 렌더/업로드하지 않음. 후속 실행 체크포인트: outputs/workflow-repair-20260906/CLAUDE_CONTINUATION.md.
+- reference user role17세션52메시지에서 직접링크7개 증거를 outputs/reference-link-routine/user-submitted-link-audit.json에 기록. 기존공급자/추가경로와 대조 필요, 미발행으로 단정하지 않음.
