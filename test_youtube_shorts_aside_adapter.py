@@ -545,7 +545,7 @@ def test_measured_174_plus_row_plan_covers_every_row_without_repeating_paginatio
     assert [row["identity"] for row in evidence["rows"]] == [
         row["identity"] for row in seeds
     ]
-    assert len(aside.calls) == 6  # initial + four direct chunks + final
+    assert len(aside.calls) == 2 + (row_count + adapter.INVENTORY_DIRECT_CHUNK_SIZE - 1) // adapter.INVENTORY_DIRECT_CHUNK_SIZE
     assert len(direct_calls) == math.ceil(
         row_count / adapter.INVENTORY_DIRECT_CHUNK_SIZE
     )

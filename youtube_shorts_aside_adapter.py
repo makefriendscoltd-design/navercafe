@@ -37,10 +37,10 @@ PROVIDER_LOCK = Path("/tmp/aimax-aside-u0-provider.lock")
 TRACKER = Path("/Users/apple/orca/projects/aimax-crm-observability/bin/aimax-crm-track")
 CRM_DB = Path("/Users/apple/Library/Application Support/AIMAX CRM Observability/events.sqlite3")
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
-INVENTORY_DIRECT_CHUNK_SIZE = 48
-# Eight parallel edit tabs is the measured ceiling: sixteen races Studio into
-# "Cannot find default execution context" as tabs are opened and closed.
-INVENTORY_DIRECT_CONCURRENCY = 8
+INVENTORY_DIRECT_CHUNK_SIZE = 8
+# Keep provider inspection sequential: even eight concurrent edit tabs lost
+# their execution contexts in the real u0 scan on 2026-09-06.
+INVENTORY_DIRECT_CONCURRENCY = 1
 INVENTORY_CHUNK_MAX_AGE = timedelta(minutes=5)
 INVENTORY_CHUNK_FUTURE_SKEW = timedelta(minutes=1)
 
