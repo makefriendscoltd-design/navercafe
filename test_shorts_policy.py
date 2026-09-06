@@ -173,7 +173,7 @@ def test_community_provider_text_rejects_missing_or_wrong_endpoint():
         )
 
 
-def test_self_contained_v7_bundle_passes_upload_policy(tmp_path):
+def test_render_receipts_alone_do_not_authorize_upload(tmp_path):
     video = tmp_path / "final.mp4"
     video.write_bytes(b"self-contained-test-video")
     presenter_name, presenter_hash = next(iter(policy.MINSOO_PRESENTER_ASSETS.items()))
@@ -240,7 +240,9 @@ def test_self_contained_v7_bundle_passes_upload_policy(tmp_path):
         encoding="utf-8",
     )
 
-    assert policy.validate_shorts_bundle_for_upload(video)["video_sha256"]
+    assert policy.validate_shorts_render_bundle(video)["video_sha256"]
+    with pytest.raises(policy.ProductionPolicyError, match="출처"):
+        policy.validate_shorts_bundle_for_upload(video)
 
 
 def test_legacy_renderer_is_disabled():
@@ -319,9 +321,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v16.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v17.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "f08aa788417fdc1cd7958dc0f8530c8482128f0d0c5625b103ae6a66a5862146"
+        "7bf0525cfd9cb089dd3c8bedc92385cfffa4c70acd74564e47a2c03862ae1613"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -435,47 +437,8 @@ def test_v16_line_separated_layout_rejects_any_seventh_line(extra):
 
 
 def test_factpack_recovery_report_is_explicit_and_fail_closed():
-    provider_body = (FIXTURE_ROOT / "v16_dcl_line_separated.txt").read_text(
-        encoding="utf-8"
-    ).strip()
-    recovered = """이 기능 대박입니다. 검증된 다섯 단계를 정리했습니다.
-
-첫째, 소스를 넣습니다.
-
-둘째, 소스 기반 영상을 만듭니다.
-
-셋째, CTA를 요청할 수 있습니다. CTA 반영은 영상 제작자의 시연 사례입니다. 결과는 보장되지 않습니다.
-
-넷째, 형식을 고릅니다.
-
-다섯째, 파일을 다운로드합니다."""
-    report = shorts.factpack_recovery_report(
-        provider_body,
-        recovered,
-        factpack_sha256="a" * 64,
-        source_gate={"status": "pass"},
-    )
-    assert report["status"] == "pass"
-    assert report["recovery_mode"] == "verified_factpack_rebuild"
-    assert report["provider_retry_performed"] is False
-    assert report["notebooklm_body_preserved_exactly"] is False
-    assert report["content_rewrite_applied"] is True
-    assert report["verified_factpack_only"] is True
-
-    with pytest.raises(RuntimeError, match="factpack SHA-256"):
-        shorts.factpack_recovery_report(
-            provider_body,
-            recovered,
-            factpack_sha256="not-a-hash",
-            source_gate={"status": "pass"},
-        )
-    with pytest.raises(RuntimeError, match="사실·장면 게이트"):
-        shorts.factpack_recovery_report(
-            provider_body,
-            recovered,
-            factpack_sha256="a" * 64,
-            source_gate={"status": "failed"},
-        )
+    with pytest.raises(RuntimeError, match="자동 복구는 금지"):
+        shorts.factpack_recovery_report("original", "rewritten", factpack_sha256="a" * 64, source_gate={"status": "pass"})
 
 
 def test_v16_layout_rejects_any_paragraph_after_fifth():
@@ -1328,8 +1291,8 @@ def test_shorts_title_removes_all_trailing_hashtags():
     assert shorts_video.normalize_shorts_title("클로드 디자인 5단계") == "클로드 디자인 5단계"
 
 
-def test_one_oversized_head_copy_no_longer_discards_the_usable_candidates():
-    """A single 90px overflow must not fail a response whose other lines fit."""
+def test_one_oversized_head_copy_blocks_the_three_candidate_contract():
+    """The source contract requires all three candidates to fit."""
     answer = """### 헤드카피라이팅
 1. 아직도 밤새며 고객 검색해? / 클로드로 무인 영업망 구축
 2. 며칠씩 걸리던 고객 수집? / 대화 한 번에 메일까지 끝
@@ -1339,13 +1302,8 @@ def test_one_oversized_head_copy_no_longer_discards_the_usable_candidates():
 이 남자 미쳤습니다.
 다음 문장입니다.
 """
-    # Candidate 1 breaks the 90px safe width and candidate 3 is not spoken-tone,
-    # so the live LU6KGMfXqB8 response leaves exactly one usable headline.
-    candidates = shorts.extract_head_copy_candidates(answer)
-    assert candidates == ["며칠씩 걸리던 고객 수집?\n대화 한 번에 메일까지 끝"]
-    for value in candidates:
-        widths = policy.validate_headline_pixel_width(shorts.head_copy_lines(value))
-        assert max(widths["line_widths_px"]) <= policy.HEADLINE_SAFE_WIDTH_PX
+    with pytest.raises(RuntimeError, match="3개 모두 통과"):
+        shorts.extract_head_copy_candidates(answer)
 
 
 def test_all_oversized_head_copies_still_fail_closed():

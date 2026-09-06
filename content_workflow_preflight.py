@@ -26,6 +26,15 @@ REQUIRED_TRACKED_FILES = (
     "shorts_video.py",
     "youtube_cardnews_pipeline.py",
     "cafe_manifest_publisher.py",
+    "content_lineage.py",
+    "cardnews_renderer.py",
+    "notebooklm_instruction_sync.py",
+    "outputs/20260822-shorts-correction-audit/cardnews/square-carousel-v2-20260823/build_square_carousel.py",
+    "outputs/20260822-shorts-correction-audit/cardnews/square-carousel-v2-20260823/ocr_vision.swift",
+    "content_workflow.py",
+    "content_queue_guard.py",
+    "shorts_v7_builder.py",
+    "outputs/cafe-publish-queue-20260823/automation_prompt.txt",
     "naver_cafe_fresh_publish_fallback.py",
     "run_content_link.command",
     "test_fixtures/notebooklm_shorts/v12_bad_dcl.md",
@@ -149,7 +158,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     )
     checks["shorts_notebook_instruction_contract"] = (
         policy.SHORTS_NOTEBOOK_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
-        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v16.0"
+        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v17.0"
         and policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION)
         == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
         and "### 헤드카피라이팅" in policy.SHORTS_NOTEBOOK_INSTRUCTION
@@ -180,7 +189,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         and "그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다"
         in policy.SHORTS_NOTEBOOK_INSTRUCTION
     )
-    shorts_v7_path = project / "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py"
+    shorts_v7_path = project / "shorts_v7_builder.py"
     shorts_v7_source = (
         shorts_v7_path.read_text(encoding="utf-8") if shorts_v7_path.is_file() else ""
     )
@@ -215,7 +224,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
             "python312": project / ".venv312/bin/python",
             "cardnews_prompt": CARDNEWS_ROOT / "tools/deck-prompt.md",
             "cardnews_server": CARDNEWS_ROOT / "tools/server.js",
-            "shorts_v7_builder": project / "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py",
+            "shorts_v7_builder": project / "shorts_v7_builder.py",
             "shorts_v7_renderer": project / "outputs/uX6zwf4b8sM-20260829/shorts/renderer/aimax_video_pipeline.py",
             "shorts_title_font": project / "outputs/uX6zwf4b8sM-20260829/shorts/renderer/assets/fonts/BMHANNA_11yrs_ttf.ttf",
             "shorts_body_font": project / "outputs/uX6zwf4b8sM-20260829/shorts/renderer/assets/fonts/Cafe24Ohsquare.ttf",

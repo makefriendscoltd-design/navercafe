@@ -283,6 +283,8 @@ emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload
             str(result["answer"]).strip() + "\n",
             encoding="utf-8",
         )
+        from content_lineage import sha256
+        safe_evidence["answer_sha256"] = sha256(evidence_root / "notebooklm-answer.md")
         (evidence_root / "notebooklm-provider-evidence.json").write_text(
             json.dumps(safe_evidence, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

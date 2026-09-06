@@ -312,13 +312,7 @@ def validate_head_copy_connection(value: str, script: str) -> str:
 
 
 def extract_head_copy_candidates(answer: str) -> list[str]:
-    """Extract three ranked two-line candidates and keep the ones that pass.
-
-    NotebookLM must still offer exactly three, but a single candidate that
-    breaks the 90px safe width no longer discards the other two.  Only the
-    first accepted candidate is rendered; the rest are human alternates, so
-    losing one alternate must not fail an otherwise usable response.
-    """
+    """Require all three ranked candidates to pass the canonical contract."""
     match = HEAD_COPY_HEADER_RE.search(answer or "")
     if not match:
         raise RuntimeError("노트북 응답에 '### 헤드카피라이팅' 절이 없습니다.")
@@ -343,9 +337,9 @@ def extract_head_copy_candidates(answer: str) -> list[str]:
             accepted.append(validate_head_copy(raw))
         except RuntimeError as exc:
             rejections.append(str(exc))
-    if not accepted:
+    if rejections:
         raise RuntimeError(
-            "쇼츠 헤드카피 후보 3개가 모두 검증에 실패했습니다: "
+            "쇼츠 헤드카피 후보 3개 모두 통과해야 합니다: "
             + "; ".join(dict.fromkeys(rejections))
         )
     if len(set(accepted)) != len(accepted):
@@ -574,29 +568,8 @@ def factpack_recovery_report(
     factpack_sha256: str,
     source_gate: dict,
 ) -> dict:
-    """Prove a terminal provider failure was rebuilt only under verified fact gates."""
-    original = str(provider_script or "").strip()
-    recovered, layout = canonicalize_notebooklm_script_layout(recovered_script)
-    if not original or recovered == original:
-        raise RuntimeError("팩트팩 복구에는 보존된 provider 원문과 별도 복구 원고가 필요합니다.")
-    if not re.fullmatch(r"[0-9a-f]{64}", str(factpack_sha256 or "")):
-        raise RuntimeError("팩트팩 복구의 검증된 factpack SHA-256이 없습니다.")
-    if not isinstance(source_gate, dict) or source_gate.get("status") != "pass":
-        raise RuntimeError("팩트팩 복구의 source_key별 사실·장면 게이트가 통과하지 않았습니다.")
-    validate_shorts_verbatim_claims(recovered)
-    return {
-        "status": "pass",
-        "recovery_mode": "verified_factpack_rebuild",
-        "provider_retry_performed": False,
-        "provider_script_sha256": _text_sha256(original),
-        "recovered_script_sha256": _text_sha256(recovered),
-        "factpack_sha256": factpack_sha256,
-        "source_gate_status": "pass",
-        "layout": layout,
-        "notebooklm_body_preserved_exactly": False,
-        "content_rewrite_applied": True,
-        "verified_factpack_only": True,
-    }
+    """Historical recovery is not authorization to rewrite NotebookLM content."""
+    raise RuntimeError("팩트팩 재작성 자동 복구는 금지됩니다. 원응답과 실패를 보존하세요.")
 
 
 def get_video_duration(url: str) -> float:

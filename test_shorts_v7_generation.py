@@ -11,7 +11,7 @@ import content_production_policy as policy
 
 BUILDER_PATH = (
     Path(__file__).resolve().parent
-    / "outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py"
+    / "shorts_v7_builder.py"
 )
 
 
@@ -20,6 +20,7 @@ def load_builder():
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.SOURCE_MINUTES = 1  # Fixture source duration; production requires manifest binding.
     return module
 
 

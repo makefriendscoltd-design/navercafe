@@ -12,7 +12,7 @@
 - 브라우저와 NotebookLM 작업은 Aside CLI headless `u0` 로그인 세션만 사용한다. NotebookLM은 `민수대표님_카페글`/`민수대표님_숏폼` 기존 노트북만 사용하며 다른 노트북과 임시 노트북은 금지한다.
 - 네이버 카페는 기존 버전의 인용구/본문/이미지 구조를 그대로 유지하고, `AI 자동화&수익화 정보` 카테고리를 사용한다. 글 끝에는 `AI 자동화를 직접 배우는 오프라인 스터디를 진행하고 있습니다. 관심 있으시면 아래 패밀리데이 모집 안내 글을 읽어보세요.`와 `https://cafe.naver.com/westudyssat/4188`을 먼저 넣고, 그 아래 별도 문단에 `▶ 원본 영상`과 원본 영상 링크를 넣는다. 두 URL은 글자로만 입력하지 말고 실제 붙여넣기로 패밀리데이 OG 썸네일 카드와 YouTube 미리보기 카드를 생성하며, 원문 URL도 함께 남아 있어야 한다.
 - 쇼츠는 NotebookLM 스크립트의 다섯 번째 내용까지만 쓰고 고정 CTA를 붙인다. 원본 YouTube 영상을 중앙에, 승인된 민수 촬영본을 음소거한 원형 PIP로 하단에 쓰며 카드뉴스·정지 프레임·다른 사람 영상은 섞지 않는다. 음성·자막·90px 헤드카피·레이아웃·오디오 수치는 `SHORTS_SPEC.md`의 머신 게이트를 전부 통과해야 하며, 실패하면 생성·업로드를 중단한다.
-- 쇼츠 V7 구현 정본은 Git으로 추적되는 `outputs/7cimtg6LPHg-20260902/shorts/build_v7_target.py`와 그 파일이 고정한 renderer·BGM·SFX·reference config다. 새 source_key는 이 파일을 직접 수정하지 않고 task-local adapter에서 source identity·검증된 장면 주장·자막 sentinel·업로드 제목만 바꾼다. `shorts_video.render_short_video`의 폐기된 프레임 슬라이드 경로는 사용하지 않는다.
+- 쇼츠 V7 실행 정본은 `shorts_v7_builder.py`다. 승인된 기존 builder에서 공통 구현을 추출했으며 renderer·BGM·SFX·reference config는 기존 고정을 유지한다. 새 source_key는 기존 `production_manifest.json`의 `content_lineage`와 `render_inputs`에 source identity·원문 계보·장면 주장·sentinel·업로드 제목을 넣는다. 작업별 builder 복제와 `shorts_video.render_short_video`의 폐기된 프레임 슬라이드 경로는 사용하지 않는다.
 - 오늘(2026-08-19) 작업만 게시 버튼 직전 화면을 보여주고 승인 후 발행한다. 이후 링크 작업은 산출물과 실제 편집기 구조 검증을 통과하면 기존 원칙대로 바로 발행한다. 상철이 별도 승인/미리보기를 요청하면 그 지시가 우선한다.
 - 실패한 글쓰기/검증 탭은 닫고, 최종 검증된 초안 또는 발행 결과만 남긴다.
 - 쇼츠 공개와 카페 발행은 서로 독립이다. 카페 공급자 URL이 없거나 카페 발행이 실패해도 쇼츠 예약·공개를 미루거나 변경하지 않는다.
@@ -44,3 +44,9 @@
 - 진행 중인 세션, Orca 터미널, 기존 자동화, 누적 아카이브를 임의로 중단·덮어쓰기·삭제하지 않는다.
 - 시크릿 값은 채팅과 보고서에 출력하지 않는다. 설정 위치와 변수명만 언급한다.
 - 결론부터 짧고 직접적으로 답한다.
+
+## 콘텐츠 복구 실행 계약
+
+- 카페·카드뉴스의 입력은 같은 source_key의 카페 NotebookLM 원응답이다. 카드뉴스의 팩트팩은 검증용이며 대체 원고가 아니다.
+- `content_workflow.py prepare-cafe`로 별도 후보를 만들고 원문 보존을 검증한다. 기존 manifest·승인·공급자 증거는 검증 없이 덮어쓰지 않는다.
+- 카페 큐는 공급자 동작 전에 `content_queue_guard.py --live`를 통과한다. 실제 자동화 지시문과 Git 추적 `outputs/cafe-publish-queue-20260823/automation_prompt.txt`가 다르면 중단한다.

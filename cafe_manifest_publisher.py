@@ -198,6 +198,17 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     source_long_url = f"https://www.youtube.com/watch?v={source_key}"
     tail = manifest.get("tail", {})
     notebooklm = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
+    from content_lineage import cafe_body_lineage
+    answer_path = _resolve_cafe_relative(
+        manifest_path, manifest.get("notebook_answer") or manifest.get("notebooklm_answer")
+        or (manifest.get("notebooklm") or {}).get("answer") or "notebooklm/notebooklm-answer.md"
+    )
+    body_path = _resolve_cafe_relative(manifest_path, manifest.get("body_file"))
+    try:
+        lineage = cafe_body_lineage(answer_path, body_path) if body_path else {}
+        body_preserved = lineage.get("body_preserved") is True
+    except (OSError, ValueError):
+        body_preserved = False
     checks = {
         "canonical_manifest_exact": approval.get("sourceOfTruth") == str(manifest_path.relative_to(PROJECT)),
         "canonical_manifest_sha256": approval.get("manifestSha256") == sha256(manifest_path),
@@ -215,6 +226,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "cafe_local_validation_pass": cafe_local.get("status") == "pass" and cafe_local.get("source_key") == source_key,
         "notebooklm_answer_present": notebooklm["answer_present"],
         "notebooklm_provider_evidence_exact": notebooklm["provider_evidence_exact"],
+        "notebooklm_actual_body_preserved": body_preserved,
         "approval_gate_pass": approval.get("status") == "pass" and not approval.get("failures"),
         "launch_consistency_pass": launch.get("status") == "pass" and launch.get("summary", {}).get("issues") == 0,
         "launch_manifest_sha256": launch.get("manifestSha256") == sha256(manifest_path),

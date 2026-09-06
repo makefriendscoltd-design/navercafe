@@ -25,6 +25,7 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
         "source_url": "https://youtu.be/sampleKey01",
         "source_long_url": "https://www.youtube.com/watch?v=sampleKey01",
         "title": "검증용 카페 제목",
+        "body_file": "body.txt",
         "category": publisher.EXPECTED_CATEGORY,
         "expected_quotes": 5,
         "expected_quote_texts": [f"소제목 {index}" for index in range(1, 6)],
@@ -53,6 +54,7 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
             "sourceUrl": "https://www.youtube.com/watch?v=sampleKey01",
         },
     )
+    (cafe / "body.txt").write_text("검증된 NotebookLM 카페 원고", encoding="utf-8")
     local_path = cafe / "11_local_validation.json"
     write_json(local_path, {"status": "pass", "source_key": "sampleKey01"})
     manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()

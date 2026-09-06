@@ -30,8 +30,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v16.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v16.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v17.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v17.0
 
 ## 작업 원칙
 
@@ -101,12 +101,12 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 3. 본문은 자연스러운 한국어 구어체로 쓰고 볼드 강조를 쓰지 않는다.
 4. 헤드카피 후보는 정확히 3개다. 각 후보는 `첫째 줄 / 둘째 줄` 형식의 정확히 2줄이고, 각 줄은 공백 포함 18자 이하다.
 5. 헤드카피 3안의 모든 줄은 BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하여야 한다. 실측을 보장할 수 없으면 공백 포함 13자 이하로 줄여 안전폭을 확보한다.
-6. 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체이며, 둘째 줄과 스크립트 첫 3문장이 같은 구체적 주제를 이어받아야 한다.
+6. 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체다. 검사 가능한 문장형을 위해 첫 줄 끝은 `?`, `!`, `입니다`, `됩니다`, `있다`, `된다`, `죠`, `손해` 중 하나로 마친다. 둘째 줄과 스크립트 첫 3문장이 같은 구체적 주제를 이어받아야 한다.
 7. 헤드카피에도 원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다.
 
 ### 내용 규칙
 
-1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다.
+1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다. 도입에서 화자의 교육 인원·고객 수·매출·수익·성과 이력을 내세우지 않는다. `완벽하게 처리`, `완벽하게 마무리`, `백 퍼센트 위임`, `오류 없이`, `무조건 성공`처럼 시연을 일반적인 성공 보장으로 바꾸지 않는다.
 2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다. 첫째부터 다섯째의 제목과 핵심 행동은 원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다. 출처의 구체적 행동을 `자료 준비`, `기능 활용`, `자동화하기` 같은 일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다. 어느 항목인지 원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다.
 3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
 4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. 도입을 첫 번째 Markdown 문단으로 쓴 뒤 빈 줄 하나를 넣고, `첫째,`부터 `다섯째,`까지가 각각 자기 Markdown 문단의 첫 글자로 시작하게 쓴다. 각 문단 사이에는 빈 줄 하나를 넣는다. 도입이나 첫째~다섯째를 한 개의 평탄화된 문단에 이어 쓰지 않으며, 여섯째 이후는 출력하지 않는다.
@@ -154,7 +154,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 다섯째, [다섯 번째 내용 문단]
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "f08aa788417fdc1cd7958dc0f8530c8482128f0d0c5625b103ae6a66a5862146"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "7bf0525cfd9cb089dd3c8bedc92385cfffa4c70acd74564e47a2c03862ae1613"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
@@ -564,6 +564,13 @@ def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
 def validate_shorts_verbatim_claims(value: str) -> dict[str, Any]:
     """Reject known generalized claims before verbatim narration can proceed."""
     hits = find_forbidden_shorts_claims(value)
+    absolute_performance = re.findall(
+        r"완벽(?:하게|한)[^.!?\n]{0,30}(?:처리|마무리|무인|동기화)|"
+        r"(?:백\s*퍼센트|100\s*%)[^.!?\n]{0,15}위임|무조건\s*성공",
+        value,
+    )
+    if absolute_performance:
+        hits["unsupported_absolute_performance"] = absolute_performance
     if hits:
         raise ProductionPolicyError(
             "쇼츠 NotebookLM 그대로 보존 본문에 금지 주장이 있습니다: "
@@ -940,7 +947,7 @@ def validate_machine_evidence(payload: dict[str, Any]) -> None:
         raise ProductionPolicyError("음소거되어야 할 원본/PIP 오디오가 매핑됐습니다.")
 
 
-def validate_shorts_bundle_for_upload(video_path: str | Path) -> dict[str, str]:
+def validate_shorts_render_bundle(video_path: str | Path) -> dict[str, str]:
     """Require V7 render, voice, and machine evidence before any Studio upload."""
     video = Path(video_path).expanduser().resolve()
     if not video.is_file() or video.stat().st_size <= 0:
@@ -975,6 +982,17 @@ def validate_shorts_bundle_for_upload(video_path: str | Path) -> dict[str, str]:
         "voice_alignment": str(alignment_path),
         "subtitles": str(subtitle_path),
     }
+
+
+def validate_shorts_bundle_for_upload(video_path: str | Path) -> dict:
+    """Render PASS alone is insufficient: require current content and visual lineage."""
+    from content_lineage import validate_shorts_origin
+    result = validate_shorts_render_bundle(video_path)
+    try:
+        origin = validate_shorts_origin(Path(result["video"]).parent, video=Path(result["video"]))
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        raise ProductionPolicyError(f"쇼츠 원문/영상 출처 검증 실패: {exc}") from exc
+    return {**result, "content_lineage": origin}
 
 
 def validate_schedule(slots: Iterable[datetime]) -> list[datetime]:

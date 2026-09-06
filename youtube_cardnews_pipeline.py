@@ -281,8 +281,8 @@ def make_youtube_post(manuscript):
         if text:
             return sanitize_youtube_post(text)
     except Exception as e:
-        print(f"[주의] Gemini 유튜브 게시글 변환 실패, 로컬 형식 변환으로 대체합니다: {e}")
-    return sanitize_youtube_post(local_youtube_post(manuscript))
+        raise RuntimeError("Community 원고 생성 실패; 다른 원고로 자동 대체하지 않습니다.") from e
+    raise RuntimeError("Community 원고 생성 결과가 비어 있습니다.")
 
 
 def local_youtube_post(manuscript):
@@ -558,22 +558,13 @@ def normalize_deck(deck, manuscript, title, wanted=10):
     deck["preset"] = "blue"
     deck["accent"] = deck.get("accent", None)
     slides = list(deck.get("slides") or [])
-    if not slides:
-        return fallback_deck(manuscript, title)
+    if len(slides) != wanted:
+        raise RuntimeError("카드 생성 결과가 정확히 10장이 아닙니다. 자동 보충하지 않습니다.")
 
     closing = next((s for s in reversed(slides) if s.get("type") == "closing"), None)
     non_closing = [s for s in slides if s is not closing]
     if closing is None:
-        closing = fallback_deck(manuscript, title)["slides"][-1]
-
-    while len(non_closing) < wanted - 1:
-        n = len([s for s in non_closing if s.get("type") == "content"]) + 1
-        points = manuscript_card_points(manuscript, limit=wanted - 1)
-        head, desc = points[(n - 1) % len(points)] if points else ("다음 행동을 정한다", "계획을 문서로 끝내지 말고 바로 실행 가능한 작업으로 바꿉니다.")
-        non_closing.append({
-            "type": "content",
-            "f": {"idx": f"{n:02d}", "total": f"{wanted - 2:02d}", "tag": "Point", "num": f"{n:02d}", "head": head, "desc": desc},
-        })
+        raise RuntimeError("카드 생성 결과에 마감 카드가 없습니다.")
 
     deck["slides"] = non_closing[:wanted - 1] + [closing]
     for i, slide in enumerate(deck["slides"]):
@@ -597,16 +588,33 @@ def normalize_deck(deck, manuscript, title, wanted=10):
     return deck
 
 
-def make_card_deck(manuscript, title):
+def make_card_deck(manuscript, title, *, content_lineage=None):
+    if not content_lineage or content_lineage.get("mode") != "notebooklm_cafe_summary":
+        raise RuntimeError("카드뉴스는 출처가 연결된 카페 NotebookLM 입력만 사용합니다.")
+    from content_lineage import bound_file, clean_cafe_answer
+    answer_path = bound_file(Path("."), content_lineage.get("answer"), "cardnews answer")
+    if manuscript.strip() != clean_cafe_answer(answer_path.read_text(encoding="utf-8")):
+        raise RuntimeError("카드뉴스 생성 입력이 카페 NotebookLM 응답과 다릅니다.")
+    if not auto.GEMINI_API_KEY:
+        # Read the existing configuration without launching the setup UI.
+        import configparser
+        configured = configparser.RawConfigParser()
+        configured.read(auto.CONFIG_FILE, encoding="utf-8")
+        auto.GEMINI_API_KEY = configured.get("GEMINI", "api_key", fallback="")
+        if not auto.GEMINI_API_KEY:
+            raise RuntimeError("기존 config.ini의 GEMINI.api_key를 읽을 수 없습니다.")
     prompt_path = CARDNEWS_ROOT / "tools" / "deck-prompt.md"
     if not prompt_path.exists():
         raise RuntimeError(f"cardnews 프롬프트 파일을 찾지 못했습니다: {prompt_path}")
     prompt = prompt_path.read_text(encoding="utf-8") + CARD_DECK_EXTRA_RULES
-    full_prompt = f"{prompt}\n\n==== 변환할 글 ====\n{manuscript}"
+    full_prompt = f"{prompt}\n각 본문 카드에 source_anchor 필드로 원문 근거 문장을 그대로 넣으세요.\n\n==== 변환할 글 ====\n{manuscript}"
     failures = []
     try:
         print("[카드뉴스] Gemini JSON을 생성합니다.")
         deck = normalize_deck(_gemini_card_deck(full_prompt), manuscript, title, wanted=10)
+        deck["content_lineage"] = content_lineage
+        from content_lineage import validate_cardnews_origin
+        validate_cardnews_origin(deck)
         issues = deck_validation_issues(deck)
         if not issues:
             return deck
@@ -614,13 +622,7 @@ def make_card_deck(manuscript, title):
     except Exception as exc:
         failures.append(f"Gemini 생성 실패: {exc}")
 
-    fallback = normalize_deck(fallback_deck(manuscript, title), manuscript, title, wanted=10)
-    fallback_issues = deck_validation_issues(fallback)
-    if not fallback_issues:
-        print("[카드뉴스] Gemini 실패 후 로컬 10장 구조로 대체했습니다.")
-        return fallback
-    failures.append("로컬 대체 결과 검증 실패: " + ", ".join(fallback_issues))
-    raise RuntimeError("카드뉴스 10장 품질 검증을 통과하지 못했습니다. " + " | ".join(failures))
+    raise RuntimeError("카드뉴스 생성 실패; 다른 원고로 자동 대체하지 않습니다. " + " | ".join(failures))
 
 
 def card_deck_claim_text(deck):
@@ -691,30 +693,17 @@ def render_cardnews_pngs(deck, out_dir, aspect="square"):
         raise RuntimeError("YouTube 카드뉴스는 1080x1080 정사각형만 허용합니다.")
     if len(deck.get("slides") or []) != 10:
         raise RuntimeError("YouTube 카드뉴스는 정확히 10장이어야 합니다.")
-    from playwright.sync_api import sync_playwright
-
-    ensure_cardnews_server()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    deck_json = json.dumps(deck, ensure_ascii=False)
-    paths = []
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome", headless=True)
-        for i, _slide in enumerate(deck["slides"]):
-            viewport = CARD_SQUARE_SIZE
-            page = browser.new_page(viewport={"width": viewport[0], "height": viewport[1]}, device_scale_factor=1)
-            page.add_init_script(
-                f"localStorage.setItem('cardnews-editor-v3', {json.dumps(deck_json)});"
-            )
-            page.goto(f"http://127.0.0.1:{CARDNEWS_PORT}/?shoot={i}", wait_until="networkidle")
-            page.add_style_tag(content=SQUARE_CARD_CSS)
-            page.wait_for_timeout(900)
-            path = out_dir / f"{i + 1:02d}.png"
-            page.screenshot(path=str(path), full_page=False)
-            paths.append(str(path))
-            page.close()
-        browser.close()
-    return paths
+    from content_lineage import validate_cardnews_origin
+    validate_cardnews_origin(deck)
+    import cardnews_renderer
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=False)
+    builder = cardnews_renderer.load_builder()
+    for index, slide in enumerate(deck["slides"]):
+        slide["layoutType"] = builder.layout_for(index, slide)
+    (out_dir / "04_cardnews_deck.json").write_text(json.dumps(deck, ensure_ascii=False, indent=2), encoding="utf-8")
+    cardnews_renderer.main(["--root", str(out_dir)])
+    return [str(out_dir / "png" / f"{index:02d}.png") for index in range(1, 11)]
 
 
 def capture_youtube_frames_from_browser(youtube_url, image_count, out_dir):
@@ -828,6 +817,7 @@ def build_cafe_assets(manuscript, youtube_url, title, image_count, optional_conf
 
 
 def main(argv=None):
+    raise RuntimeError("레거시 통합 제작기는 중단되었습니다. content_workflow.py와 채널별 정본 실행기를 사용하세요.")
     ap = argparse.ArgumentParser()
     ap.add_argument("youtube_url", nargs="?", help="YouTube URL")
     ap.add_argument("--file", help="NotebookLM 원고 파일을 직접 사용")
