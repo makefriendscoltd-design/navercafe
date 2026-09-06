@@ -38,7 +38,10 @@ TRACKER = Path("/Users/apple/orca/projects/aimax-crm-observability/bin/aimax-crm
 CRM_DB = Path("/Users/apple/Library/Application Support/AIMAX CRM Observability/events.sqlite3")
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 INVENTORY_DIRECT_CHUNK_SIZE = 48
-INVENTORY_DIRECT_CONCURRENCY = 8
+# 48-row chunks at concurrency 8 need six waves each, and four chunks of a
+# 174-row channel can reach the 100s per-chunk timeout before the 5 minute
+# freshness window closes.  Halve the waves; the window itself is unchanged.
+INVENTORY_DIRECT_CONCURRENCY = 16
 INVENTORY_CHUNK_MAX_AGE = timedelta(minutes=5)
 INVENTORY_CHUNK_FUTURE_SKEW = timedelta(minutes=1)
 

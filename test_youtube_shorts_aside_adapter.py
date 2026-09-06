@@ -556,7 +556,10 @@ def test_measured_174_plus_row_plan_covers_every_row_without_repeating_paginatio
     ] == ["initial", "final"]
     assert all("#navigate-after" not in call["body"] for call in direct_calls)
     assert all("Promise.allSettled" in call["body"] for call in direct_calls)
-    assert all(call["payload"]["concurrency"] == 8 for call in direct_calls)
+    assert all(
+        call["payload"]["concurrency"] == adapter.INVENTORY_DIRECT_CONCURRENCY
+        for call in direct_calls
+    )
     # This is a hermetic coverage/cardinality test. Live timing observations
     # are operational evidence, not a unit-test dependency.
 
