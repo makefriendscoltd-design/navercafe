@@ -94,3 +94,16 @@
 - 증거 정본: outputs/0UFSZ_5OSIk-20260903/repair-20260906/shorts-v17-approved/provider/final_result.json 및 journal.json. production_manifest.json에도 실제 provider ID/URL/예약 상태를 연결했다.
 - 카페는 로그인 정상. 기존 경로의 소제목/문단 분리 실패가 남았다. 별도 Clipboard HTML v0도 빈 문단 또는 caret 준비 timeout을 보여 발행 경로에 넣지 않았다. 기존 코드에 실험 패치를 남기지 않았으며 큐 보류를 해제하지 않았다.
 - 카페 다음 통과 조건: Aside u0에서 단일 빈 편집기에 원문 도입·소제목·본문을 입력해 세 부분이 분리되고 소제목만 실제 quotation 컴포넌트로 변환됨을 DOM+화면으로 확인. 이후 동일 경로를 전체 5인용구/5이미지/OG 카드로 확장. 현재 카페 공급자 게시 URL 없음. 재로그인은 필요하지 않다.
+
+
+## 사용자 결함 신고 후 예약 쇼츠 전체 재점검 — 2026-09-06
+
+- 앞의 “쇼츠 완료”는 공급자 예약 상태 확인에 한정한다. 사용자 체감 품질 완료 판정은 철회한다. 사용자 신고: 예약분 설명란에 링크만 남음, 섹션별 목소리 변화.
+- Aside u0 실제 전체 목록 178개를 읽음: 예약 쇼츠 21개. 설명란 18개가 원본 URL 한 줄, 1개가 URL/CTA/해시태그만, 2개에 본문 있음. 예약 상태/시각은 이번 점검에서 변경하지 않음.
+- 확인한 설명 누락 코드: outputs/provider-batch-recovery-20260831-shorts/02_schedule_source_v0.py:215에서 description을 원본 URL 한 줄로 지정. 기존 공급자 검사는 원고가 아닌 이 잘못된 기대값과 일치해도 통과할 수 있었음.
+- 기존 19개 원응답과 현재 원고의 첫째 항목 문장을 대조한 결과 18개 불일치. 이는 전체 원문 비교 합격 판정이 아니며 영상 재제작 범위를 검토해야 한다는 증거다. 옛 응답은 현재 v17 문단 파서에 맞지 않으므로 강제 통과시키지 않음.
+- 21개 모두 음성 alignment를 찾음. 실제 생성 request ID를 이전 구간에서 다음 구간으로 연결한 기록은 0개. Voice ID/설정/음량/속도 검사는 실제 음색·억양 연속성을 입증하지 않는다. 음색 변화의 개별 원인은 아직 청취 검증 전이며 request 연결 부재만으로 인과를 확정하지 않는다.
+- 재사용하지 않을 방식: URL만 있는 description의 성공 판정, Voice ID 일치만으로 목소리 일관성 판정, 기존 영상 확인 없이 설명만 채워 재제작 완료로 처리.
+- 별도 v0: scheduled-shorts-audit/voice_stitch_v0.py로 원문이 보존된 0UFSZ_5OSIk의 7구간을 동일 계정/Voice ID/모델/설정에서 previous_request_ids로 순차 생성. API 자동 재시도/계정 교체 없음. voice-stitch-candidate-01/voice-candidate.mp3 생성. 상태 generated_unverified, perceptual_voice_continuity=unverified, upload_authorized=false. 기존 MP4와 예약분에 미반영.
+- 교체 통과 조건: 예약 21개의 provider ID와 실제 영상 정체성 대조, 각 원고 원문 보존, 본문 원고 일치, 모든 구간 음성 연속성 검증, 기존 영상/자막/속도/오디오 게이트, 실제 공급자 저장 후 재조회. 예약 완료와 품질 검증 완료를 분리한다.
+- 근거: outputs/workflow-repair-20260906/scheduled-shorts-audit/{latest-inventory,artifact-map,first-item-text-audit,voice-provenance-audit}.json.

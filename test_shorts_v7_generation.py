@@ -77,10 +77,10 @@ def test_pair_preflight_discards_both_then_generates_middle_sections(monkeypatch
 
     records, summary = builder._prepare_narration_sections(sections)
 
-    assert builder.NARRATION_GENERATION_PROTOCOL == "paired_intro_cta_preflight_full_candidate_v0"
+    assert builder.NARRATION_GENERATION_PROTOCOL == "single_take_reference_restoration_v1"
     assert builder.NARRATION_PAIR_PREFLIGHT_MAX == 1.08
     assert policy.NARRATION["section_count"] == 7
-    assert policy.NARRATION["section_gap_seconds"] == 0.24
+    assert policy.NARRATION["section_gap_seconds"] == 0.0
     assert policy.NARRATION["last_to_first_pace_ratio_max"] == 1.10
     assert policy.TAILBITE == {"threshold_db": -35.0, "minimum": 0.08, "retained_gap": 0.06}
     assert [call["audio"].name for call in calls] == [
@@ -192,6 +192,7 @@ def test_section_request_carries_locked_voice_and_neighbor_context(monkeypatch, 
 
 def test_exact_runtime_gate_requires_the_selected_pair_files(monkeypatch, tmp_path):
     builder = load_builder()
+    monkeypatch.setattr(builder, "NARRATION_GENERATION_PROTOCOL", "paired_intro_cta_preflight_full_candidate_v0")
     builder.ROOT = tmp_path
     builder.SCRIPT = tmp_path / "07_script_final.txt"
     script = "도입 첫째 둘째 셋째 넷째 다섯째 CTA"

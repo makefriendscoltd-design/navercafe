@@ -102,6 +102,7 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
     parsed, _ = shorts.extract_script(_strip_citations(raw))
     parsed, _ = shorts.canonicalize_notebooklm_script_layout(parsed)
     expected = shorts.finalize_script(parsed, int(origin['source_minutes']))
+    shorts.validate_intro_promise(expected)
     if script.read_text(encoding='utf-8').strip() != expected:
         raise LineageError('Rendered script is not the deterministic NotebookLM + fixed CTA transform')
     wording = origin.get('wording_authorization') or {}

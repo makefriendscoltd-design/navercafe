@@ -503,6 +503,13 @@ def require_strong_hook(script: str) -> str:
     return first_sentence
 
 
+def validate_intro_promise(script: str) -> None:
+    require_strong_hook(script)
+    intro = re.split(r"(?m)^\s*첫째", script, maxsplit=1)[0].strip()
+    if len(intro) > 150 or not re.search(r"(?:5|다섯)\s*가지 방법,\s*저장하고 끝까지 보세요!$", intro):
+        raise RuntimeError("도입은 150자 이내의 강한 훅과 5가지 방법 예고로 끝나야 합니다.")
+
+
 def finalize_script(script: str, minutes: int) -> str:
     return f"{keep_through_fifth(script)}\n\n{fixed_cta(minutes)}"
 
@@ -669,7 +676,7 @@ def fetch(
             provider_answer=provider_answer,
             citation_stripped_answer=citation_stripped_answer,
         )
-        require_strong_hook(final)
+        validate_intro_promise(final)
         validate_head_copy_connection(head_copies[0], final)
     except Exception:
         record_shorts_attempt(

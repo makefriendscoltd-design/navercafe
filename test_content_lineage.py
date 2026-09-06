@@ -53,10 +53,8 @@ def test_real_user_authorization_is_bound_to_the_approved_answer(tmp_path):
     manifest = json.loads(original.read_text())
     target = tmp_path / 'production_manifest.json'
     target.write_text(json.dumps(manifest))
-    assert lineage.validate_shorts_origin(tmp_path)['wording_review']['authorized_original_wording']
-    manifest['content_lineage']['wording_authorization']['answer_sha256'] = 'another response'
-    target.write_text(json.dumps(manifest))
-    with pytest.raises(policy.ProductionPolicyError, match='unsupported_absolute_performance'):
+    # The user's defect report invalidated v17 as a new upload candidate.
+    with pytest.raises(lineage.LineageError, match='current instruction'):
         lineage.validate_shorts_origin(tmp_path)
 
 
@@ -85,7 +83,7 @@ def test_shorts_origin_accepts_exact_transform_and_rejects_rewrite_even_with_fre
            '1. 영상 개요가 대박?! / 소스 기반 제작법\n'
            '2. 영상 만들기 어렵죠? / 개요 생성 순서\n'
            '3. 이 기능 놓치면 손해 / 영상 개요 활용법\n\n### 스크립트\n'
-           '이 프로그램 대박입니다. 영상 개요의 소스 기반 제작법입니다.\n\n'
+           '이 프로그램 대박입니다. 영상 개요의 소스 기반 제작법입니다. 영상 제작 5가지 방법, 저장하고 끝까지 보세요!\n\n'
            '첫째, 사용할 소스를 추가합니다.\n\n둘째, 소스 내용을 확인합니다.\n\n'
            '셋째, 필요한 형식을 고릅니다.\n\n넷째, 영상 개요를 확인합니다.\n\n'
            '다섯째, 결과를 확인합니다.')

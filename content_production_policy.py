@@ -46,8 +46,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v17.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v17.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v18.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v18.0
 
 ## 작업 원칙
 
@@ -124,7 +124,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 
 1. 확인한 성별과 이름만 사용한다. 언급이 없으면 생략한다. 도입에서 화자의 교육 인원·고객 수·매출·수익·성과 이력을 내세우지 않는다. `완벽하게 처리`, `완벽하게 마무리`, `백 퍼센트 위임`, `오류 없이`, `무조건 성공`처럼 시연을 일반적인 성공 보장으로 바꾸지 않는다.
 2. STEP 1에서 확인한 전략·팁과 수치만 사용하고 임의로 추가하거나 변형하지 않는다. 첫째부터 다섯째의 제목과 핵심 행동은 원본에서 확인한 다섯 지점을 실제 순서대로 각각 이어받는다. 출처의 구체적 행동을 `자료 준비`, `기능 활용`, `자동화하기` 같은 일반적인 이름으로 바꾸거나 서로 다른 항목으로 대체하지 않는다. 어느 항목인지 원본과 일대일로 대응할 수 없으면 스크립트를 출력하지 않는다.
-3. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`처럼 짧고 강하게 시작할 수 있지만, 뒤 문장에서 원본에 없는 결과를 붙이지 않는다.
+3. 도입은 빠른 템포로 읽을 짧은 세 문장으로 쓴다. 첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`로 시작한다. 둘째 문장은 원본의 구체적인 도구·인물과 효용 하나만 짧게 말한다. 셋째 문장은 반드시 `[원본 주제] 5가지 방법, 저장하고 끝까지 보세요!`로 끝낸다. 세 문장을 합쳐 공백 포함 150자 이하로 쓰며 장황한 설명을 붙이지 않는다. 바로 다음 문단에서 `첫째,`로 들어간다. 원본에 없는 결과를 붙이지 않는다.
 4. 스크립트는 도입과 원본 순서의 첫째부터 다섯째까지만 작성한다. 도입을 첫 번째 Markdown 문단으로 쓴 뒤 빈 줄 하나를 넣고, `첫째,`부터 `다섯째,`까지가 각각 자기 Markdown 문단의 첫 글자로 시작하게 쓴다. 각 문단 사이에는 빈 줄 하나를 넣는다. 도입이나 첫째~다섯째를 한 개의 평탄화된 문단에 이어 쓰지 않으며, 여섯째 이후는 출력하지 않는다.
 5. 원본 CTA의 실제 문구나 임의의 CTA를 스크립트에 출력하지 않는다. 원본의 핵심 지점이 CTA 입력·요청을 다룬다면 행동만 설명하고 위의 시연 사례·비보장 두 문장을 정확히 쓴다. 스크립트 본문은 후속 단계에서 글자 그대로 보존되고 고정 CTA만 붙는다.
 6. `다섯째,` 문단이 최종 출력의 마지막 문단이다. 그 뒤에 버전 표기, 지침 요약, 주석, 메타데이터 또는 다른 문장을 출력하지 않는다.
@@ -170,7 +170,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 다섯째, [다섯 번째 내용 문단]
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "7bf0525cfd9cb089dd3c8bedc92385cfffa4c70acd74564e47a2c03862ae1613"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "82ee6b06f966cd4a136542f5ea3957befd91de9c2f8d42c6993a4f9730d9127d"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
@@ -234,9 +234,9 @@ MINSOO_VOICE_SETTINGS = {
 
 TAILBITE = {"threshold_db": -35.0, "minimum": 0.08, "retained_gap": 0.06}
 NARRATION = {
-    "generation_mode": "seven_sections_same_voice_settings_for_speed_uniformity",
+    "generation_mode": "single_take_reference_restoration",
     "section_count": 7,
-    "section_gap_seconds": 0.24,
+    "section_gap_seconds": 0.0,
     "last_to_first_pace_ratio_max": 1.10,
 }
 VIDEO = {"width": 1080, "height": 1920, "fps": 30}
@@ -881,7 +881,7 @@ def validate_voice_evidence(payload: dict[str, Any]) -> None:
     if not alignment.get("characters") or not alignment.get("character_start_times_seconds"):
         raise ProductionPolicyError("민수 발음 정렬값이 비어 있습니다.")
     if payload.get("generation_mode") != NARRATION["generation_mode"]:
-        raise ProductionPolicyError("민수 음성은 도입·첫째~다섯째·CTA 7구간 합성본이어야 합니다.")
+        raise ProductionPolicyError("민수 음성은 전체 대본 단일 생성본이어야 합니다. 7개는 논리 구간입니다.")
     if payload.get("section_count") != NARRATION["section_count"]:
         raise ProductionPolicyError("민수 음성 구간 수가 정본 7개와 다릅니다.")
 

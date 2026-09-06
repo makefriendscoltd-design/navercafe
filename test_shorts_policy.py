@@ -331,9 +331,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v17.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v18.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "7bf0525cfd9cb089dd3c8bedc92385cfffa4c70acd74564e47a2c03862ae1613"
+        "82ee6b06f966cd4a136542f5ea3957befd91de9c2f8d42c6993a4f9730d9127d"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1031,7 +1031,7 @@ def test_same_instruction_attempt_is_blocked_before_second_provider_call(monkeyp
 3. 이 기능 놓치면 손해 / 영상 개요 활용법
 
 ### 스크립트
-이 프로그램 대박입니다. NotebookLM에서 소스 기반 영상 개요를 만드는 순서입니다.
+이 프로그램 대박입니다. NotebookLM에서 소스 기반 영상 개요를 만듭니다. 영상 제작 5가지 방법, 저장하고 끝까지 보세요!
 
 첫째, 사용할 소스를 NotebookLM에 추가합니다.
 

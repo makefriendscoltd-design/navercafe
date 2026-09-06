@@ -51,7 +51,7 @@ BGM = ASSET_ROOT / "bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3"
 SFX = ASSET_ROOT / "sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3"
 TITLE_FONT = ASSET_ROOT / "fonts/BMHANNA_11yrs_ttf.ttf"
 BODY_FONT = ASSET_ROOT / "fonts/Cafe24Ohsquare.ttf"
-NARRATION_GENERATION_PROTOCOL = "paired_intro_cta_preflight_full_candidate_v0"
+NARRATION_GENERATION_PROTOCOL = "single_take_reference_restoration_v1"
 NARRATION_PAIR_PREFLIGHT_MAX = 1.08
 NARRATION_PAIR_MAX_ATTEMPTS = 6
 NARRATION_PAIR_SEED_BASE = 2_026_090_400
@@ -177,48 +177,60 @@ def parse_srt(path: Path) -> list[dict]:
 def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -> dict:
     script_text = SCRIPT.read_text(encoding="utf-8").strip()
     evidence = json.loads((ROOT / "narration_alignment.json").read_text(encoding="utf-8"))
-    pair_summary = json.loads(
-        (ROOT / "narration_pair_preflight/summary.json").read_text(encoding="utf-8")
-    )
-    selected_pair = str(pair_summary.get("selected_pair") or "")
-    selected_result = next(
-        (item for item in pair_summary.get("pairs") or [] if item.get("pair") == selected_pair),
-        None,
-    )
-    selected_ratio = selected_result.get("last_to_first_ratio") if selected_result else None
-    selected_pair_root = ROOT / "narration_pair_preflight" / selected_pair
-    active_section_root = ROOT / "narration_sections"
-    selected_pair_files_match = bool(selected_pair) and all(
-        sha(selected_pair_root / filename) == sha(active_section_root / filename)
-        for filename in (
-            "01_intro.mp3",
-            "01_intro_alignment.json",
-            "07_cta.mp3",
-            "07_cta_alignment.json",
+    continuous = evidence.get("generation_protocol") == "single_take_reference_restoration_v1"
+    if continuous:
+        single = ROOT / "narration_single_take.mp3"
+        pair_preflight_pass = bool(
+            evidence.get("generation_request_count") == 1
+            and single.is_file()
+            and evidence.get("single_take_sha256") == sha(single)
+            and evidence.get("generation_mode") == NARRATION["generation_mode"]
         )
-    )
-    pair_preflight_pass = bool(
-        pair_summary.get("protocol") == NARRATION_GENERATION_PROTOCOL
-        and pair_summary.get("status") == "pass"
-        and pair_summary.get("preflight_maximum") == NARRATION_PAIR_PREFLIGHT_MAX
-        and pair_summary.get("exact_runtime_maximum")
-        == NARRATION["last_to_first_pace_ratio_max"]
-        and selected_result
-        and selected_result.get("status") == "pass"
-        and selected_result.get("pair_disposition") == "selected"
-        and isinstance(selected_ratio, (int, float))
-        and selected_ratio <= NARRATION_PAIR_PREFLIGHT_MAX
-        and pair_summary.get("selected_pair_preflight_ratio") == selected_ratio
-        and evidence.get("generation_protocol") == NARRATION_GENERATION_PROTOCOL
-        and evidence.get("selected_pair") == selected_pair
-        and evidence.get("selected_pair_preflight_ratio") == selected_ratio
-        and selected_pair_files_match
-        and all(
-            item.get("pair_disposition") == "discard_both"
-            for item in pair_summary.get("pairs") or []
-            if item.get("pair") != selected_pair
+        selected_pair = selected_ratio = None
+        selected_pair_files_match = False
+    else:
+        pair_summary = json.loads(
+            (ROOT / "narration_pair_preflight/summary.json").read_text(encoding="utf-8")
         )
-    )
+        selected_pair = str(pair_summary.get("selected_pair") or "")
+        selected_result = next(
+            (item for item in pair_summary.get("pairs") or [] if item.get("pair") == selected_pair),
+            None,
+        )
+        selected_ratio = selected_result.get("last_to_first_ratio") if selected_result else None
+        selected_pair_root = ROOT / "narration_pair_preflight" / selected_pair
+        active_section_root = ROOT / "narration_sections"
+        selected_pair_files_match = bool(selected_pair) and all(
+            sha(selected_pair_root / filename) == sha(active_section_root / filename)
+            for filename in (
+                "01_intro.mp3",
+                "01_intro_alignment.json",
+                "07_cta.mp3",
+                "07_cta_alignment.json",
+            )
+        )
+        pair_preflight_pass = bool(
+            pair_summary.get("protocol") == NARRATION_GENERATION_PROTOCOL
+            and pair_summary.get("status") == "pass"
+            and pair_summary.get("preflight_maximum") == NARRATION_PAIR_PREFLIGHT_MAX
+            and pair_summary.get("exact_runtime_maximum")
+            == NARRATION["last_to_first_pace_ratio_max"]
+            and selected_result
+            and selected_result.get("status") == "pass"
+            and selected_result.get("pair_disposition") == "selected"
+            and isinstance(selected_ratio, (int, float))
+            and selected_ratio <= NARRATION_PAIR_PREFLIGHT_MAX
+            and pair_summary.get("selected_pair_preflight_ratio") == selected_ratio
+            and evidence.get("generation_protocol") == NARRATION_GENERATION_PROTOCOL
+            and evidence.get("selected_pair") == selected_pair
+            and evidence.get("selected_pair_preflight_ratio") == selected_ratio
+            and selected_pair_files_match
+            and all(
+                item.get("pair_disposition") == "discard_both"
+                for item in pair_summary.get("pairs") or []
+                if item.get("pair") != selected_pair
+            )
+        )
     alignment = evidence["alignment"]
     chars = alignment["characters"]
     starts = [float(value) for value in alignment["character_start_times_seconds"]]
@@ -290,6 +302,15 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
         "alignment_sha256": sha(ROOT / "narration_alignment.json"),
         "captions_sha256": sha(ROOT / "captions.srt"),
     }
+    if continuous:
+        result["recovery_protocol"] = {
+            "name": NARRATION_GENERATION_PROTOCOL,
+            "single_take_bound": pair_preflight_pass,
+            "generation_request_count": evidence.get("generation_request_count"),
+            "section_audio_concatenation": False,
+            "atempo_used": False, "pitch_correction_used": False,
+            "fixed_cta_changed": False, "threshold_relaxed": False,
+        }
     dump(ROOT / "02_exact_runtime_gate.json", result)
     if result["status"] != "pass":
         raise RuntimeError("exact runtime gate failed")
@@ -322,6 +343,9 @@ def generate_minsoo_section(
         raise RuntimeError("no ElevenLabs key; refusing TTS fallback")
     result = None
     last_error = None
+    if NARRATION["generation_mode"] == "single_take_reference_restoration":
+        keys = keys[:1]
+    request_id = None
     for key in keys:
         request = urllib.request.Request(
             f"https://api.elevenlabs.io/v1/text-to-speech/{MINSOO_VOICE_ID}/with-timestamps?output_format=mp3_44100_192",
@@ -331,6 +355,7 @@ def generate_minsoo_section(
         )
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
+                request_id = getattr(response, "headers", {}).get("request-id")
                 result = json.loads(response.read().decode("utf-8"))
             break
         except urllib.error.HTTPError as exc:
@@ -351,6 +376,7 @@ def generate_minsoo_section(
     dump(alignment_path, {
         "voice_id": MINSOO_VOICE_ID,
         "model_id": MINSOO_MODEL_ID,
+        "request_id": request_id,
         "settings": MINSOO_VOICE_SETTINGS,
         "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
         "script": script,
@@ -581,7 +607,44 @@ def _prepare_narration_sections(sections: list[str]) -> tuple[list[dict], dict]:
     return records, pair_summary
 
 
+def generate_single_take(sections: list[str]) -> tuple[Path, Path, list[dict]]:
+    """Restore the earlier continuous narration; seven sections are timing labels only."""
+    script = SCRIPT.read_text(encoding="utf-8").strip()
+    audio = ROOT / "narration_single_take.mp3"
+    alignment = ROOT / "narration_alignment.json"
+    if audio.exists() or alignment.exists():
+        raise RuntimeError("single-take candidate already exists; refusing overwrite")
+    generate_minsoo_section(script, audio, alignment, previous_text=None, next_text=None,
+                            seed=2026090602)
+    evidence = json.loads(alignment.read_text())
+    timings = tailbite.aligned_words(alignment)
+    if len(timings) != len(script.split()):
+        raise RuntimeError("single-take alignment differs from complete script tokens")
+    records = []
+    offset = 0
+    for index, (name, section) in enumerate(zip(NARRATION_SECTION_NAMES, sections), 1):
+        count = len(section.split())
+        start, end = timings[offset][0], timings[offset + count - 1][1]
+        records.append({"index": index, "name": name, "script": section,
+                        "script_sha256": hashlib.sha256(section.encode()).hexdigest(),
+                        "audio": str(audio), "audio_sha256": sha(audio),
+                        "alignment": str(alignment),
+                        "combined_offset_seconds": start,
+                        "duration_seconds": end - start,
+                        "logical_section_only": True})
+        offset += count
+    if offset != len(timings):
+        raise RuntimeError("logical sections do not cover the complete single take")
+    evidence.update(generation_mode=NARRATION["generation_mode"], section_count=7,
+                    section_gap_seconds=0.0, generation_request_count=1,
+                    single_take_sha256=sha(audio), sections=records)
+    dump(alignment, evidence)
+    return audio, alignment, records
+
+
 def combine_section_audio_and_alignment(sections: list[str]) -> tuple[Path, Path, list[dict]]:
+    if NARRATION["generation_mode"] == "single_take_reference_restoration":
+        return generate_single_take(sections)
     records, pair_summary = _prepare_narration_sections(sections)
     audio_paths = [Path(record["audio"]) for record in records]
     combined_audio = ROOT / "narration_seven_sections.mp3"
@@ -700,8 +763,9 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
         "generation_protocol": NARRATION_GENERATION_PROTOCOL,
         "section_count": NARRATION["section_count"],
         "section_gap_seconds": NARRATION["section_gap_seconds"],
-        "selected_pair": alignment_json["selected_pair"],
-        "selected_pair_preflight_ratio": alignment_json["selected_pair_preflight_ratio"],
+        "selected_pair": alignment_json.get("selected_pair"),
+        "selected_pair_preflight_ratio": alignment_json.get("selected_pair_preflight_ratio"),
+        "generation_request_count": alignment_json.get("generation_request_count"),
         "sections": records,
         "combined_take": str(combined),
         "combined_take_sha256": sha(combined),
