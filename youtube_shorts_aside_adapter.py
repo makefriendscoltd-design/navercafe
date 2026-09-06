@@ -227,6 +227,14 @@ try{p=await openTab(`https://studio.youtube.com/?shorts_upload_session=${payload
 """
 
 
+SAVE_ATTACHED_METADATA_JS = r"""
+let p=null,saveClicks=0;
+const read=async()=>({title:((await p.locator('#title-textarea #textbox').innerText())||'').trim(),description:((await p.locator('#description-textarea #textbox').innerText())||'').trim()});
+const openExact=async()=>{p=await openTab('https://studio.youtube.com/video/'+payload.id+'/edit');const end=Date.now()+30000;while(Date.now()<end&&await p.locator('#title-textarea #textbox').count()!==1)await sleep(250);const body=await p.locator('body').innerText();if(!p.url().includes('/video/'+payload.id+'/edit')||!body.includes(payload.channel)||!body.includes('final.mp4'))throw Error('exact-attached-video-binding-failed');};
+try{await openExact();const before=await read();if(!['final',payload.sentinel,payload.title].includes(before.title)||!['',payload.description.trim()].includes(before.description))throw Error('unexpected-attached-metadata');if(before.title!==payload.title||before.description!==payload.description.trim()){for(const [selector,value] of [['#title-textarea #textbox',payload.title],['#description-textarea #textbox',payload.description]]){const loc=p.locator(selector);if(await loc.count()!==1)throw Error('metadata-cardinality');await loc.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await loc.pressSequentially(value,{delay:1});await p.keyboard.press('Tab');if((await loc.innerText()).trim()!==value.trim())throw Error('metadata-entry-mismatch');}const save=p.locator('ytcp-button#save');if(await save.count()!==1||!await save.isEnabled())throw Error('metadata-save-unavailable');saveClicks++;await save.click();const end=Date.now()+30000;while(Date.now()<end&&await save.isEnabled())await sleep(250);if(await save.isEnabled())throw Error('metadata-save-unconfirmed');}await p.close();p=null;await openExact();const after=await read();if(after.title!==payload.title||after.description!==payload.description.trim())throw Error('persisted-metadata-mismatch');emit({status:'pass',provider_id:payload.id,save_clicks:saveClicks,title:after.title,description:after.description,fresh_read_verified:true});}catch(error){emit({status:'blocked',provider_id:payload.id,save_clicks:saveClicks,error:String(error?.message||error)});}finally{try{if(p)await p.close();}catch(_){}}
+"""
+
+
 SCHEDULE_JS = r"""
 let p=null,root=null,scheduleClicks=0,flow='';const compact=s=>(s||'').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').replace(/\u00A0/g,' ').replace(/\r\n?/g,'\n').replace(/\s+/g,'');
 const exact=async(base,selector,label,{mustBeVisible=true}={})=>{const loc=base.locator(selector),count=await loc.count();if(count!==1)throw new Error(`${label}-cardinality:${count}`);if(mustBeVisible&&!await loc.isVisible())throw new Error(`${label}-not-visible`);return loc;};
@@ -800,6 +808,9 @@ class AsideHeadlessU0Provider:
             cwd=manifest.video.parent,
             timeout=480,
         )
+        receipt_dir = manifest.video.parent / "provider"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "schedule_receipt.json").write_text(json.dumps(dict(raw), ensure_ascii=False, indent=2))
         count = int(raw.get("provider_observed_schedule_click_count") or 0)
         if (
             raw.get("status") == "blocked"
@@ -1007,6 +1018,20 @@ def run_live(manifest_path: str | Path) -> dict[str, Any]:
     manifest = publisher.load_manifest(manifest_path)
     _require_exact_channel(manifest)
     class RowModelProvider(AsideHeadlessU0Provider):
+        def attach_once(self, manifest, *, draft_sentinel):
+            receipt = super().attach_once(manifest, draft_sentinel=draft_sentinel)
+            metadata = self._run(SAVE_ATTACHED_METADATA_JS, {
+                "id": receipt["provider_id"], "channel": manifest.expected_channel,
+                "title": manifest.title, "description": manifest.description,
+                "sentinel": draft_sentinel,
+            }, cwd=manifest.video.parent, timeout=150)
+            (manifest.video.parent / "provider/attachment_metadata_receipt.json").write_text(
+                json.dumps(dict(metadata), ensure_ascii=False, indent=2))
+            if (metadata.get("status") != "pass" or metadata.get("fresh_read_verified") is not True
+                    or metadata.get("provider_id") != receipt["provider_id"]):
+                raise publisher.AmbiguousProviderState("Attached video metadata not persisted; recover exact receipt ID without reupload")
+            return receipt
+
         def scan_inventory(self, manifest, *, phase):
             _require_exact_channel(manifest)
             from youtube_shorts_inventory import scan
