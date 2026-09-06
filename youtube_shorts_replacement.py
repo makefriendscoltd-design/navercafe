@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime
 import hashlib
 import json
+import uuid
 from pathlib import Path
 
 import content_production_policy as policy
@@ -80,6 +81,37 @@ class ReplacementPublisher(pub.YouTubeShortsPublisher):
     def _scan(self, manifest, phase, fixed_now):
         full = super()._scan(manifest, phase, fixed_now)
         old = bind_old(full, manifest)
+        recovery = manifest.replacement.get('absent_attachment_recovery')
+        if recovery and not manifest.journal.exists() and phase in {
+                'initial_recovery_or_duplicate_scan', 'attachment_precommit_requery'}:
+            prior_path = Path(recovery['prior_journal'])
+            if hashlib.sha256(prior_path.read_bytes()).hexdigest() != recovery['prior_journal_sha256']:
+                raise pub.AmbiguousProviderState('Prior uncertain attachment journal changed')
+            prior = json.loads(prior_path.read_text())
+            if (prior.get('source_key') != manifest.source_key
+                    or prior.get('final_mp4_sha256') != manifest.video_sha256
+                    or prior.get('attachment', {}).get('provider_observed_click_count') != 0
+                    or prior.get('schedule_commit', {}).get('reservation_count') != 0
+                    or set(prior['baseline_identities']) != {r.identity for r in full.rows if r.provider_id != old.provider_id}):
+                raise pub.AmbiguousProviderState('Fresh inventory does not prove the reconciled baseline is unchanged')
+            general_path = Path(recovery['general_upload_snapshot'])
+            if hashlib.sha256(general_path.read_bytes()).hexdigest() != recovery['general_upload_snapshot_sha256']:
+                raise pub.AmbiguousProviderState('General upload baseline changed')
+            from youtube_shorts_inventory import CAPTURE_JS
+            from youtube_shorts_aside_adapter import CHANNEL_ID
+            observer = CAPTURE_JS.replace("if(states.length!==1)throw new Error('ambiguous visibility');",
+                                          "if(states.length!==1)states.splice(0,states.length,'unclassified');")
+            scan_id = uuid.uuid4().hex
+            general = self.provider._run(observer, {
+                'list_url': f'https://studio.youtube.com/channel/{CHANNEL_ID}/videos/upload',
+                'channel_id': CHANNEL_ID, 'scan_id': scan_id,
+            }, cwd=manifest.video.parent, timeout=150)
+            (manifest.video.parent / f'replacement-general-{scan_id}.json').write_text(json.dumps(dict(general), ensure_ascii=False, indent=2))
+            baseline_general = json.loads(general_path.read_text())
+            identities = lambda data: sorted((r['provider_id'], r['title'], r['description'], r['draft_status']) for r in data.get('rows', []))
+            if (general.get('status') != 'pass' or not general.get('pages', [{}])[-1].get('next_disabled')
+                    or identities(general) != identities(baseline_general)):
+                raise pub.AmbiguousProviderState('General uploads changed after the absent-attachment reconciliation')
         # The complete provider snapshot remains in the inventory evidence files.
         # Only this explicitly bound predecessor is excluded from candidate matching.
         return replace(full, rows=tuple(r for r in full.rows if r.provider_id != old.provider_id))

@@ -718,6 +718,12 @@ class AsideHeadlessU0Provider:
             raise publisher.ManifestError("adapter accepts only exact final.mp4")
         encoded = base64.b64encode(manifest.video.read_bytes()).decode("ascii")
         session_marker = uuid.uuid4().hex
+        receipt_dir = manifest.video.parent / "provider"
+        receipt_dir.mkdir(parents=True, exist_ok=True)
+        (receipt_dir / "attachment_invocation.json").write_text(json.dumps({
+            "session_marker": session_marker, "video_sha256": manifest.video_sha256,
+            "draft_sentinel": draft_sentinel, "status": "started",
+        }, ensure_ascii=False, indent=2))
         raw = self._run(
             ATTACH_JS,
             {
@@ -731,6 +737,7 @@ class AsideHeadlessU0Provider:
             cwd=manifest.video.parent,
             timeout=600,
         )
+        (receipt_dir / "attachment_receipt.json").write_text(json.dumps(dict(raw), ensure_ascii=False, indent=2))
         count = int(raw.get("provider_observed_attachment_click_count") or 0)
         checks = (
             raw.get("status") == "attached",
