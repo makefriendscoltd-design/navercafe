@@ -324,7 +324,9 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
         f"row.locator('{row_contract['old_date_selector']}')"
         not in adapter.INVENTORY_SEED_JS
     )
-    assert "titles.count()!==1||!await titles.isVisible()" in adapter.INVENTORY_DIRECT_JS
+    assert "listBrowserTabs" not in adapter.INVENTORY_DIRECT_JS
+    assert "attachBrowserTab" not in adapter.INVENTORY_DIRECT_JS
+    assert "await one(edit,'#title-textarea #textbox','metadata-title')" in adapter.INVENTORY_DIRECT_JS
     assert "exact(root,'#title-textarea #textbox','metadata-title')" in adapter.SCHEDULE_JS
 
 
