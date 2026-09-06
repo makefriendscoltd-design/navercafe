@@ -148,10 +148,56 @@ def prepare_provider(source_key, plan_path):
     print(json.dumps({'status': 'provider_manifest_validated', 'manifest': str(target)}, ensure_ascii=False))
 
 
+def finalize_replacement(source_key, plan_path):
+    plan = json.loads(Path(plan_path).read_text())
+    entry = next(x for x in plan if x['source_key'] == source_key)
+    root = Path(entry['candidate_root'])
+    upload = json.loads((root / '07_provider_manifest.json').read_text())
+    journal = json.loads(Path(upload['journal']).read_text())
+    retired = journal.get('replacement_retirement', {})
+    if (journal.get('status') != 'complete' or retired.get('verified_status') != 'private'
+            or retired.get('old_provider_id') != entry['provider_id']):
+        raise RuntimeError('Exact new schedule and old private state are not both verified')
+    verified = journal['verified']
+    result_path = root / 'provider/final_result.json'
+    if not result_path.exists():
+        result_path.write_text(json.dumps({'status': 'complete', 'provider': verified,
+            'crm': journal['crm'], 'retirement': retired}, ensure_ascii=False, indent=2))
+    production_path = root / 'production_manifest.json'
+    production = json.loads(production_path.read_text())
+    production.update(provider_mutation_attempted=True, studio_opened=True, crm_emitted=True,
+        provider_video_id=verified['provider_id'], provider_url=verified['shorts_url'],
+        provider_state='scheduled_private_until_publish', scheduled_at=verified['scheduled_at'],
+        provider_reverified=True, provider_evidence=str(result_path),
+        supersedes_provider_id=entry['provider_id'])
+    production_path.write_text(json.dumps(production, ensure_ascii=False, indent=2))
+    old_path = root.parents[1] / 'shorts/production_manifest.json'
+    if old_path.exists():
+        backup = root / 'provider/predecessor-production-manifest.json'
+        if not backup.exists():
+            backup.write_bytes(old_path.read_bytes())
+        old = json.loads(old_path.read_text())
+        if old.get('provider_video_id') != entry['provider_id']:
+            raise RuntimeError('Predecessor manifest identity differs; do not overwrite')
+        old.update(provider_state='private_replaced', scheduled_at=None,
+            canonical_candidate_status='superseded', superseded_by=str(production_path),
+            replacement_provider_evidence=str(result_path))
+        old_path.write_text(json.dumps(old, ensure_ascii=False, indent=2))
+    entry.update(repair_stage='replacement_complete', provider_replacement_verified=True,
+        replacement_provider_id=verified['provider_id'], replacement_scheduled_at=verified['scheduled_at'],
+        old_provider_status='private', provider_evidence=str(result_path))
+    Path(plan_path).write_text(json.dumps(plan, ensure_ascii=False, indent=2))
+    print(json.dumps({'status': 'replacement_complete', 'source_key': source_key,
+        'complete': sum(x.get('provider_replacement_verified') is True for x in plan),
+        'total': len(plan)}, ensure_ascii=False))
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source_key')
     parser.add_argument('--plan', default=str(PROJECT / 'outputs/workflow-repair-20260906/scheduled-shorts-audit/sequential-replacement-plan.json'))
-    parser.add_argument('--provider-only', action='store_true', help='Bind a rendered and visually reviewed candidate to its original schedule')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--provider-only', action='store_true', help='Bind a rendered and visually reviewed candidate to its original schedule')
+    mode.add_argument('--finalize', action='store_true', help='Update existing runtime manifests only after both provider states are verified')
     args = parser.parse_args()
-    (prepare_provider if args.provider_only else prepare)(args.source_key, args.plan)
+    (finalize_replacement if args.finalize else prepare_provider if args.provider_only else prepare)(args.source_key, args.plan)
