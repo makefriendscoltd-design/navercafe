@@ -81,6 +81,8 @@ OO분 짜리 영상 내용을 모두 정리했습니다.
 
 ## 음성과 자막
 
+- 2026-09-06 사용자 지시: 기존 NotebookLM 원응답의 과장 표현을 임의 수정하지 않고 그대로 진행한다. 현재 승인한 응답은 production_manifest의 content_lineage.wording_authorization에서 source_key와 answer_sha256으로 고정한다. 이 승인은 절대 표현 휴리스틱 차단에만 적용하며 원문/음성/자막/영상 일치 검사는 유지한다. 사용자 승인과 독립적인 사실 검증 완료는 구분한다.
+
 - ElevenLabs Voice ID `34bevfaPHev7LXnjGAlA`, 모델 `eleven_multilingual_v2`만 쓴다.
 - 음성 설정은 stability 0.65, similarity_boost 0.90, style 0, speaker boost 켜짐으로 고정한다. 다른 음성이나 시스템 TTS로 폴백하지 않는다.
 - 긴 대본을 한 번에 합성하지 않는다. 도입, 첫째~다섯째, 고정 CTA의 정확히 7구간을 같은 Voice ID·모델·설정으로 각각 합성한 뒤 순서대로 결합한다. 구간 경계에는 0.24초 간격을 두고, 결합본에 silence -35dB, minimum 0.08초, retained gap 0.06초의 꼬리물기를 적용한다.

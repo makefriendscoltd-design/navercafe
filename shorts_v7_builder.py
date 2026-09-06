@@ -38,6 +38,7 @@ from notebooklm_shorts import fixed_cta, validate_head_copy, validate_head_copy_
 
 SOURCE_ID = "7cimtg6LPHg"
 SOURCE_URL = "https://youtu.be/7cimtg6LPHg"
+SOURCE_CREDIT = ""
 SOURCE = ROOT / "source_original.mp4"
 PRESENTER = Path("/Users/apple/Downloads/2026-07-02 15-39-18.mp4")
 SCRIPT = ROOT / "07_script_final.txt"
@@ -807,7 +808,7 @@ def build_config(markers: list[float]) -> dict:
         "text": "@aimax", "font_path": str(TITLE_FONT),
         "x": 540, "y": 1768, "font_size": 44,
     })
-    cfg["source"].update({"text": "출처: The Next New Thing", "x": 540, "y": 1270, "font_size": 27, "duration": 3.0})
+    cfg["source"].update({"text": SOURCE_CREDIT, "x": 540, "y": 1270, "font_size": 27, "duration": 3.0})
     cfg["audio"] = {
         "voice_volume": 1.0, "master_lufs": -14.0, "master_lra": 3.0,
         "master_true_peak": -2.5, "effects": [],
@@ -962,6 +963,22 @@ def render() -> int:
         "-c:a", "copy", "-shortest", "-movflags", "+faststart", FINAL,
     ])
 
+    return validate_existing_render()
+
+
+def validate_existing_render() -> int:
+    """Recheck the actual MP4 without generating TTS or overwriting the video."""
+    from content_lineage import validate_shorts_origin
+    validate_shorts_origin(ROOT)
+    script_text = SCRIPT.read_text(encoding='utf-8').strip()
+    voice_stem, bgm_stem, sfx_stem = (ROOT / name for name in ('voice_stem.wav', 'bgm_stem.wav', 'sfx_stem.wav'))
+    premaster, final_master = ROOT / 'premaster_mix.wav', ROOT / 'final_master.wav'
+    srt, ass = ROOT / 'captions.srt', ROOT / 'captions.ass'
+    cfg = json.loads((ROOT / 'render_config.json').read_text())
+    runtime_gate = json.loads((ROOT / '02_exact_runtime_gate.json').read_text())
+    captions = parse_srt(srt)
+    markers = [next(x['start'] for x in captions if x['text'] == word)
+               for word in ('첫째', '둘째', '셋째', '넷째', '다섯째')]
     voice_metrics = loudness(voice_stem)
     bgm_metrics = loudness(bgm_stem)
     sfx_metrics = loudness(sfx_stem)
@@ -981,9 +998,7 @@ def render() -> int:
         # readability floor and overlap its neighbor by a few milliseconds.
         # Keep the token whole and allow only that sub-frame rounding overlap.
         and all(right["start"] + 0.050 >= left["end"] for left, right in zip(srt_events, srt_events[1:]))
-        and any(x["text"] == "FreeLLMAPI" for x in srt_events)
-        and any(x["text"] == "제공자입니다" for x in srt_events)
-        and any(x["text"] == "SLA도" for x in srt_events)
+        and [x['text'] for x in srt_events] == [strip_subtitle_edge_punctuation(x) for x in script_tokens]
     )
     subtitle_edge_punctuation_free = all(
         x["text"] == strip_subtitle_edge_punctuation(x["text"])
@@ -1081,7 +1096,7 @@ def render() -> int:
 
 def configure(root: Path) -> None:
     global ROOT, SOURCE_ID, SOURCE_URL, SOURCE, PRESENTER, SCRIPT, HEADCOPY, FINAL
-    global SOURCE_MINUTES, SCENE_JOBS, SCENE_SENTINELS, UPLOAD_TITLE
+    global SOURCE_MINUTES, SCENE_JOBS, SCENE_SENTINELS, UPLOAD_TITLE, SOURCE_CREDIT
     from content_lineage import bound_file, validate_shorts_origin
     ROOT = root.resolve()
     origin = validate_shorts_origin(ROOT)
@@ -1098,6 +1113,9 @@ def configure(root: Path) -> None:
     SCENE_JOBS = data["scene_jobs"]
     SCENE_SENTINELS = data["scene_sentinels"]
     UPLOAD_TITLE = data["upload_title"]
+    SOURCE_CREDIT = data["source_credit"]
+    if not SOURCE_CREDIT.startswith('출처: ') or len(SOURCE_CREDIT) <= 4:
+        raise RuntimeError('source channel attribution is required')
     if len(SCENE_JOBS) != 6 or len(SCENE_SENTINELS) != 5 or not UPLOAD_TITLE:
         raise RuntimeError("source scene mapping and upload title are required")
     validate_presenter_asset(PRESENTER)
@@ -1118,8 +1136,13 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Common V7 renderer; source data lives in production_manifest.json")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--render", action="store_true", help="Generate paid TTS and render after origin validation")
+    parser.add_argument("--validate-existing", action="store_true", help="Recheck the existing MP4 without regenerating media")
     args = parser.parse_args(argv)
+    if args.render and args.validate_existing:
+        parser.error('choose render or validate-existing')
     configure(args.root)
+    if args.validate_existing:
+        return validate_existing_render()
     if not args.render:
         print(json.dumps({"status": "pass", "scope": "pre_render", "source_key": SOURCE_ID}))
         return 0

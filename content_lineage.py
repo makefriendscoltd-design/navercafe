@@ -104,7 +104,12 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
     expected = shorts.finalize_script(parsed, int(origin['source_minutes']))
     if script.read_text(encoding='utf-8').strip() != expected:
         raise LineageError('Rendered script is not the deterministic NotebookLM + fixed CTA transform')
-    policy.validate_shorts_verbatim_claims(parsed)
+    wording = origin.get('wording_authorization') or {}
+    authorized = (wording.get('scope') == 'preserve_original_absolute_wording'
+                  and wording.get('source_key') == source
+                  and wording.get('answer_sha256') == sha256(answer)
+                  and wording.get('instruction') == '쇼츠는 과장 표현 상관없이 진행한다. 원응답대로 하면된다.')
+    claims = policy.validate_shorts_verbatim_claims(parsed, preserve_authorized_wording=authorized)
     shorts.validate_head_copy_connection(candidates[0], expected)
     report = shorts.cta_only_transform_report(parsed, expected, int(origin['source_minutes']), provider_answer=raw)
     if video is not None:
@@ -122,7 +127,8 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
         if (upload.get('source_key') != source or upload.get('final_mp4_sha256') != sha256(video)
                 or expected not in upload.get('description', '')):
             raise LineageError('Provider manifest differs from the validated source/video/script')
-    return {'source_key': source, 'script_sha256': sha256(script), 'transform': report}
+    return {'source_key': source, 'script_sha256': sha256(script), 'transform': report,
+            'wording_review': claims}
 
 
 def validate_cardnews_origin(deck: dict) -> dict:

@@ -4,6 +4,16 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 import pytest
+
+
+def test_explicit_original_wording_authorization_preserves_absolute_phrase():
+    value = '온 팀원이 완벽하게 동기화된 가상 비서 자산을 누리게 됩니다.'
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_verbatim_claims(value)
+    result = policy.validate_shorts_verbatim_claims(value, preserve_authorized_wording=True)
+    assert result['status'] == 'pass'
+    assert result['authorized_original_wording'] == ['완벽하게 동기화']
+    assert result['independently_fact_verified'] is False
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo

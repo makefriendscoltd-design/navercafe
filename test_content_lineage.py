@@ -45,6 +45,21 @@ def test_file_binding_rejects_replaced_artifact(tmp_path):
         lineage.bound_file(tmp_path, entry, 'answer')
 
 
+def test_real_user_authorization_is_bound_to_the_approved_answer(tmp_path):
+    import content_production_policy as policy
+    original = Path(__file__).parent / 'outputs/0UFSZ_5OSIk-20260903/repair-20260906/shorts-v17-approved/production_manifest.json'
+    if not original.is_file():
+        pytest.skip('local approved production response unavailable')
+    manifest = json.loads(original.read_text())
+    target = tmp_path / 'production_manifest.json'
+    target.write_text(json.dumps(manifest))
+    assert lineage.validate_shorts_origin(tmp_path)['wording_review']['authorized_original_wording']
+    manifest['content_lineage']['wording_authorization']['answer_sha256'] = 'another response'
+    target.write_text(json.dumps(manifest))
+    with pytest.raises(policy.ProductionPolicyError, match='unsupported_absolute_performance'):
+        lineage.validate_shorts_origin(tmp_path)
+
+
 def test_real_factpack_render_is_not_verbatim_upload_authorization():
     root = Path(__file__).parent / 'outputs/dCLW6IQt06M-20260903/shorts/v16-render-20260905'
     if not root.exists():

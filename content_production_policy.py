@@ -577,7 +577,7 @@ def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
     return hits
 
 
-def validate_shorts_verbatim_claims(value: str) -> dict[str, Any]:
+def validate_shorts_verbatim_claims(value: str, *, preserve_authorized_wording: bool = False) -> dict[str, Any]:
     """Reject known generalized claims before verbatim narration can proceed."""
     hits = find_forbidden_shorts_claims(value)
     absolute_performance = re.findall(
@@ -585,14 +585,16 @@ def validate_shorts_verbatim_claims(value: str) -> dict[str, Any]:
         r"(?:백\s*퍼센트|100\s*%)[^.!?\n]{0,15}위임|무조건\s*성공",
         value,
     )
-    if absolute_performance:
+    if absolute_performance and not preserve_authorized_wording:
         hits["unsupported_absolute_performance"] = absolute_performance
     if hits:
         raise ProductionPolicyError(
             "쇼츠 NotebookLM 그대로 보존 본문에 금지 주장이 있습니다: "
             + ", ".join(sorted(hits))
         )
-    return {"status": "pass", "forbidden_claim_hits": {}}
+    return {"status": "pass", "forbidden_claim_hits": {},
+            "authorized_original_wording": absolute_performance if preserve_authorized_wording else [],
+            "independently_fact_verified": False}
 
 
 def validate_shorts_notebook_retry(
