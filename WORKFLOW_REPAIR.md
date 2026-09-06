@@ -119,3 +119,11 @@
 - 예약순 첫 항목 pw8Bt97U6fk / 기존 provider 17gxjdEaTc8 / 2026-09-07 11:00 KST. 원문은 shorts-v18, 실제 현재 렌더 후보는 shorts-v18-continuous-v1. 이전 shorts-v18와 shorts-v18-tempo-v0의 실패 결과는 보존.
 - 기존 분할 음성 후보 voice-stitch-candidate-01은 폐기 방식의 실험으로 보존하며 사용하지 않는다.
 - 전체 복구 큐: outputs/workflow-repair-20260906/scheduled-shorts-audit/sequential-replacement-plan.json. 현재 공급자 예약 교체 완료 0/21.
+
+## 첫 예약 교체 공급자 검증 완료 — 2026-09-06 22:55 KST
+
+- 1/21 완료: pw8Bt97U6fk, 새 k6bHOyDm02Y는 2026-09-07 11:00 KST 예약과 전체 본문 검증, 기존 17gxjdEaTc8는 예약 해제/비공개 재조회. provider/final_result.json 및 reconciled-attempt-03/journal.json이 증거. CRM 완료.
+- 업로드 제목 입력창은 생성 전 isVisible 조회를 하지 않는다. 입력창 존재 여부부터 기다린다.
+- 업로드 창의 입력 문자열만으로 저장 성공을 판단하지 않는다. 정확한 새 provider ID 편집 화면에 제목/본문을 저장하고 새 화면에서 대조한다.
+- 예약 영상은 이미 PRIVATE 라디오가 선택되어 있어도 실제 클릭해야 예약이 해제된다. 저장 버튼 비활성화 직후 탭을 닫으면 저장이 유지되지 않았다. 실제 `변경사항이 저장됨` 공급자 알림 후 닫고 목록을 재조회한다. 실패/수정 시도 기록은 모두 보존했다.
+- 두 번째 NMYQt25otes부터 순차 제작 계속. 사용자의 build_outputs_index.py는 수정하지 않았다.
