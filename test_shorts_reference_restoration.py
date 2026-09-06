@@ -31,7 +31,7 @@ def test_complete_script_is_generated_once_and_sections_only_label_timing(monkey
     def synthesize(text, audio, alignment, **kwargs):
         calls.append((text, kwargs))
         audio.write_bytes(b'one-provider-audio-response')
-        alignment.write_text(json.dumps({'script_sha256': hashlib.sha256(text.encode()).hexdigest()}))
+        alignment.write_text(json.dumps({'script_sha256': hashlib.sha256(text.encode()).hexdigest(), 'original_alignment_text_matches_script': True}))
     monkeypatch.setattr(builder, 'generate_minsoo_section', synthesize)
     monkeypatch.setattr(builder.tailbite, 'aligned_words', lambda path: [(i, i + .5) for i in range(14)])
     audio, alignment, records = builder.generate_single_take(sections)

@@ -236,26 +236,30 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
     starts = [float(value) for value in alignment["character_start_times_seconds"]]
     ends = [float(value) for value in alignment["character_end_times_seconds"]]
     profiles = []
+    caption_offset = 0
     for record in evidence["sections"]:
-        left = float(record["combined_offset_seconds"])
-        right = left + float(record["duration_seconds"])
-        points = [
-            (char, start, end)
-            for char, start, end in zip(chars, starts, ends)
-            if left <= start <= right and not str(char).isspace()
-        ]
-        if not points:
-            raise RuntimeError(f"no aligned speech characters for {record['name']}")
-        mapped_start = tailbite.map_time(points[0][1], segments)
-        mapped_end = tailbite.map_time(points[-1][2], segments)
-        spoken_seconds = max(0.001, mapped_end - mapped_start)
-        profiles.append({
-            "name": record["name"],
-            "character_count": len(points),
-            "spoken_seconds": round(spoken_seconds, 6),
-            "characters_per_second": round(len(points) / spoken_seconds, 6),
-        })
+        count = sum(bool(strip_subtitle_edge_punctuation(word)) for word in record["script"].split())
+        group = captions[caption_offset:caption_offset + count]
+        caption_offset += count
+        if not group or len(group) != count:
+            raise RuntimeError(f"missing final captions for {record['name']}")
+        spoken_seconds = max(0.001, group[-1]["end"] - group[0]["start"])
+        characters = sum(len(item["text"].replace(" ", "")) for item in group)
+        profiles.append({"name": record["name"], "character_count": characters,
+                         "spoken_seconds": round(spoken_seconds, 6),
+                         "characters_per_second": round(characters / spoken_seconds, 6)})
     early, middle, late = profiles[0], profiles[3], profiles[6]
+    if continuous:
+        tempo = json.loads((ROOT / "narration_tempo_map.json").read_text())
+        reference = REFERENCE_CONFIG.parent / "captions.srt"
+        ref_captions = parse_srt(reference)
+        target_cps = sum(len(x["text"].replace(" ", "")) for x in ref_captions) / (ref_captions[-1]["end"] - ref_captions[0]["start"])
+        if (tempo.get("reference_sha256") != sha(reference)
+                or tempo.get("input_audio_sha256") != sha(ROOT / "narration_tailbite.mp3")
+                or tempo.get("output_audio_sha256") != sha(ROOT / "narration_reference_tempo.mp3")
+                or tempo.get("captions_sha256") != sha(ROOT / "captions.srt")
+                or any(abs(p["characters_per_second"] / target_cps - 1) > .01 for p in profiles)):
+            raise RuntimeError("Reference tempo evidence differs from actual audio/subtitles")
     ratio = late["characters_per_second"] / early["characters_per_second"]
     script_tokens = [value for value in re.split(r"\s+", script_text) if value]
     expected_caption_tokens = [strip_subtitle_edge_punctuation(value) for value in script_tokens]
@@ -307,8 +311,8 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
             "name": NARRATION_GENERATION_PROTOCOL,
             "single_take_bound": pair_preflight_pass,
             "generation_request_count": evidence.get("generation_request_count"),
-            "section_audio_concatenation": False,
-            "atempo_used": False, "pitch_correction_used": False,
+            "separately_generated_section_audio_concatenation": False,
+            "atempo_used": (ROOT / "narration_tempo_map.json").exists(), "pitch_correction_used": False,
             "fixed_cta_changed": False, "threshold_relaxed": False,
         }
     dump(ROOT / "02_exact_runtime_gate.json", result)
@@ -369,7 +373,7 @@ def generate_minsoo_section(
     if result is None:
         raise RuntimeError("all stored ElevenLabs keys unavailable; refusing TTS fallback") from last_error
     audio_base64 = result.get("audio_base64")
-    alignment = result.get("normalized_alignment") or result.get("alignment")
+    alignment = result.get("alignment") or result.get("normalized_alignment")
     if not audio_base64 or not alignment:
         raise RuntimeError("Minsoo audio/alignment missing; refusing TTS fallback")
     audio_path.write_bytes(base64.b64decode(audio_base64))
@@ -381,6 +385,8 @@ def generate_minsoo_section(
         "script_sha256": hashlib.sha256(script.encode("utf-8")).hexdigest(),
         "script": script,
         "alignment": alignment,
+        "normalized_alignment": result.get("normalized_alignment"),
+        "original_alignment_text_matches_script": re.sub(r"\s+", "", "".join(alignment["characters"])) == re.sub(r"\s+", "", script),
         "generation_protocol": NARRATION_GENERATION_PROTOCOL,
         "seed": seed,
         "previous_text_sha256": (
@@ -614,9 +620,29 @@ def generate_single_take(sections: list[str]) -> tuple[Path, Path, list[dict]]:
     alignment = ROOT / "narration_alignment.json"
     if audio.exists() or alignment.exists():
         raise RuntimeError("single-take candidate already exists; refusing overwrite")
-    generate_minsoo_section(script, audio, alignment, previous_text=None, next_text=None,
-                            seed=2026090602)
+    production_path = ROOT / "production_manifest.json"
+    reuse = (json.loads(production_path.read_text()).get("render_inputs", {}).get("single_take_reuse")
+             if production_path.exists() else None)
+    if reuse:
+        from content_lineage import bound_file
+        original_audio = bound_file(ROOT, reuse.get("audio"), "single take")
+        original_alignment = bound_file(ROOT, reuse.get("alignment"), "single take alignment")
+        prior = json.loads(original_alignment.read_text())
+        if (prior.get("script_sha256") != hashlib.sha256(script.encode()).hexdigest()
+                or prior.get("voice_id") != MINSOO_VOICE_ID
+                or prior.get("model_id") != MINSOO_MODEL_ID
+                or prior.get("settings") != MINSOO_VOICE_SETTINGS
+                or prior.get("generation_request_count") != 1
+                or prior.get("single_take_sha256") != sha(original_audio)):
+            raise RuntimeError("Reuse does not bind one complete exact-script voice take")
+        shutil.copy2(original_audio, audio)
+        shutil.copy2(original_alignment, alignment)
+    else:
+        generate_minsoo_section(script, audio, alignment, previous_text=None, next_text=None,
+                                seed=2026090602)
     evidence = json.loads(alignment.read_text())
+    if evidence.get("original_alignment_text_matches_script") is not True:
+        raise RuntimeError("Provider original alignment does not match the Korean script")
     timings = tailbite.aligned_words(alignment)
     if len(timings) != len(script.split()):
         raise RuntimeError("single-take alignment differs from complete script tokens")
@@ -727,6 +753,25 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
         threshold_db=TAILBITE["threshold_db"],
         minimum=TAILBITE["minimum"],
     )
+    if NARRATION["generation_mode"] == "single_take_reference_restoration":
+        # Trim only silent inter-word gaps; never remove an aligned spoken word.
+        word_intervals = tailbite.aligned_words(alignment)
+        safe_silences = []
+        for left, right in silences:
+            fragments = [(left, right)]
+            for word_start, word_end in word_intervals:
+                next_fragments = []
+                for start, end in fragments:
+                    if word_end <= start or word_start >= end:
+                        next_fragments.append((start, end))
+                    else:
+                        if start < word_start:
+                            next_fragments.append((start, word_start))
+                        if word_end < end:
+                            next_fragments.append((word_end, end))
+                fragments = next_fragments
+            safe_silences.extend((a, b) for a, b in fragments if b - a >= TAILBITE["minimum"])
+        silences = sorted(safe_silences)
     segments = tailbite.build_segments(
         source_duration,
         silences,
@@ -747,6 +792,17 @@ def make_audio_and_captions() -> tuple[Path, Path, list[dict], list[tailbite.Seg
                 "end": tailbite.map_time(end, segments),
             })
     tailbite.write_srt(srt, captions)
+    if NARRATION["generation_mode"] == "single_take_reference_restoration":
+        from shorts_narration_tempo import retime
+        tailbite.write_srt(ROOT / "captions_before_tempo.srt", captions)
+        cut, captions = retime(cut, captions, sections, REFERENCE_CONFIG.parent / "captions.srt",
+                               parse_srt=parse_srt, duration=duration,
+                               clean_token=strip_subtitle_edge_punctuation)
+        tailbite.write_srt(srt, captions)
+        tempo_path = ROOT / "narration_tempo_map.json"
+        tempo_evidence = json.loads(tempo_path.read_text())
+        tempo_evidence["captions_sha256"] = sha(srt)
+        dump(tempo_path, tempo_evidence)
     alignment_json = json.loads(alignment.read_text(encoding="utf-8"))
     if alignment_json.get("voice_id") != MINSOO_VOICE_ID or alignment_json.get("model_id") != MINSOO_MODEL_ID:
         raise RuntimeError("voice/model provenance mismatch")

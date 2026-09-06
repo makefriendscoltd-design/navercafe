@@ -229,7 +229,7 @@ def test_exact_runtime_gate_requires_the_selected_pair_files(monkeypatch, tmp_pa
         "selected_pair": "pair-01",
         "selected_pair_preflight_ratio": 1.07,
         "sections": [
-            {"name": name, "combined_offset_seconds": index, "duration_seconds": 0.9}
+            {"name": name, "script": script.split()[index], "combined_offset_seconds": index, "duration_seconds": 0.9}
             for index, name in enumerate(builder.NARRATION_SECTION_NAMES)
         ],
         "alignment": {
@@ -239,7 +239,7 @@ def test_exact_runtime_gate_requires_the_selected_pair_files(monkeypatch, tmp_pa
         },
     }), encoding="utf-8")
     (tmp_path / "captions.srt").write_text("offline captions", encoding="utf-8")
-    captions = [{"text": token} for token in script.split()]
+    captions = [{"text": token, "start": index, "end": index + len(token) / 10} for index, token in enumerate(script.split())]
     segment = builder.tailbite.Segment(start=0.0, end=7.0, output_start=0.0)
 
     gate = builder.build_runtime_gate([segment], captions)

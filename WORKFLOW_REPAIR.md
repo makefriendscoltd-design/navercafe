@@ -107,3 +107,15 @@
 - 별도 v0: scheduled-shorts-audit/voice_stitch_v0.py로 원문이 보존된 0UFSZ_5OSIk의 7구간을 동일 계정/Voice ID/모델/설정에서 previous_request_ids로 순차 생성. API 자동 재시도/계정 교체 없음. voice-stitch-candidate-01/voice-candidate.mp3 생성. 상태 generated_unverified, perceptual_voice_continuity=unverified, upload_authorized=false. 기존 MP4와 예약분에 미반영.
 - 교체 통과 조건: 예약 21개의 provider ID와 실제 영상 정체성 대조, 각 원고 원문 보존, 본문 원고 일치, 모든 구간 음성 연속성 검증, 기존 영상/자막/속도/오디오 게이트, 실제 공급자 저장 후 재조회. 예약 완료와 품질 검증 완료를 분리한다.
 - 근거: outputs/workflow-repair-20260906/scheduled-shorts-audit/{latest-inventory,artifact-map,first-item-text-audit,voice-provenance-audit}.json.
+
+
+## 예약 21개 재제작 지시 — 계속 진행 중
+
+- 사용자 명시 지시: 예약된 모든 쇼츠를 수정/재제작하고 예약 교체까지 마무리. 중간 확인이나 커밋 후 세션을 임의 종료하지 않는다. CTA 문구는 유지한다.
+- 원고 승인 구조: 짧은 훅 → 구체적 효용 한 문장 → “5가지 방법, 저장하고 끝까지 보세요!” → 첫째~다섯째 → 기존 CTA. v18 NotebookLM 실제 저장/재조회 통과. 대본 방식과 pw8 실제 원고는 bb66394에 커밋.
+- 기존 레퍼런스 TZO3_2Krsqk는 single_take_path를 가진 전체 음성 생성본. 현재 v18은 동일 민수 Voice ID/모델/설정의 단일 생성으로 복원. 7개는 논리 구간이다.
+- 첫 단일 생성본의 normalized_alignment는 한국어가 아닌 로마자 발음이었다. 원래 한국어 alignment를 우선하고 원고와 실제 alignment 문자열 일치를 확인하도록 수정했다. 무음 절단은 aligned word 내부를 보호한다.
+- 템포는 레퍼런스 captions.srt의 한국어 문자/초에서 계산(현재 약 10.5136). 같은 음성에 pitch-preserving atempo 편집을 적용하고 시간 매핑, 입력/출력 음성 및 자막 해시를 묶는다. 모든 논리 구간이 레퍼런스 속도와 1% 이내인지 재검증한다. 합성 음성을 구간마다 교체하지 않는다.
+- 예약순 첫 항목 pw8Bt97U6fk / 기존 provider 17gxjdEaTc8 / 2026-09-07 11:00 KST. 원문은 shorts-v18, 실제 현재 렌더 후보는 shorts-v18-continuous-v1. 이전 shorts-v18와 shorts-v18-tempo-v0의 실패 결과는 보존.
+- 기존 분할 음성 후보 voice-stitch-candidate-01은 폐기 방식의 실험으로 보존하며 사용하지 않는다.
+- 전체 복구 큐: outputs/workflow-repair-20260906/scheduled-shorts-audit/sequential-replacement-plan.json. 현재 공급자 예약 교체 완료 0/21.
