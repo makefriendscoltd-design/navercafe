@@ -87,7 +87,24 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
             or instruction.get('version') != policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION
             or provider.get('targetOnlyBefore') is not True or provider.get('targetOnlyAfter') is not True):
         raise LineageError('Shorts requires current instruction and exact selected-source evidence')
-    if provider.get('answer_sha256') and provider['answer_sha256'] != sha256(answer):
+    # A capture mangled by NotebookLM citation chrome may be replaced only by a
+    # re-read of that same response, proven character-identical in wording.  Any
+    # other answer file must still hash to the response the provider returned.
+    recovery_entry = origin.get('answer_recovery')
+    stored_entry = origin.get('stored_answer')
+    recovery = {}
+    if recovery_entry or stored_entry:
+        recovery_path = bound_file(root, recovery_entry, 'answer_recovery')
+        stored_path = bound_file(root, stored_entry, 'stored_answer')
+        if provider.get('answer_sha256') and provider['answer_sha256'] != sha256(stored_path):
+            raise LineageError('Provider answer hash differs from saved response')
+        recovery = policy.validate_recovered_provider_answer(
+            source_key=str(source or ''),
+            stored_answer=stored_path.read_text(encoding='utf-8'),
+            recovered_answer=answer.read_text(encoding='utf-8'),
+            evidence=read_json(recovery_path),
+        )
+    elif provider.get('answer_sha256') and provider['answer_sha256'] != sha256(answer):
         raise LineageError('Provider answer hash differs from saved response')
     if (not source or provider.get('account') != policy.ASIDE_ACCOUNT
             or provider.get('notebookTitle') != policy.SHORTS_NOTEBOOK['title']
@@ -129,7 +146,8 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
                 or expected not in upload.get('description', '')):
             raise LineageError('Provider manifest differs from the validated source/video/script')
     return {'source_key': source, 'script_sha256': sha256(script), 'transform': report,
-            'wording_review': claims}
+            'wording_review': claims,
+            **({'answer_recovery_review': recovery} if recovery else {})}
 
 
 def validate_cardnews_origin(deck: dict) -> dict:

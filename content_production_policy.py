@@ -215,6 +215,12 @@ SHORTS_FORBIDDEN_CLAIM_PATTERNS = {
     ),
 }
 
+# Chat chrome NotebookLM interleaves into an answer capture: the collapsed
+# reasoning panel and the citation chip glyphs.  None of it is answer wording.
+# A lone "." line is not chrome — it is the sentence period the citation chip
+# split onto its own line, and it must survive into the signature.
+PROVIDER_ANSWER_CHROME_TOKENS = {"Thoughts", "expand_more", "expand_less", "lock"}
+
 SHORTS_ATTEMPT_BLOCKING_STATUSES = {
     "started",
     "provider_response_received",
@@ -642,6 +648,80 @@ def validate_shorts_notebook_retry(
         "instruction_version": instruction_version,
         "instruction_sha256": instruction_sha256,
         "prior_attempt_count": len(records),
+    }
+
+
+def provider_answer_content_signature(text: str) -> str:
+    """Reduce one NotebookLM answer to the wording a re-read must reproduce.
+
+    NotebookLM renders each citation as an inline chip, so one stored capture can
+    show it as a bare ``1`` line while a later re-read of the same response shows
+    ``lock`` or nothing at all.  Only that chrome and whitespace may differ; every
+    other character must match, which is what makes a recovery provably a
+    re-read of the stored answer rather than a rewrite.
+    """
+
+    lines = [
+        line
+        for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        if line.strip() not in PROVIDER_ANSWER_CHROME_TOKENS
+    ]
+    joined = "\n".join(lines)
+    joined = re.sub(r"(?m)^\s*\d{1,2}\s*$\n?", "", joined)
+    return re.sub(r"\s+", "", joined)
+
+
+def validate_recovered_provider_answer(
+    *,
+    source_key: str,
+    stored_answer: str,
+    recovered_answer: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Accept a re-read of a stored answer only with matching wording and DOM proof.
+
+    This is the only sanctioned way to reuse an answer the provider already
+    returned.  It never permits a new provider call, and it fails closed unless
+    the recovered text carries the identical wording signature.
+    """
+
+    source = str(source_key or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", source):
+        raise ProductionPolicyError("복구 대상 원본 source_key가 정확하지 않습니다.")
+    stored_signature = provider_answer_content_signature(stored_answer)
+    recovered_signature = provider_answer_content_signature(recovered_answer)
+    if not stored_signature or not recovered_signature:
+        raise ProductionPolicyError("복구 비교에 쓸 공급자 원응답 본문이 비어 있습니다.")
+    if stored_signature != recovered_signature:
+        raise ProductionPolicyError(
+            "복구한 본문이 저장된 공급자 원응답과 글자 단위로 다릅니다. "
+            "원문 재작성은 허용되지 않습니다."
+        )
+    mode = str(evidence.get("mode") or "")
+    if mode != "paragraph_blocks_without_citations":
+        raise ProductionPolicyError(
+            "복구 증거에 citation 노드를 제외한 실제 paragraph DOM 추출 기록이 없습니다."
+        )
+    if str(evidence.get("notebook_id") or "") != SHORTS_NOTEBOOK["id"]:
+        raise ProductionPolicyError("복구 증거의 NotebookLM 노트북 ID가 정본과 다릅니다.")
+    if str(evidence.get("source_key") or "") != source:
+        raise ProductionPolicyError("복구 증거의 source_key가 대상과 다릅니다.")
+    if evidence.get("provider_call_made") is not False:
+        raise ProductionPolicyError("복구 경로에서는 새 공급자 호출을 할 수 없습니다.")
+    for field in ("citation_count", "indexed_span_count", "block_count"):
+        value = evidence.get(field)
+        if not isinstance(value, int) or value <= 0:
+            raise ProductionPolicyError(f"복구 증거의 {field} DOM 계측값이 없습니다.")
+    return {
+        "status": "pass",
+        "source_key": source,
+        "mode": mode,
+        "wording_identical_to_stored_answer": True,
+        "provider_call_made": False,
+        "signature_sha256": hashlib.sha256(recovered_signature.encode("utf-8")).hexdigest(),
+        "citation_count": int(evidence["citation_count"]),
+        "indexed_span_count": int(evidence["indexed_span_count"]),
+        "block_count": int(evidence["block_count"]),
     }
 
 

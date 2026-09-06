@@ -1363,3 +1363,71 @@ def test_fixed_shorts_cta_never_trips_its_own_boundary_gate():
         if sentence.strip():
             assert not policy._is_cta_or_action_instruction_sentence(sentence)
     assert policy.find_forbidden_shorts_claims(cta) == {}
+
+
+def _recovery_evidence(**overrides):
+    evidence = {
+        "source_key": "p3NBGLYVp8s",
+        "notebook_id": policy.SHORTS_NOTEBOOK["id"],
+        "mode": "paragraph_blocks_without_citations",
+        "provider_call_made": False,
+        "citation_count": 27,
+        "indexed_span_count": 43,
+        "block_count": 28,
+    }
+    evidence.update(overrides)
+    return evidence
+
+
+def test_citation_chrome_never_counts_as_answer_wording():
+    """One response captured with and without citation chips has one signature."""
+    captured = "첫 문장입니다\n1\n. 다음 문장입니다.\nThoughts\nexpand_more\nlock"
+    reread = "첫 문장입니다. 다음 문장입니다."
+    assert (policy.provider_answer_content_signature(captured)
+            == policy.provider_answer_content_signature(reread))
+
+
+def test_sentence_period_split_by_a_citation_chip_survives_the_signature():
+    """A lone '.' line is punctuation the chip displaced, not chrome to drop."""
+    assert (policy.provider_answer_content_signature("문장입니다\n1\n.\n다음")
+            != policy.provider_answer_content_signature("문장입니다\n1\n다음"))
+
+
+def test_recovered_provider_answer_requires_identical_wording():
+    with pytest.raises(policy.ProductionPolicyError, match="글자 단위로 다릅니다"):
+        policy.validate_recovered_provider_answer(
+            source_key="p3NBGLYVp8s",
+            stored_answer="원문 그대로입니다\n1\n. 끝.",
+            recovered_answer="원문을 조금 다듬었습니다. 끝.",
+            evidence=_recovery_evidence(),
+        )
+
+
+def test_recovered_provider_answer_accepts_a_proven_reread():
+    result = policy.validate_recovered_provider_answer(
+        source_key="p3NBGLYVp8s",
+        stored_answer="원문 그대로입니다\n1\n. 끝.\nThoughts",
+        recovered_answer="원문 그대로입니다. 끝.",
+        evidence=_recovery_evidence(),
+    )
+    assert result["status"] == "pass"
+    assert result["wording_identical_to_stored_answer"] is True
+    assert result["provider_call_made"] is False
+
+
+@pytest.mark.parametrize("overrides, match", [
+    ({"mode": "inner_text_fallback"}, "paragraph DOM"),
+    ({"notebook_id": "00000000-0000-0000-0000-000000000000"}, "노트북 ID"),
+    ({"source_key": "AAAAAAAAAAA"}, "source_key가 대상과"),
+    ({"provider_call_made": True}, "새 공급자 호출"),
+    ({"citation_count": 0}, "citation_count"),
+    ({"indexed_span_count": None}, "indexed_span_count"),
+])
+def test_recovery_evidence_must_prove_a_read_only_dom_capture(overrides, match):
+    with pytest.raises(policy.ProductionPolicyError, match=match):
+        policy.validate_recovered_provider_answer(
+            source_key="p3NBGLYVp8s",
+            stored_answer="원문 그대로입니다\n1\n. 끝.",
+            recovered_answer="원문 그대로입니다. 끝.",
+            evidence=_recovery_evidence(**overrides),
+        )

@@ -84,17 +84,28 @@ def prepare(source_key, plan_path):
     import shorts_v7_builder as builder
     builder.SOURCE_MINUTES = int(match[1])
     sections = builder.split_seven_sections(script)
-    heads = scripts.extract_head_copy_candidates((root / 'notebooklm/notebooklm-answer.md').read_text())
+    # A capture mangled by citation chrome is rescued by re-reading the same
+    # response; the recovered file is then the verbatim provider answer.
+    answer_path = root / 'notebooklm/notebooklm-answer-recovered.md'
+    recovery_path = root / 'notebooklm/notebooklm-answer-recovery-evidence.json'
+    if answer_path.exists() != recovery_path.exists():
+        raise RuntimeError('Recovered NotebookLM answer and its evidence must appear together')
+    if not answer_path.exists():
+        answer_path = root / 'notebooklm/notebooklm-answer.md'
+    heads = scripts.extract_head_copy_candidates(answer_path.read_text())
     title = ' '.join(scripts.head_copy_lines(heads[0]))
     presenter = PROJECT / 'outputs/pw8Bt97U6fk-20260902/repair-20260906/shorts-v18-continuous-v1/production_manifest.json'
     presenter_binding = json.loads(presenter.read_text())['render_inputs']['presenter']
-    answer = binding(root / 'notebooklm/notebooklm-answer.md')
+    answer = binding(answer_path)
     manifest = {
         'source_id': source_key, 'content_rewrite_applied': False,
         'provider_mutation_attempted': False, 'studio_opened': False, 'crm_emitted': False,
         'replacement_for_provider_id': entry['provider_id'],
         'content_lineage': {'mode': 'notebooklm_verbatim', 'answer': answer,
             'provider_evidence': binding(root / 'notebooklm/notebooklm-provider-evidence.json'),
+            **({'answer_recovery': binding(recovery_path),
+                'stored_answer': binding(root / 'notebooklm/notebooklm-answer.md')}
+               if recovery_path.exists() else {}),
             'script': binding(script_path), 'source_minutes': int(match[1]),
             'wording_authorization': {'scope': 'preserve_original_absolute_wording',
                 'source_key': source_key, 'answer_sha256': answer['sha256'],

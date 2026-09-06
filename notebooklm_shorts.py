@@ -27,6 +27,7 @@ from content_production_policy import (
     SHORTS_NOTEBOOK_PROMPT,
     validate_headline_pixel_width,
     validate_notebook_binding,
+    validate_recovered_provider_answer,
     validate_shorts_notebook_retry,
     validate_shorts_verbatim_claims,
 )
@@ -696,6 +697,72 @@ def fetch(
     return final, chosen, minutes, provider_answer, transform, head_copies
 
 
+def recover(
+    url: str,
+    stored_answer: str,
+    recovered_answer: str,
+    recovery_evidence: dict,
+    *,
+    evidence_dir: str | Path | None = None,
+    attempt_ledger_path: str | Path | None = None,
+) -> tuple[str, str, int, str, dict, list[str], dict]:
+    """Reuse an answer the provider already returned, without a new provider call.
+
+    The retry pin deliberately blocks a second extraction once an attempt has
+    failed substantively, so an answer whose capture was mangled by citation
+    chrome can only be rescued by re-reading the same response.  Fidelity is
+    proven before any gate runs: the re-read must carry the stored answer's
+    wording character for character.
+    """
+    source_key = _video_id(url)
+    recovery = validate_recovered_provider_answer(
+        source_key=source_key,
+        stored_answer=stored_answer,
+        recovered_answer=recovered_answer,
+        evidence=recovery_evidence,
+    )
+    default_ledger, source_root = _default_attempt_ledger_path(source_key, evidence_dir)
+    ledger_path = (
+        Path(attempt_ledger_path).expanduser().resolve()
+        if attempt_ledger_path is not None
+        else default_ledger
+    )
+    provider_answer = recovered_answer
+    provider_script_body = _raw_script_body(provider_answer)
+    validate_notebooklm_script_layout(provider_script_body)
+    citation_stripped_answer = nlm._strip_citations(provider_answer)
+    head_copies = extract_head_copy_candidates(citation_stripped_answer)
+    script, chosen = extract_script(citation_stripped_answer)
+    script, _layout = canonicalize_notebooklm_script_layout(script)
+    adopted_body = keep_through_fifth(script)
+    validate_shorts_verbatim_claims(adopted_body)
+    minutes = duration_minutes(get_video_duration(url))
+    final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
+    transform = cta_only_transform_report(
+        script,
+        final,
+        minutes,
+        provider_answer=provider_answer,
+        citation_stripped_answer=citation_stripped_answer,
+    )
+    validate_intro_promise(final)
+    validate_head_copy_connection(head_copies[0], final)
+    record_shorts_attempt(
+        ledger_path,
+        source_key,
+        attempt_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        + f"-{os.getpid()}-recovery",
+        status="recovered_stored_provider_answer",
+    )
+    recovery = {
+        **recovery,
+        "stored_answer_sha256": hashlib.sha256(stored_answer.encode("utf-8")).hexdigest(),
+        "recovered_answer_sha256": hashlib.sha256(recovered_answer.encode("utf-8")).hexdigest(),
+        "source_root": str(source_root),
+    }
+    return final, chosen, minutes, provider_answer, transform, head_copies, recovery
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="NotebookLM 쇼츠 대본 5번까지 + 고정 CTA")
     parser.add_argument("--url", required=True)
@@ -703,12 +770,45 @@ def main(argv=None) -> int:
     parser.add_argument("--raw-out")
     parser.add_argument("--headline-out")
     parser.add_argument("--evidence-dir")
+    parser.add_argument(
+        "--recovered-answer",
+        help="새 공급자 호출 없이 이미 받은 원응답을 다시 읽어 저장한 파일",
+    )
+    parser.add_argument(
+        "--stored-answer",
+        help="--recovered-answer 와 글자 단위로 대조할 기존 저장 원응답 파일",
+    )
+    parser.add_argument(
+        "--recovery-evidence",
+        help="--recovered-answer 의 공급자 DOM 재조회 증거 JSON",
+    )
     args = parser.parse_args(argv)
 
-    script, chosen, minutes, raw, transform, head_copies = fetch(
-        args.url,
-        evidence_dir=args.evidence_dir,
-    )
+    recovery: dict = {}
+    if args.recovered_answer or args.stored_answer or args.recovery_evidence:
+        missing = [
+            name
+            for name, value in (
+                ("--recovered-answer", args.recovered_answer),
+                ("--stored-answer", args.stored_answer),
+                ("--recovery-evidence", args.recovery_evidence),
+            )
+            if not value
+        ]
+        if missing:
+            parser.error("복구 모드에는 " + ", ".join(missing) + " 가 모두 필요합니다.")
+        script, chosen, minutes, raw, transform, head_copies, recovery = recover(
+            args.url,
+            Path(args.stored_answer).expanduser().resolve().read_text(encoding="utf-8"),
+            Path(args.recovered_answer).expanduser().resolve().read_text(encoding="utf-8"),
+            json.loads(Path(args.recovery_evidence).expanduser().resolve().read_text(encoding="utf-8")),
+            evidence_dir=args.evidence_dir,
+        )
+    else:
+        script, chosen, minutes, raw, transform, head_copies = fetch(
+            args.url,
+            evidence_dir=args.evidence_dir,
+        )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(script, encoding="utf-8")
@@ -727,6 +827,11 @@ def main(argv=None) -> int:
             json.dumps(transform, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+        if recovery:
+            (evidence_path / "provider-answer-recovery.json").write_text(
+                json.dumps(recovery, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
     print(f"노트북 포맷: {chosen or '표기 없음'}")
     print("최종 헤드카피: " + " / ".join(head_copy_lines(head_copies[0])))
     print(f"원고 변환: {transform.get('status', '확인 필요')}")

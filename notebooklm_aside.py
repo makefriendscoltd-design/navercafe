@@ -96,6 +96,7 @@ let targetOnlyBefore=false,targetOnlyAfter=false;
 let before=[],afterAdd=[],selectedBefore=[],selectedAfter=[],selectedRestored=[];
 let beforeSubmitScreenshotPath='',afterResponseScreenshotPath='';
 let instructionEvidence={},instructionValue='';
+let answerExtraction={};
 try{
   const values=await notebookValues();
   before=await sourceState();
@@ -178,7 +179,39 @@ try{
   const submitted=await p.evaluate(()=>{const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};const buttons=[...document.querySelectorAll('button')].filter(e=>e.getAttribute('aria-label')==='제출'&&!e.disabled&&visible(e));if(!buttons.length)return false;buttons[buttons.length-1].click();return true;});
   if(!submitted)await query.press('Enter');
   const answerDeadline=Date.now()+240000;
-  while(Date.now()<answerDeadline){const state=await p.evaluate(()=>{const pairs=[...document.querySelectorAll('.chat-message-pair')],last=pairs[pairs.length-1];const value=(last?.querySelector('.to-user-container .message-text-content')?.innerText||'').trim();const done=!!last?.querySelector('button[aria-label="클립보드에 모델 대답 복사"]');return {count:pairs.length,value,done};});if(state.count>chatBefore&&state.done&&state.value.length>100){answer=state.value;break;}await sleep(1200);}
+  while(Date.now()<answerDeadline){const state=await p.evaluate(()=>{
+    // NotebookLM renders each source citation as an inline `.citation-marker`
+    // chip inside the answer paragraph.  innerText therefore interleaves the
+    // chip glyph ("1", "lock", ...) as its own line and splits one logical
+    // paragraph across several lines, which the v18 six-paragraph gate rejects.
+    // Read the block text without the citation subtrees instead, so the
+    // provider wording is preserved verbatim and paragraph boundaries survive.
+    const CITATION_SELECTOR='.citation-marker';
+    const BLOCK_SELECTOR='div.paragraph,li.paragraph';
+    const ownText=el=>{
+      let text='';
+      const walker=document.createTreeWalker(el,NodeFilter.SHOW_TEXT,{acceptNode(n){
+        const parent=n.parentElement;
+        if(!parent)return NodeFilter.FILTER_REJECT;
+        if(parent.closest(CITATION_SELECTOR))return NodeFilter.FILTER_REJECT;
+        const owner=parent.closest(BLOCK_SELECTOR);
+        if(owner&&owner!==el)return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      }});
+      let n;while((n=walker.nextNode()))text+=n.nodeValue;
+      return text.replace(/\s+/g,' ').trim();
+    };
+    const pairs=[...document.querySelectorAll('.chat-message-pair')],last=pairs[pairs.length-1];
+    const node=last?.querySelector('.to-user-container .message-text-content')||null;
+    const blocks=node?[...node.querySelectorAll(BLOCK_SELECTOR)]:[];
+    const lines=blocks.map(ownText).filter(Boolean);
+    const mode=lines.length?'paragraph_blocks_without_citations':'inner_text_fallback';
+    const value=(lines.length?lines.join('\n'):(node?.innerText||'')).trim();
+    const done=!!last?.querySelector('button[aria-label="클립보드에 모델 대답 복사"]');
+    return {count:pairs.length,value,done,mode,blockCount:blocks.length,
+      citationCount:node?node.querySelectorAll(CITATION_SELECTOR).length:0,
+      indexedSpanCount:node?node.querySelectorAll('span[data-start-index]').length:0};
+  });if(state.count>chatBefore&&state.done&&state.value.length>100){answer=state.value;answerExtraction={mode:state.mode,blockCount:state.blockCount,citationCount:state.citationCount,indexedSpanCount:state.indexedSpanCount};break;}await sleep(1200);}
   if(!answer)throw new Error('NotebookLM 응답을 제한 시간 안에 확인하지 못했습니다.');
   selectedAfter=(await sourceState()).filter(x=>x.checked).map(x=>x.label);
   targetOnlyAfter=selectedAfter.length===1&&norm(selectedAfter[0])===targetNorm;
@@ -212,7 +245,7 @@ if(sourceAdded){
 }
 // Keep the verified notebook tab until its answer has been durably saved locally.
 // Closing the last headless tab can disconnect the daemon before emit is received.
-emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload.kind,notebookId:payload.notebookId,notebookTitle:payload.notebookTitle,targetLabel,targetNorm,sourceCountBefore:before.length,sourceCountAfterAdd:afterAdd.length,selectedBefore,selectedAfter,selectedRestored,sourceAdded,targetOnlyBefore,targetOnlyAfter,cleanupRestored,beforeSubmitScreenshotPath,afterResponseScreenshotPath,answer,instructionEvidence,instructionValue});
+emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload.kind,notebookId:payload.notebookId,notebookTitle:payload.notebookTitle,targetLabel,targetNorm,sourceCountBefore:before.length,sourceCountAfterAdd:afterAdd.length,selectedBefore,selectedAfter,selectedRestored,sourceAdded,targetOnlyBefore,targetOnlyAfter,cleanupRestored,beforeSubmitScreenshotPath,afterResponseScreenshotPath,answer,answerExtraction,instructionEvidence,instructionValue});
 '''
     PROVIDER_LOCK.touch(exist_ok=True)
     with PROVIDER_LOCK.open("a+") as lock_stream:
