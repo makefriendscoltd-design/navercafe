@@ -87,3 +87,10 @@
 - 업로드 창의 바깥 custom element에 대한 isVisible 판정이 준비 대기를 막았다. 실제 제목 입력란의 가시성으로 바꾸었다. 예약은 이전 REPL의 탭 유지에 기대지 않고 정확한 ID의 초안 수정 화면에서 다시 시작한다.
 - 예약 폼은 상세정보/아동용 여부를 확인한 뒤 공개 상태 단계로 이동해야 한다. 단계 이동 후 상세정보 DOM이 사라지므로 이동 전에 값을 읽어 고정하고, 날짜 팝업은 페이지 범위에서 찾도록 수정했다.
 - 실제 예약 직전 prepare_only 통과: HWzCBf9O0r8, 2026-09-17 11:00 KST, schedule click 0. 실제 예약/CRM 완료는 이후 공급자 확인 결과에 따름.
+
+## 이번 재개 결과
+
+- 쇼츠 제작·업로드·예약·공급자 재검증·CRM 기록 완료. ID HWzCBf9O0r8, 예약 2026-09-17 11:00 KST. 116.409초 원고 보존 영상, 첨부 reservation 1 / 예약 provider observed click 1. 공급자 확인 시각 2026-09-06 20:38 KST. 아직 공개 시각 전이며 즉시 공개로 보고하지 않는다.
+- 증거 정본: outputs/0UFSZ_5OSIk-20260903/repair-20260906/shorts-v17-approved/provider/final_result.json 및 journal.json. production_manifest.json에도 실제 provider ID/URL/예약 상태를 연결했다.
+- 카페는 로그인 정상. 기존 경로의 소제목/문단 분리 실패가 남았다. 별도 Clipboard HTML v0도 빈 문단 또는 caret 준비 timeout을 보여 발행 경로에 넣지 않았다. 기존 코드에 실험 패치를 남기지 않았으며 큐 보류를 해제하지 않았다.
+- 카페 다음 통과 조건: Aside u0에서 단일 빈 편집기에 원문 도입·소제목·본문을 입력해 세 부분이 분리되고 소제목만 실제 quotation 컴포넌트로 변환됨을 DOM+화면으로 확인. 이후 동일 경로를 전체 5인용구/5이미지/OG 카드로 확장. 현재 카페 공급자 게시 URL 없음. 재로그인은 필요하지 않다.
