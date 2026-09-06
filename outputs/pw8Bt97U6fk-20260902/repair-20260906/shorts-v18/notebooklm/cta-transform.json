@@ -1,0 +1,19 @@
+{
+  "status": "cta_only",
+  "notebooklm_body_preserved_exactly": true,
+  "content_rewrite_applied": false,
+  "removed_notebooklm_cta": true,
+  "fixed_cta_applied": true,
+  "body_sha256_before": "52d981b702919be39d48c0cb497d516793616ee3b24e42f6cabaf95a36119e05",
+  "body_sha256_after": "52d981b702919be39d48c0cb497d516793616ee3b24e42f6cabaf95a36119e05",
+  "provider_answer_sha256": "71c25b7e6927f4a99acb4485683eaa21591d3fe0f40514b3e257f02e318428a4",
+  "provider_script_body_sha256": "d8e0b3365b15679d5a3017e9f114adbd58511d48a5ae871410346bc469aa489d",
+  "citation_stripped_answer_sha256": "71c25b7e6927f4a99acb4485683eaa21591d3fe0f40514b3e257f02e318428a4",
+  "citation_stripped_script_body_sha256": "d8e0b3365b15679d5a3017e9f114adbd58511d48a5ae871410346bc469aa489d",
+  "parser_normalized_body_sha256": "52d981b702919be39d48c0cb497d516793616ee3b24e42f6cabaf95a36119e05",
+  "adopted_body_sha256": "52d981b702919be39d48c0cb497d516793616ee3b24e42f6cabaf95a36119e05",
+  "final_adopted_body_sha256": "52d981b702919be39d48c0cb497d516793616ee3b24e42f6cabaf95a36119e05",
+  "citation_cleanup_changed_provider_answer": false,
+  "deterministic_extraction": "provider innerText outer trim -> citation markers/source-list cleanup -> script-heading slice -> trailing-space and marker-only-line cleanup -> exact six-block separator canonicalization -> sixth/later and prior CTA suffix cut",
+  "adopted_body_is_exact_final_prefix": true
+}
