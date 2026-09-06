@@ -226,3 +226,38 @@ def test_publish_window_counts_locked_success_reservations(tmp_path, monkeypatch
     with pytest.raises(RuntimeError, match="daily publish cap reached: 2/2"):
         publisher.enforce_cafe_publish_window(
             publisher.datetime.fromisoformat("2026-09-04T23:00:00+09:00"))
+
+
+def test_immediate_authorization_is_bound_expiring_and_keeps_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(publisher, 'PROJECT', tmp_path)
+    manifest = tmp_path / 'outputs/catchup/cafe/06_cafe_manifest.json'
+    write_json(manifest, {'source_key': 'catchup'})
+    evidence = tmp_path / 'outputs/done/cafe/provider/13_provider_evidence.json'
+    write_json(evidence, {'status': 'published_verified', 'verifiedAt': '2026-09-06T23:00:00+09:00'})
+    auth = {'scope': 'waive_minimum_gap_once', 'source': 'explicit_user_request',
+            'source_key': 'catchup', 'manifest_sha256': publisher.sha256(manifest),
+            'expires_at': '2026-09-07T00:00:00+09:00'}
+    queue = {'timezone': 'Asia/Seoul', 'minimum_gap_hours': 5, 'maximum_successes_per_day': 2,
+             'entries': [{'source_key': 'done', 'provider_evidence': str(evidence.relative_to(tmp_path))},
+                         {'source_key': 'catchup', 'manifest': str(manifest.relative_to(tmp_path)),
+                          'status': 'pending', 'immediate_publish_authorization': auth}]}
+    qp = tmp_path / publisher.QUEUE_POLICY_PATH
+    now = publisher.datetime.fromisoformat('2026-09-06T23:05:00+09:00')
+    write_json(qp, queue)
+    publisher.enforce_cafe_publish_window(now, source_key='catchup')
+    with pytest.raises(RuntimeError, match='gap'):
+        publisher.enforce_cafe_publish_window(now, source_key='another')
+    auth['expires_at'] = now.isoformat()
+    write_json(qp, queue)
+    with pytest.raises(RuntimeError, match='gap'):
+        publisher.enforce_cafe_publish_window(now, source_key='catchup')
+    auth['expires_at'] = '2026-09-07T00:00:00+09:00'
+    write_json(manifest, {'source_key': 'catchup', 'body': 'changed'})
+    write_json(qp, queue)
+    with pytest.raises(RuntimeError, match='gap'):
+        publisher.enforce_cafe_publish_window(now, source_key='catchup')
+    auth['manifest_sha256'] = publisher.sha256(manifest)
+    queue['maximum_successes_per_day'] = 1
+    write_json(qp, queue)
+    with pytest.raises(RuntimeError, match='cap'):
+        publisher.enforce_cafe_publish_window(now, source_key='catchup')

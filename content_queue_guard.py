@@ -73,7 +73,7 @@ def audit(*, live: bool = False) -> dict:
     import cafe_manifest_publisher as publisher
     manifest, _, provider, evidence = publisher.resolve_manifest(selected['manifest'])
     result = publisher.validate_cafe_eligibility(manifest, provider, evidence)
-    publisher.enforce_cafe_publish_window(now)
+    publisher.enforce_cafe_publish_window(now, source_key=selected.get('source_key'))
     return {'status': result['status'], 'source_key': selected.get('source_key'),
             'failures': result['failures'], 'provider_mutation': False}
 

@@ -67,16 +67,16 @@ def canonical_cafe_article_url(raw_url: str) -> tuple[str, str]:
     return f"https://cafe.naver.com/{EXPECTED_CAFE_SLUG}/{article_id}", article_id
 
 
-def enforce_cafe_publish_window(now: datetime | None = None) -> None:
+def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str | None = None) -> None:
     """Enforce the queue's daily cap and gap again inside the provider lock."""
     queue = read_json(PROJECT / QUEUE_POLICY_PATH)
     timezone = ZoneInfo(queue["timezone"])
     current = (now or datetime.now(timezone)).astimezone(timezone)
     verified_by_source: dict[str, datetime] = {}
     for entry in queue.get("entries", []):
-        source_key = entry.get("source_key")
+        evidence_source_key = entry.get("source_key")
         evidence_raw = entry.get("provider_evidence")
-        if not source_key or not evidence_raw:
+        if not evidence_source_key or not evidence_raw:
             continue
         evidence_path = PROJECT / evidence_raw
         candidates = [evidence_path, evidence_path.with_name("12_provider_success_reservation.json")]
@@ -91,9 +91,9 @@ def enforce_cafe_publish_window(now: datetime | None = None) -> None:
                 verified_at = datetime.fromisoformat(raw_time).astimezone(timezone)
             except (OSError, ValueError, TypeError, KeyError):
                 continue
-            previous = verified_by_source.get(source_key)
+            previous = verified_by_source.get(evidence_source_key)
             if previous is None or verified_at > previous:
-                verified_by_source[source_key] = verified_at
+                verified_by_source[evidence_source_key] = verified_at
 
     today = [stamp for stamp in verified_by_source.values() if stamp.date() == current.date()]
     maximum = int(queue["maximum_successes_per_day"])
@@ -101,6 +101,28 @@ def enforce_cafe_publish_window(now: datetime | None = None) -> None:
     if len(today) >= maximum:
         raise RuntimeError(f"Cafe daily publish cap reached: {len(today)}/{maximum}")
     if today and (current - max(today)).total_seconds() < minimum_gap * 3600:
+        # A user-requested catch-up is bound to one reviewed manifest and expires.
+        # It never raises the daily cap or changes the normal scheduler policy.
+        for entry in queue.get("entries", []):
+            if not source_key or entry.get("source_key") != source_key:
+                continue
+            authorization = entry.get("immediate_publish_authorization") or {}
+            try:
+                expires = datetime.fromisoformat(authorization["expires_at"])
+                manifest_path = PROJECT / entry["manifest"]
+                authorized = (
+                    authorization.get("scope") == "waive_minimum_gap_once"
+                    and authorization.get("source") == "explicit_user_request"
+                    and authorization.get("source_key") == source_key
+                    and authorization.get("manifest_sha256") == sha256(manifest_path)
+                    and expires.tzinfo is not None and current < expires
+                    and entry.get("status") == "pending"
+                    and not entry.get("published_url") and not entry.get("do_not_retry")
+                )
+            except (KeyError, OSError, TypeError, ValueError):
+                authorized = False
+            if authorized:
+                return
         raise RuntimeError(f"Cafe publish gap has not reached {minimum_gap:g} hours")
 
 
@@ -317,7 +339,7 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
 '''
     with LOCK.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        enforce_cafe_publish_window()
+        enforce_cafe_publish_window(source_key=source_key)
         precheck = run_repl(precheck_code, cwd=base, timeout=220, account="u0")
         if precheck.get("status") != "ok" or precheck.get("matches"):
             raise RuntimeError({"cafe_precommit_blocked": precheck})
