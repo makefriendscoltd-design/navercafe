@@ -34,6 +34,7 @@ REQUIRED_TRACKED_FILES = (
     "content_workflow.py",
     "content_queue_guard.py",
     "shorts_v7_builder.py",
+    "youtube_shorts_inventory.py",
     "outputs/cafe-publish-queue-20260823/automation_prompt.txt",
     "naver_cafe_fresh_publish_fallback.py",
     "run_content_link.command",

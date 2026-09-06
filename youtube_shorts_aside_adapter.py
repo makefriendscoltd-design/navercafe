@@ -990,7 +990,13 @@ def run_live(manifest_path: str | Path) -> dict[str, Any]:
 
     manifest = publisher.load_manifest(manifest_path)
     _require_exact_channel(manifest)
-    provider_port = AsideHeadlessU0Provider()
+    class RowModelProvider(AsideHeadlessU0Provider):
+        def scan_inventory(self, manifest, *, phase):
+            _require_exact_channel(manifest)
+            from youtube_shorts_inventory import scan
+            return scan(manifest, phase=phase)
+
+    provider_port = RowModelProvider()
     crm_port = AimaxCrmTrackPort()
     crm_port.require_live_dependencies()
     # Resolve only; no Studio access occurs until the publisher has passed its
