@@ -159,7 +159,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     )
     checks["shorts_notebook_instruction_contract"] = (
         policy.SHORTS_NOTEBOOK_PROMPT == "이 영상으로 숏폼 스크립트 만들어줘."
-        and policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v17.0"
+        and policy.SHORTS_NOTEBOOK_INSTRUCTION.splitlines()[0].endswith(policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION)
         and policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION)
         == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
         and "### 헤드카피라이팅" in policy.SHORTS_NOTEBOOK_INSTRUCTION
@@ -194,17 +194,16 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
     shorts_v7_source = (
         shorts_v7_path.read_text(encoding="utf-8") if shorts_v7_path.is_file() else ""
     )
-    checks["shorts_v7_paired_narration_preflight"] = all(
-        marker in shorts_v7_source
-        for marker in (
-            'NARRATION_GENERATION_PROTOCOL = "paired_intro_cta_preflight_full_candidate_v0"',
-            "NARRATION_PAIR_PREFLIGHT_MAX = 1.08",
-            "_select_intro_cta_pair(sections)",
-            '"pair_disposition": "selected" if passed else "discard_both"',
-            'previous_text=sections[5], next_text=None',
-            'previous_text=None, next_text=sections[1]',
+    checks["shorts_v7_continuous_narration"] = (
+        policy.NARRATION["generation_mode"] == "single_take_reference_restoration"
+        and policy.NARRATION["section_gap_seconds"] == 0.0
+        and all(marker in shorts_v7_source for marker in (
+            'NARRATION_GENERATION_PROTOCOL = "single_take_reference_restoration_v1"',
+            'return generate_single_take(sections)',
+            'generation_request_count=1',
+            '"logical_section_only": True',
             'NARRATION["last_to_first_pace_ratio_max"]',
-        )
+        ))
     )
     checks["shorts_verbatim_hash_stages"] = all(
         marker in shorts_runtime_source

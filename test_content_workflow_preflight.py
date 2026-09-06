@@ -14,4 +14,4 @@ def test_static_content_workflow_preflight_passes_from_tracked_sources():
     assert result["checks"]["source_key_output_isolation_contract"] is True
     assert result["checks"]["cardnews_editorial_contract"] is True
     assert result["checks"]["daily_schedule_contract"] is True
-    assert result["checks"]["shorts_v7_paired_narration_preflight"] is True
+    assert result["checks"]["shorts_v7_continuous_narration"] is True
