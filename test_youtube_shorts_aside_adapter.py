@@ -305,7 +305,11 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
         assert ".last()" not in body
         assert "cardinality" in body
     assert "upload_flow_preserved:true" in adapter.ATTACH_JS
-    assert "listBrowserTabs()" in adapter.SCHEDULE_JS
+    assert "exact_draft_recovery=" in adapter.SCHEDULE_JS
+    assert "getByText('초안 수정'" in adapter.SCHEDULE_JS
+    assert adapter.SCHEDULE_JS.index("no-kids-not-selected") < adapter.SCHEDULE_JS.index("await badge.click()")
+    assert "payload.prepare_only" in adapter.SCHEDULE_JS
+    assert "dialogSet.locator('#title-textarea #textbox').isVisible()" in adapter.ATTACH_JS
     assert "row-title-not-visible" in adapter.INVENTORY_SEED_JS
     assert "row-date-cardinality" in adapter.INVENTORY_SEED_JS
     assert "row-date-not-visible" in adapter.INVENTORY_SEED_JS
@@ -321,7 +325,7 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
         not in adapter.INVENTORY_SEED_JS
     )
     assert "titles.count()!==1||!await titles.isVisible()" in adapter.INVENTORY_DIRECT_JS
-    assert "titles.count()!==1||!await titles.isVisible()" in adapter.SCHEDULE_JS
+    assert "exact(root,'#title-textarea #textbox','metadata-title')" in adapter.SCHEDULE_JS
 
 
 @pytest.mark.parametrize(
