@@ -6,6 +6,7 @@ import wave
 
 import pytest
 
+from content_production_policy import SHORTS_NARRATION_TARGET_CPS
 from shorts_narration_tempo import retime
 
 
@@ -21,18 +22,21 @@ def test_real_audio_tempo_changes_duration_without_changing_pitch_or_words(tmp_p
         stream.writeframes(samples.tobytes())
     reference = tmp_path / 'reference.srt'
     reference.write_text('reference fixture')
-    sections = ['하나둘셋', '가나다라', '마바사아', '자차카타', '파하가나', '다라마바', '사아자차']
+    # Two characters per 0.4 s cue is 5 cps, slower than the target, so the pass
+    # speeds the take up the way it does for the real voice.
+    sections = ['하나', '둘셋', '넷다', '섯여', '일곱', '여덟', '아홉']
     captions = [{'text': text, 'start': i * .5, 'end': i * .5 + .4} for i, text in enumerate(sections)]
     output, transformed = retime(audio, captions, sections, reference,
         parse_srt=lambda path: [{'text': '하나둘셋넷다', 'start': 0, 'end': .5}],
         duration=lambda path: 3.5, clean_token=lambda word: word)
     assert [x['text'] for x in transformed] == sections
     for item in transformed:
-        assert len(item['text']) / (item['end'] - item['start']) == pytest.approx(12)
+        assert (len(item['text']) / (item['end'] - item['start'])
+                == pytest.approx(SHORTS_NARRATION_TARGET_CPS))
     raw = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(output), '-f', 's16le', '-ac', '1', '-ar', str(rate), '-'])
     decoded = array.array('h')
     decoded.frombytes(raw)
     actual_duration = len(decoded) / rate
-    assert actual_duration < 3.1
+    assert actual_duration < 3.5
     crossings = sum(a <= 0 < b for a, b in zip(decoded, decoded[1:]))
     assert crossings / actual_duration == pytest.approx(440, abs=6)

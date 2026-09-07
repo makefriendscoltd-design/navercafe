@@ -30,6 +30,7 @@ from content_production_policy import (
     NARRATION,
     TAILBITE,
     strip_subtitle_edge_punctuation,
+    validate_narration_target_cps,
     validate_presenter_asset,
     validate_shorts_render_bundle,
 )
@@ -256,8 +257,12 @@ def build_runtime_gate(segments: list[tailbite.Segment], captions: list[dict]) -
     if continuous:
         tempo = json.loads((ROOT / "narration_tempo_map.json").read_text())
         reference = REFERENCE_CONFIG.parent / "captions.srt"
-        ref_captions = parse_srt(reference)
-        target_cps = sum(len(x["text"].replace(" ", "")) for x in ref_captions) / (ref_captions[-1]["end"] - ref_captions[0]["start"])
+        # Check the speech against the pace this run recorded, not against whatever
+        # the reference video speaks at, so a run built at an earlier approved pace
+        # keeps revalidating instead of failing when the setting moves.
+        target_cps = validate_narration_target_cps(
+            tempo.get("target_characters_per_second")
+        )
         if (tempo.get("reference_sha256") != sha(reference)
                 or tempo.get("input_audio_sha256") != sha(ROOT / "narration_tailbite.mp3")
                 or tempo.get("output_audio_sha256") != sha(ROOT / "narration_reference_tempo.mp3")

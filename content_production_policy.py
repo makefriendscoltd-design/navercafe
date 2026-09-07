@@ -247,6 +247,36 @@ NARRATION = {
     "section_gap_seconds": 0.0,
     "last_to_first_pace_ratio_max": 1.10,
 }
+
+# Narration pace, in Korean characters per second of speech. The generated voice
+# speaks at roughly 6.3, so this is also how far the pitch-preserving retime
+# stretches it: 9.0 is about 1.43x, still short-form brisk without sounding
+# breathless.
+SHORTS_NARRATION_TARGET_CPS = 9.0
+# The pace measured from the pinned reference video, which is an unusually fast
+# talker at 10.51 -- about 1.67x. Every short scheduled on 2026-09-07 was built
+# at it, so it stays approved and those runs keep revalidating; the owner chose
+# 9.0 for work produced after that.
+SHORTS_NARRATION_REFERENCE_TARGET_CPS = 10.513608428446007
+SHORTS_NARRATION_APPROVED_TARGET_CPS = (
+    SHORTS_NARRATION_TARGET_CPS,
+    SHORTS_NARRATION_REFERENCE_TARGET_CPS,
+)
+
+
+def validate_narration_target_cps(value: Any) -> float:
+    """Accept only a pace the owner approved, so a run cannot invent its own."""
+    try:
+        target = float(value)
+    except (TypeError, ValueError):
+        raise ProductionPolicyError("나레이션 목표 속도가 숫자가 아닙니다.") from None
+    for approved in SHORTS_NARRATION_APPROVED_TARGET_CPS:
+        if abs(target - approved) <= 1e-9:
+            return approved
+    raise ProductionPolicyError(
+        f"나레이션 목표 속도 {target}는 승인된 값이 아닙니다. "
+        f"승인값: {SHORTS_NARRATION_APPROVED_TARGET_CPS}"
+    )
 VIDEO = {"width": 1080, "height": 1920, "fps": 30}
 HEADLINE = {"font_size": 90, "x": 540, "y": 440, "line_spacing": 20}
 HEADLINE_SAFE_WIDTH_PX = 920

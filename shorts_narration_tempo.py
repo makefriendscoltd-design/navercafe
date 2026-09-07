@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import subprocess
 
+from content_production_policy import SHORTS_NARRATION_TARGET_CPS
+
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -12,8 +14,10 @@ def digest(path: Path) -> str:
 
 def retime(audio, captions, sections, reference, *, parse_srt, duration, clean_token):
     audio, reference = Path(audio), Path(reference)
-    ref = parse_srt(reference)
-    target = sum(len(x['text'].replace(' ', '')) for x in ref) / (ref[-1]['end'] - ref[0]['start'])
+    # The reference stays bound by hash as provenance, but the pace itself is the
+    # owner's setting rather than whatever that one video happened to speak at.
+    parse_srt(reference)
+    target = SHORTS_NARRATION_TARGET_CPS
     groups, offset = [], 0
     for section in sections:
         count = sum(bool(clean_token(word)) for word in section.split())

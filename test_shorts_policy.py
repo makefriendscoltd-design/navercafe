@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 
 import shorts_v7_builder as builder
+import shorts_narration_tempo as shorts_tempo
 
 
 def test_explicit_original_wording_authorization_preserves_absolute_phrase():
@@ -1646,3 +1647,21 @@ def test_reporting_into_one_messaging_channel_is_not_cross_platform_publishing()
 ])
 def test_publishing_across_platforms_is_still_caught(sentence):
     assert policy._is_platform_distribution_sentence(sentence)
+
+
+def test_new_shorts_are_built_at_the_owners_narration_pace():
+    assert policy.SHORTS_NARRATION_TARGET_CPS == 9.0
+    assert shorts_tempo.SHORTS_NARRATION_TARGET_CPS == policy.SHORTS_NARRATION_TARGET_CPS
+
+
+def test_shorts_already_scheduled_at_the_reference_pace_still_validate():
+    """The 2026-09-07 replacements recorded 10.5136; they must not fail the move to 9.0."""
+    assert (policy.validate_narration_target_cps(10.513608428446007)
+            == policy.SHORTS_NARRATION_REFERENCE_TARGET_CPS)
+    assert policy.validate_narration_target_cps(9.0) == 9.0
+
+
+@pytest.mark.parametrize("value", [8.0, 12.0, "9.0x", None, 0])
+def test_a_run_cannot_invent_its_own_narration_pace(value):
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_narration_target_cps(value)
