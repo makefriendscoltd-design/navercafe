@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import re
 import subprocess
 import sys
@@ -100,6 +101,16 @@ AI 자동화에 관심 있는 분들을 위한 커뮤니티를 운영중입니�
 원문:
 {article}
 """
+
+
+def _card_deck_backend():
+    """Pick the deck generator: the ChatGPT subscription first, Gemini as fallback."""
+    name = os.environ.get("CARDNEWS_BACKEND", "codex" if shutil.which("codex") else "gemini")
+    if name == "codex":
+        return _codex_card_deck
+    if name == "gemini":
+        return _gemini_card_deck
+    raise RuntimeError(f"알 수 없는 카드뉴스 백엔드입니다: {name}")
 
 
 CARD_DECK_ATTEMPTS = 4
@@ -548,6 +559,34 @@ def deck_validation_issues(deck, wanted=10):
     return issues
 
 
+def _codex_card_deck(prompt, *, timeout=600):
+    """Generate the deck through the owner's ChatGPT subscription via Codex CLI.
+
+    Codex is signed in with the subscription rather than an API key, so this is
+    the path that does not sit behind the Gemini free-tier daily quota. The final
+    message is written to a file rather than scraped out of the transcript.
+    """
+    import subprocess
+    import tempfile
+
+    executable = shutil.which("codex")
+    if not executable:
+        raise RuntimeError("codex CLI를 찾지 못했습니다.")
+    with tempfile.TemporaryDirectory() as work:
+        out_path = Path(work) / "deck.json"
+        completed = subprocess.run(
+            [executable, "exec", "--skip-git-repo-check", "--ephemeral",
+             "-C", work, "-o", str(out_path), prompt],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if completed.returncode != 0:
+            tail = (completed.stderr or completed.stdout or "").strip().splitlines()[-6:]
+            raise RuntimeError("codex exec 실패: " + " | ".join(tail))
+        if not out_path.is_file():
+            raise RuntimeError("codex exec가 최종 응답 파일을 남기지 않았습니다.")
+        return extract_json(out_path.read_text(encoding="utf-8"))
+
+
 def _gemini_card_deck(prompt):
     from google import genai
     from google.genai import types
@@ -615,6 +654,8 @@ def make_card_deck(manuscript, title, *, content_lineage=None, evidence_dir=None
         auto.GEMINI_API_KEY = configured.get("GEMINI", "api_key", fallback="")
         if not auto.GEMINI_API_KEY:
             raise RuntimeError("기존 config.ini의 GEMINI.api_key를 읽을 수 없습니다.")
+    backend_name = os.environ.get("CARDNEWS_BACKEND", "codex" if shutil.which("codex") else "gemini")
+    print(f"[카드뉴스] 생성 백엔드: {backend_name}")
     prompt_path = CARDNEWS_ROOT / "tools" / "deck-prompt.md"
     if not prompt_path.exists():
         raise RuntimeError(f"cardnews 프롬프트 파일을 찾지 못했습니다: {prompt_path}")
@@ -630,8 +671,8 @@ def make_card_deck(manuscript, title, *, content_lineage=None, evidence_dir=None
     attempt_prompt = full_prompt
     for attempt in range(1, CARD_DECK_ATTEMPTS + 1):
         try:
-            print(f"[카드뉴스] Gemini JSON을 생성합니다. (시도 {attempt}/{CARD_DECK_ATTEMPTS})")
-            raw_deck = _gemini_card_deck(attempt_prompt)
+            print(f"[카드뉴스] {backend_name} JSON을 생성합니다. (시도 {attempt}/{CARD_DECK_ATTEMPTS})")
+            raw_deck = _card_deck_backend()(attempt_prompt)
             if evidence_dir is not None:
                 Path(evidence_dir).mkdir(parents=True, exist_ok=True)
                 name = "provider_deck_raw.json" if attempt == 1 else f"provider_deck_raw-{attempt:02d}.json"
