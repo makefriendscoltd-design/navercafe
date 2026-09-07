@@ -102,6 +102,18 @@ AI 자동화에 관심 있는 분들을 위한 커뮤니티를 운영중입니�
 """
 
 
+CARD_DECK_ATTEMPTS = 4
+ANCHOR_RULES = """
+
+원문 근거(source_anchor) 규칙 — 이 규칙은 위의 모든 규칙보다 우선한다:
+- 표지와 마지막 closing 카드를 뺀 모든 카드에 "source_anchor" 필드를 반드시 넣는다.
+- source_anchor는 아래 "변환할 글"에 있는 문장을 글자 그대로 복사한 것이어야 한다.
+  요약하거나 다듬거나 단어를 바꾸면 안 된다. 복사·붙여넣기라고 생각하라.
+- 그 카드가 실제로 근거로 삼은 문장을 넣는다. 아무 문장이나 넣으면 안 된다.
+- 공백을 뺀 길이가 20자 이상인 문장을 고른다.
+- source_anchor가 없거나 원문에 그대로 없으면 결과 전체가 거부된다.
+"""
+
 CARD_DECK_EXTRA_RULES = """
 
 추가 카드뉴스 규칙:
@@ -606,26 +618,40 @@ def make_card_deck(manuscript, title, *, content_lineage=None, evidence_dir=None
     prompt_path = CARDNEWS_ROOT / "tools" / "deck-prompt.md"
     if not prompt_path.exists():
         raise RuntimeError(f"cardnews 프롬프트 파일을 찾지 못했습니다: {prompt_path}")
-    prompt = prompt_path.read_text(encoding="utf-8") + CARD_DECK_EXTRA_RULES
-    full_prompt = f"{prompt}\n각 본문 카드에 source_anchor 필드로 원문 근거 문장을 그대로 넣으세요.\n\n==== 변환할 글 ====\n{manuscript}"
+    prompt = prompt_path.read_text(encoding="utf-8") + CARD_DECK_EXTRA_RULES + ANCHOR_RULES
+    full_prompt = f"{prompt}\n\n==== 변환할 글 ====\n{manuscript}"
     failures = []
-    try:
-        print("[카드뉴스] Gemini JSON을 생성합니다.")
-        raw_deck = _gemini_card_deck(full_prompt)
-        if evidence_dir is not None:
-            Path(evidence_dir).mkdir(parents=True, exist_ok=True)
-            with (Path(evidence_dir) / "provider_deck_raw.json").open("x", encoding="utf-8") as stream:
-                json.dump(raw_deck, stream, ensure_ascii=False, indent=2)
-        deck = normalize_deck(raw_deck, manuscript, title, wanted=10)
-        deck["content_lineage"] = content_lineage
-        from content_lineage import validate_cardnews_origin
-        validate_cardnews_origin(deck)
-        issues = deck_validation_issues(deck)
-        if not issues:
-            return deck
-        failures.append("Gemini 결과 검증 실패: " + ", ".join(issues))
-    except Exception as exc:
-        failures.append(f"Gemini 생성 실패: {exc}")
+    from content_lineage import validate_cardnews_origin
+
+    # The lineage gate requires every content card to quote the answer literally.
+    # One shot at temperature 0.2 does not reliably produce that, so feed the
+    # exact complaint back and try again rather than accepting a deck without
+    # evidence or silently dropping the requirement.
+    attempt_prompt = full_prompt
+    for attempt in range(1, CARD_DECK_ATTEMPTS + 1):
+        try:
+            print(f"[카드뉴스] Gemini JSON을 생성합니다. (시도 {attempt}/{CARD_DECK_ATTEMPTS})")
+            raw_deck = _gemini_card_deck(attempt_prompt)
+            if evidence_dir is not None:
+                Path(evidence_dir).mkdir(parents=True, exist_ok=True)
+                name = "provider_deck_raw.json" if attempt == 1 else f"provider_deck_raw-{attempt:02d}.json"
+                with (Path(evidence_dir) / name).open("x", encoding="utf-8") as stream:
+                    json.dump(raw_deck, stream, ensure_ascii=False, indent=2)
+            deck = normalize_deck(raw_deck, manuscript, title, wanted=10)
+            deck["content_lineage"] = content_lineage
+            validate_cardnews_origin(deck)
+            issues = deck_validation_issues(deck)
+            if not issues:
+                return deck
+            complaint = "결과 검증 실패: " + ", ".join(issues)
+        except Exception as exc:
+            complaint = f"생성 실패: {exc}"
+        failures.append(f"시도 {attempt} {complaint}")
+        attempt_prompt = (
+            f"{full_prompt}\n\n==== 직전 시도가 거부된 이유 ====\n{complaint}\n"
+            "이유를 그대로 고쳐서 다시 만들어라. 특히 source_anchor는 위 글에서 "
+            "글자 그대로 복사한 문장이어야 한다."
+        )
 
     raise RuntimeError("카드뉴스 생성 실패; 다른 원고로 자동 대체하지 않습니다. " + " | ".join(failures))
 
