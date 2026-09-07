@@ -390,6 +390,15 @@ SHORTS_CTA_BOUNDARY_SENTENCES = (
     "CTA 반영은 영상 제작자의 시연 사례입니다.",
     "결과는 보장되지 않습니다.",
 )
+SHORTS_DISTRIBUTION_PLATFORM_MARKER = (
+    r"(?:인스타(?:그램)?|틱톡|유튜브\s*쇼츠|링크드인|SNS|소셜\s*미디어|플랫폼|채널)"
+)
+# "채널" also names one messaging destination. Reporting into a Telegram or Slack
+# channel is a single delivery target, not the cross-platform publishing this
+# claim category exists to catch, so those readings do not count as a platform.
+SHORTS_SINGLE_DESTINATION_CHANNEL = re.compile(
+    r"(?:텔레그램|슬랙|디스코드|카카오\s*톡|카톡|이메일|메일|문자)\s*채널"
+)
 SHORTS_DISTRIBUTION_PREDICATE = (
     r"(?:게시(?!물)|배포|(?<!다운)업로드|유포|발행(?!물)|"
     r"올리|올립|내보내|내보낼|전송|공유|송출)"
@@ -416,8 +425,7 @@ def _is_platform_distribution_sentence(sentence: str) -> bool:
         if notebooklm_destination:
             tail = notebooklm_destination.group("tail")
             external_destination = re.search(
-                r"(?:인스타(?:그램)?|틱톡|유튜브\s*쇼츠|링크드인|SNS|"
-                r"소셜\s*미디어|플랫폼|채널)\s*(?:에|(?:으)?로)",
+                SHORTS_DISTRIBUTION_PLATFORM_MARKER + r"\s*(?:에|(?:으)?로)",
                 tail,
                 re.IGNORECASE,
             )
@@ -429,11 +437,9 @@ def _is_platform_distribution_sentence(sentence: str) -> bool:
         and distribution_actions[0].group(0) == "업로드"
     ):
         return False
+    without_single_destination = SHORTS_SINGLE_DESTINATION_CHANNEL.sub("", sentence)
     platform_marker = re.search(
-        r"(?:인스타(?:그램)?|틱톡|유튜브\s*쇼츠|링크드인|SNS|"
-        r"소셜\s*미디어|플랫폼|채널)",
-        sentence,
-        re.IGNORECASE,
+        SHORTS_DISTRIBUTION_PLATFORM_MARKER, without_single_destination, re.IGNORECASE
     )
     return bool(platform_marker)
 

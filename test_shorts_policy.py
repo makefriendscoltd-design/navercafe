@@ -1629,3 +1629,20 @@ def test_inline_chrome_does_not_change_one_answer_into_two():
     inline = "문장입니다more_horiz다음 문장입니다."
     assert (policy.provider_answer_content_signature(own_line)
             == policy.provider_answer_content_signature(inline))
+
+
+def test_reporting_into_one_messaging_channel_is_not_cross_platform_publishing():
+    """A weekly report sent to a Telegram channel is one delivery target."""
+    sentence = ("매주 금요일 오후 네 시마다 구글 시트의 주간 매출 데이터를 알아서 가공하고 "
+                "핵심 내용만 적은 한 장짜리 보고서를 작성하여 텔레그램 채널로 즉시 전송합니다.")
+    assert not policy._is_platform_distribution_sentence(sentence)
+    assert policy.find_forbidden_shorts_claims(sentence) == {}
+
+
+@pytest.mark.parametrize("sentence", [
+    "영상 하나를 올리는 즉시 지원 채널에 게시됩니다.",
+    "인스타그램 채널에 자동으로 배포됩니다.",
+    "각 플랫폼에 동시에 업로드됩니다.",
+])
+def test_publishing_across_platforms_is_still_caught(sentence):
+    assert policy._is_platform_distribution_sentence(sentence)
