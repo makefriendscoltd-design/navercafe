@@ -159,6 +159,10 @@ def calibrate_voice_lufs(target: Path) -> None:
     shutil.move(calibrated, target)
 
 
+# The minimum on-screen time write_srt gives one caption cue.
+SUBTITLE_READABILITY_FLOOR_S = 0.10
+
+
 def parse_srt(path: Path) -> list[dict]:
     def seconds(value: str) -> float:
         h, m, rest = value.split(":")
@@ -905,8 +909,9 @@ def build_config(markers: list[float]) -> dict:
             candidate_lines.append(f"{match.group(1)}\n{match.group(2)}")
     if len(candidate_lines) != 3:
         raise RuntimeError("exactly three two-line headcopy candidates required")
-    for candidate in candidate_lines:
-        validate_head_copy(candidate)
+    for index, candidate in enumerate(candidate_lines):
+        # Only the first candidate is drawn, so only it is held to the 90px width.
+        validate_head_copy(candidate, measure_pixels=index == 0)
     validate_head_copy_connection(candidate_lines[0], SCRIPT.read_text(encoding="utf-8"))
     presenter = validate_presenter_asset(PRESENTER)
     cfg["title"].update({
@@ -1114,10 +1119,17 @@ def validate_existing_render() -> int:
     subtitle_ok = (
         len(srt_events) == len(script_tokens)
         and all(" " not in x["text"] for x in srt_events)
-        # One very short spoken token can receive the renderer's 100 ms
-        # readability floor and overlap its neighbor by a few milliseconds.
-        # Keep the token whole and allow only that sub-frame rounding overlap.
-        and all(right["start"] + 0.050 >= left["end"] for left, right in zip(srt_events, srt_events[1:]))
+        # write_srt already clamps each cue to the next cue's start, so the only
+        # thing that can push an end past its neighbour is the 100 ms readability
+        # floor applied to a token too short to fill it. Check that mechanism
+        # rather than a tolerance in milliseconds: cues must stay in order, and
+        # any overlap must belong to a cue sitting exactly on the floor.
+        and all(left["start"] < right["start"] for left, right in zip(srt_events, srt_events[1:]))
+        and all(
+            right["start"] >= left["end"]
+            or abs((left["end"] - left["start"]) - SUBTITLE_READABILITY_FLOOR_S) <= 0.001
+            for left, right in zip(srt_events, srt_events[1:])
+        )
         and [x['text'] for x in srt_events] == [strip_subtitle_edge_punctuation(x) for x in script_tokens]
     )
     subtitle_edge_punctuation_free = all(

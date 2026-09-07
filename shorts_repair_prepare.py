@@ -70,7 +70,12 @@ def prepare(source_key, plan_path):
         subprocess.run([sys.executable, str(PROJECT / 'notebooklm_shorts.py'),
                         '--url', f'https://youtu.be/{source_key}', '--out', str(script_path),
                         '--headline-out', str(root / '06_headcopy_candidates.txt'),
-                        '--evidence-dir', str(root / 'notebooklm')], check=True)
+                        '--evidence-dir', str(root / 'notebooklm'),
+                        # Every manifest this script writes carries the owner's standing
+                        # shorts authorization, and the lineage gate re-checks the answer
+                        # against it. Applying the same standard here keeps extraction from
+                        # rejecting a script the canonical gate would accept.
+                        '--preserve-authorized-wording'], check=True)
     script = script_path.read_text().strip()
     scripts.validate_intro_promise(script)
     match = re.search(r'(?m)^(\d+)분 짜리 영상 내용을 모두 정리했습니다\.', script)

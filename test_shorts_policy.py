@@ -5,6 +5,8 @@ from unittest import mock
 
 import pytest
 
+import shorts_v7_builder as builder
+
 
 def test_explicit_original_wording_authorization_preserves_absolute_phrase():
     value = '온 팀원이 완벽하게 동기화된 가상 비서 자산을 누리게 됩니다.'
@@ -1497,3 +1499,83 @@ def test_a_grounded_answer_with_no_citations_is_still_recoverable():
     )
     assert result["status"] == "pass"
     assert result["citation_count"] == 0
+
+
+def test_extraction_and_lineage_judge_authorized_hype_the_same_way():
+    """The owner authorized the source's own hype; both gates must agree on it."""
+    hype = "필요한 모든 요구사항을 한 번에 정리해서 전송하면 더 완벽한 계획을 세워 일처리 속도를 단축합니다."
+    with pytest.raises(policy.ProductionPolicyError, match="unsupported_absolute_performance"):
+        policy.validate_shorts_verbatim_claims(hype)
+    result = policy.validate_shorts_verbatim_claims(hype, preserve_authorized_wording=True)
+    assert result["status"] == "pass"
+    assert result["authorized_original_wording"] == ["완벽한 계획을 세워 일처리"]
+
+
+def test_authorized_hype_never_clears_an_unverified_source_claim():
+    """The wording authorization covers hype only, not price or availability claims."""
+    with pytest.raises(policy.ProductionPolicyError, match="free_or_unlimited"):
+        policy.validate_shorts_verbatim_claims(
+            "무료로 제공되는 기본 모델을 쓸 수 있습니다.", preserve_authorized_wording=True)
+
+
+HEADS_BLOCK = """### 헤드카피라이팅
+1. 아직도 틱톡 눈팅만 해? / 에이아이 쇼츠 시작하기
+2. 영상 만들기 막막한가요! / 대본 없이 영상 만드는법
+3. 나만 빼고 다 시작했죠 / 에이아이 쇼츠로 채널 성장
+### 스크립트
+본문
+"""
+
+
+def test_only_the_rendered_head_copy_must_fit_the_90px_width():
+    """Candidate 3 measures 926px, but it is never burned into the video."""
+    heads = shorts.extract_head_copy_candidates(HEADS_BLOCK)
+    assert len(heads) == 3
+    assert heads[0].splitlines() == ["아직도 틱톡 눈팅만 해?", "에이아이 쇼츠 시작하기"]
+    with pytest.raises(policy.ProductionPolicyError, match="안전폭"):
+        policy.validate_headline_pixel_width(heads[2].splitlines())
+
+
+def test_an_overwide_first_candidate_still_fails():
+    block = HEADS_BLOCK.replace(
+        "1. 아직도 틱톡 눈팅만 해? / 에이아이 쇼츠 시작하기",
+        "1. 나만 빼고 다 시작했죠 / 에이아이 쇼츠로 채널 성장",
+    ).replace("3. 나만 빼고 다 시작했죠 / 에이아이 쇼츠로 채널 성장",
+              "3. 아직도 틱톡 눈팅만 해? / 에이아이 쇼츠 시작하기")
+    with pytest.raises(RuntimeError, match="안전폭"):
+        shorts.extract_head_copy_candidates(block)
+
+
+def test_structural_rules_still_apply_to_every_candidate():
+    block = HEADS_BLOCK.replace(
+        "2. 영상 만들기 막막한가요! / 대본 없이 영상 만드는법",
+        "2. 영상 / 짧다",
+    )
+    with pytest.raises(RuntimeError):
+        shorts.extract_head_copy_candidates(block)
+
+
+def _cues(spans):
+    return [{"text": f"t{i}", "start": s, "end": e} for i, (s, e) in enumerate(spans)]
+
+
+def _overlap_ok(events):
+    floor = builder.SUBTITLE_READABILITY_FLOOR_S
+    return (all(l["start"] < r["start"] for l, r in zip(events, events[1:]))
+            and all(r["start"] >= l["end"]
+                    or abs((l["end"] - l["start"]) - floor) <= 0.001
+                    for l, r in zip(events, events[1:])))
+
+
+def test_a_floor_extended_short_token_may_overlap_its_neighbour():
+    """'수' lasts under 100 ms, so the readability floor pushes its end past the next cue."""
+    assert _overlap_ok(_cues([(27.800, 28.056), (28.061, 28.161), (28.109, 28.524)]))
+
+
+def test_an_overlap_from_a_normal_length_cue_still_fails():
+    """Only the floor may cause an overlap; a long cue running over is corruption."""
+    assert not _overlap_ok(_cues([(27.800, 28.400), (28.109, 28.524)]))
+
+
+def test_cues_that_go_backwards_still_fail():
+    assert not _overlap_ok(_cues([(28.061, 28.161), (28.000, 28.524)]))

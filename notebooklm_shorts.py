@@ -273,8 +273,14 @@ def head_copy_lines(value: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def validate_head_copy(value: str) -> str:
-    """Require the owner's spoken two-line first-screen copy shape."""
+def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
+    """Require the owner's spoken two-line first-screen copy shape.
+
+    ``measure_pixels`` is the render constraint rather than the copy contract:
+    only the adopted candidate is burned into the video, so only it has to fit
+    the 90px safe width.  An alternative that is never rendered is still held to
+    every structural rule.
+    """
     first, second = head_copy_lines(value)
     if any(len(line) > 18 for line in (first, second)):
         raise RuntimeError("쇼츠 헤드카피는 한 줄당 18자 이하여야 합니다.")
@@ -286,10 +292,11 @@ def validate_head_copy(value: str) -> str:
         raise RuntimeError(
             "쇼츠 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체여야 합니다."
         )
-    try:
-        validate_headline_pixel_width((first, second))
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
+    if measure_pixels:
+        try:
+            validate_headline_pixel_width((first, second))
+        except Exception as exc:
+            raise RuntimeError(str(exc)) from exc
     return f"{first}\n{second}"
 
 
@@ -333,9 +340,11 @@ def extract_head_copy_candidates(answer: str) -> list[str]:
         raise RuntimeError("쇼츠 헤드카피 후보가 정확히 3개가 아닙니다.")
     accepted = []
     rejections = []
-    for raw in offered:
+    for index, raw in enumerate(offered):
         try:
-            accepted.append(validate_head_copy(raw))
+            # The first candidate is the one that gets rendered, so it alone must
+            # also survive the 90px width measurement.
+            accepted.append(validate_head_copy(raw, measure_pixels=index == 0))
         except RuntimeError as exc:
             rejections.append(str(exc))
     if rejections:
@@ -639,6 +648,7 @@ def fetch(
     *,
     evidence_dir: str | Path | None = None,
     attempt_ledger_path: str | Path | None = None,
+    preserve_authorized_wording: bool = False,
 ) -> tuple[str, str, int, str, dict, list[str]]:
     source_key = _video_id(url)
     cfg, _unused_api_key = load_shorts_config()
@@ -685,7 +695,9 @@ def fetch(
         script, _layout = canonicalize_notebooklm_script_layout(script)
         adopted_body = keep_through_fifth(script)
         validate_shorts_verbatim_claims(
-            adopted_body, fact_verifications=load_fact_verifications(evidence_dir)
+            adopted_body,
+            preserve_authorized_wording=preserve_authorized_wording,
+            fact_verifications=load_fact_verifications(evidence_dir),
         )
         minutes = duration_minutes(get_video_duration(url))
         final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
@@ -724,6 +736,7 @@ def recover(
     *,
     evidence_dir: str | Path | None = None,
     attempt_ledger_path: str | Path | None = None,
+    preserve_authorized_wording: bool = False,
 ) -> tuple[str, str, int, str, dict, list[str], dict]:
     """Reuse an answer the provider already returned, without a new provider call.
 
@@ -755,7 +768,9 @@ def recover(
     script, _layout = canonicalize_notebooklm_script_layout(script)
     adopted_body = keep_through_fifth(script)
     validate_shorts_verbatim_claims(
-        adopted_body, fact_verifications=load_fact_verifications(evidence_dir)
+        adopted_body,
+        preserve_authorized_wording=preserve_authorized_wording,
+        fact_verifications=load_fact_verifications(evidence_dir),
     )
     minutes = duration_minutes(get_video_duration(url))
     final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
@@ -792,6 +807,11 @@ def main(argv=None) -> int:
     parser.add_argument("--headline-out")
     parser.add_argument("--evidence-dir")
     parser.add_argument(
+        "--preserve-authorized-wording",
+        action="store_true",
+        help="원응답의 승인된 과장 표현을 그대로 둔다(정본 lineage 게이트와 동일 기준)",
+    )
+    parser.add_argument(
         "--recovered-answer",
         help="새 공급자 호출 없이 이미 받은 원응답을 다시 읽어 저장한 파일",
     )
@@ -824,11 +844,13 @@ def main(argv=None) -> int:
             Path(args.recovered_answer).expanduser().resolve().read_text(encoding="utf-8"),
             json.loads(Path(args.recovery_evidence).expanduser().resolve().read_text(encoding="utf-8")),
             evidence_dir=args.evidence_dir,
+            preserve_authorized_wording=args.preserve_authorized_wording,
         )
     else:
         script, chosen, minutes, raw, transform, head_copies = fetch(
             args.url,
             evidence_dir=args.evidence_dir,
+            preserve_authorized_wording=args.preserve_authorized_wording,
         )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
