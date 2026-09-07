@@ -201,8 +201,19 @@ def finalize_replacement(source_key, plan_path):
         if not backup.exists():
             backup.write_bytes(old_path.read_bytes())
         old = json.loads(old_path.read_text())
-        if old.get('provider_video_id') != entry['provider_id']:
+        recorded = old.get('provider_video_id')
+        if recorded and recorded != entry['provider_id']:
             raise RuntimeError('Predecessor manifest identity differs; do not overwrite')
+        if not recorded:
+            # Some early runs never wrote the uploaded ID back. An absent link is
+            # not evidence of a different video, so fall back to the source this
+            # manifest was built for -- the provider row itself was already bound
+            # by exact title and description hash before it was retired.
+            if old.get('source_id') != source_key:
+                raise RuntimeError('Predecessor manifest identity differs; do not overwrite')
+            old['provider_video_id_link'] = {'provider_id': entry['provider_id'],
+                'basis': 'source_id match; provider row bound by exact title and description hash',
+                'recorded_in_manifest': False}
         old.update(provider_state='private_replaced', scheduled_at=None,
             canonical_candidate_status='superseded', superseded_by=str(production_path),
             replacement_provider_evidence=str(result_path))
