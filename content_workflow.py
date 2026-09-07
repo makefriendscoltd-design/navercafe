@@ -42,6 +42,7 @@ def prepare_cafe(manifest_path: Path, candidate: Path, recovered_answer: Path | 
     answer = manifest_path.parent / (manifest.get('notebook_answer') or manifest.get('notebooklm_answer')
                                     or (manifest.get('notebooklm') or {}).get('answer')
                                     or 'notebooklm/notebooklm-answer.md')
+    original_answer = answer.resolve()
     if recovered_answer is not None:
         answer = recovered_answer.resolve()
     provider = answer.parent / 'notebooklm-provider-evidence.json'
@@ -49,7 +50,11 @@ def prepare_cafe(manifest_path: Path, candidate: Path, recovered_answer: Path | 
     origin_manifest = {**manifest, 'notebooklm_answer': str(answer.resolve()),
                        'notebooklm_provider_evidence': str(provider.resolve())}
     origin_manifest.pop('notebook_answer', None)
-    origin = validate_notebooklm_cafe_provenance(manifest_path, origin_manifest, {})
+    # Existing interrupted-response evidence may bind the preserved answer.
+    # Never carry that approval over to a replacement answer at another path.
+    local_path = manifest_path.parent / '11_local_validation.json'
+    existing_local = read_json(local_path) if answer.resolve() == original_answer and local_path.is_file() else {}
+    origin = validate_notebooklm_cafe_provenance(manifest_path, origin_manifest, existing_local)
     if not all(origin.values()):
         raise ValueError('NotebookLM answer/provider source binding failed')
     cleaned = clean_cafe_answer(answer.read_text(encoding='utf-8'))
