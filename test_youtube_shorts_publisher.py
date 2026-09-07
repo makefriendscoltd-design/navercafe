@@ -1150,3 +1150,32 @@ def test_source_independence_does_not_treat_another_source_as_duplicate(tmp_path
     )
     assert len(provider_inventory.matches(manifest_a)) == 1
     assert provider_inventory.matches(manifest_b) == ()
+
+
+def test_an_in_flight_upload_is_named_rather_than_blocking_the_scan():
+    """One row still transferring must not make the whole inventory unreadable."""
+    assert publisher.UPLOADING_STATE not in publisher.STATES
+    assert publisher.UPLOADING_STATE in publisher.ROW_STATES
+
+
+def test_an_uploading_row_reserves_no_slot_and_is_never_a_target(monkeypatch):
+    """It has no visibility and no schedule, so planning must ignore it."""
+    row = publisher.ProviderRow.from_mapping({
+        "identity": "rIi5_FfFuhg", "provider_id": "rIi5_FfFuhg",
+        "status": publisher.UPLOADING_STATE, "title": "final", "description": "",
+        "urls": [], "page": 1, "metadata_origin": "studio_provider_row_model",
+        "direct_metadata_inspected": True,
+    })
+    assert row.status == publisher.UPLOADING_STATE
+    assert row.scheduled_at is None
+    assert row.published_at is None
+
+
+def test_a_row_with_no_readable_state_at_all_still_fails():
+    with pytest.raises(publisher.InventoryError):
+        publisher.ProviderRow.from_mapping({
+            "identity": "rIi5_FfFuhg", "provider_id": "rIi5_FfFuhg",
+            "status": "처리중", "title": "final", "description": "",
+            "urls": [], "page": 1, "metadata_origin": "studio_provider_row_model",
+            "direct_metadata_inspected": True,
+        })

@@ -24,6 +24,14 @@ try{
     const lines=(e.innerText||'').split('\n').map(s=>s.trim());
     const patterns={public:/^(공개|Public)$/i,scheduled:/^(예약됨|Scheduled)$/i,private:/^(비공개|Private)$/i,draft:/^(초안|Draft)$/i};
     const states=Object.entries(patterns).filter(([k,re])=>lines.some(x=>re.test(x))).map(([k])=>k);
+    // A row still being uploaded carries no visibility yet, only its progress.
+    // Name that state instead of failing the whole scan, so one in-flight upload
+    // cannot block every other publish. Anything still unreadable stops the scan.
+    const uploading=lines.some(x=>/^(\d{1,3}\s*%\s*업로드\s*중|업로드\s*중|Uploading(\s+\d{1,3}\s*%)?)$/i.test(x));
+    if(states.length===0&&uploading)return {identity:v.videoId,provider_id:v.videoId,status:'uploading',title,description:v.description,urls:[...hrefs,...(v.description.match(/https?:\/\/[^\s]+/g)||[])],page,
+     metadata_origin:'studio_provider_row_model',model_channel_id:v.channelId,privacy:v.privacy,draft_status:v.draftStatus,
+     scheduled_raw:v.scheduledPublishingDetails,published_seconds:v.timePublishedSeconds,
+     direct_metadata_inspected:true,visibility_control_present:null};
     if(states.length!==1)throw new Error('ambiguous visibility');
     return {identity:v.videoId,provider_id:v.videoId,status:states[0],title,description:v.description,urls:[...hrefs,...(v.description.match(/https?:\/\/[^\s]+/g)||[])],page,
      metadata_origin:'studio_provider_row_model',model_channel_id:v.channelId,privacy:v.privacy,draft_status:v.draftStatus,
@@ -92,7 +100,7 @@ def normalize(raw: dict, manifest, phase: str) -> dict:
             'account':'u0','headless':True,'channel':manifest.expected_channel,
             'pagination_complete':True,'terminal_reason':'next_disabled','pages_scanned':len(pages),
             'pages':pages,'scanned_states':sorted(STATES),
-            'status_counts':{state:sum(r['status']==state for r in rows) for state in STATES},'rows':rows}
+            'status_counts':{state:sum(r['status']==state for r in rows) for state in STATES},'uploading_rows':sum(r['status']=='uploading' for r in rows),'rows':rows}
 
 
 def scan(manifest, *, phase: str) -> dict:

@@ -51,6 +51,12 @@ KST = ZoneInfo("Asia/Seoul")
 ASIDE_ACCOUNT = "u0"
 SHARED_PROVIDER_LOCK = Path("/tmp/aimax-aside-u0-provider.lock")
 STATES = frozenset({"public", "scheduled", "private", "draft"})
+# A row whose bytes are still transferring has no visibility, no schedule and
+# can never be a publish target, so it stays outside the four states the scan
+# must account for. It still has to be nameable: without that, one in-flight
+# upload makes every scan unreadable and blocks all publishing.
+UPLOADING_STATE = "uploading"
+ROW_STATES = STATES | {UPLOADING_STATE}
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EVIDENCE_MAX_AGE = timedelta(minutes=5)
@@ -314,7 +320,7 @@ class ProviderRow:
         identity = str(value.get("identity") or "").strip()
         provider_id = str(value.get("provider_id") or "").strip()
         status = str(value.get("status") or "").lower().strip()
-        if not identity or status not in STATES:
+        if not identity or status not in ROW_STATES:
             raise InventoryError("every row needs an identity and a recognized visibility state")
         if provider_id and not VIDEO_ID_RE.fullmatch(provider_id):
             raise InventoryError("provider row contains an invalid video ID")
@@ -421,6 +427,11 @@ class ProviderInventory:
         actual_counts = {state: sum(row.status == state for row in rows) for state in STATES}
         if {state: int(counts.get(state, -1)) for state in STATES} != actual_counts:
             raise InventoryError("status counts do not account for every provider row")
+        uploading = sum(row.status == UPLOADING_STATE for row in rows)
+        if sum(actual_counts.values()) + uploading != len(rows):
+            raise InventoryError("status counts do not account for every provider row")
+        if uploading and int(value.get("uploading_rows", -1)) != uploading:
+            raise InventoryError("in-flight upload rows are not reported by the scan")
         captured = _parse_datetime(value.get("captured_at"), label="captured_at")
         _validate_fresh_evidence(captured, now, label="inventory captured_at")
         if any(row.published_at and row.published_at > captured for row in rows):
