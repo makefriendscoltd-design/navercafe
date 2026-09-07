@@ -77,10 +77,22 @@ def prepare(source_key, plan_path):
     if not match:
         raise RuntimeError('Fixed CTA absent')
     old_script_path = source_root / 'shorts/07_script_final.txt'
+    cta_correction = None
     if old_script_path.exists():
         old_cta = re.search(r'(?m)^(\d+)분 짜리 영상 내용을 모두 정리했습니다\.', old_script_path.read_text())
         if old_cta and old_cta[1] != match[1]:
-            raise RuntimeError('CTA duration differs from existing scheduled script; inspect source duration')
+            # The scheduled video may itself carry the wrong minute count, which is
+            # a defect this repair exists to replace.  Settle it against the source
+            # rather than against the old script: the new CTA stands only when it
+            # matches the independently measured duration, so a drifting new script
+            # is still rejected and a wrong old value can no longer be inherited.
+            measured = scripts.duration_minutes(scripts.get_video_duration(f'https://youtu.be/{source_key}'))
+            if int(match[1]) != measured:
+                raise RuntimeError('CTA duration differs from existing scheduled script; inspect source duration')
+            cta_correction = {'old_script_minutes': int(old_cta[1]), 'new_script_minutes': int(match[1]),
+                              'measured_source_minutes': measured,
+                              'old_script': binding(old_script_path),
+                              'reason': 'scheduled script carried a minute count the source does not support'}
     import shorts_v7_builder as builder
     builder.SOURCE_MINUTES = int(match[1])
     sections = builder.split_seven_sections(script)
@@ -107,6 +119,7 @@ def prepare(source_key, plan_path):
                 'stored_answer': binding(root / 'notebooklm/notebooklm-answer.md')}
                if recovery_path.exists() else {}),
             'script': binding(script_path), 'source_minutes': int(match[1]),
+            **({'cta_duration_correction': cta_correction} if cta_correction else {}),
             'wording_authorization': {'scope': 'preserve_original_absolute_wording',
                 'source_key': source_key, 'answer_sha256': answer['sha256'],
                 'instruction': '쇼츠는 과장 표현 상관없이 진행한다. 원응답대로 하면된다.'}},
