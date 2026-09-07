@@ -24,15 +24,18 @@ try{
     const lines=(e.innerText||'').split('\n').map(s=>s.trim());
     const patterns={public:/^(공개|Public)$/i,scheduled:/^(예약됨|Scheduled)$/i,private:/^(비공개|Private)$/i,draft:/^(초안|Draft)$/i};
     const states=Object.entries(patterns).filter(([k,re])=>lines.some(x=>re.test(x))).map(([k])=>k);
-    // A row still being uploaded carries no visibility yet, only its progress.
-    // Name that state instead of failing the whole scan, so one in-flight upload
-    // cannot block every other publish. Anything still unreadable stops the scan.
-    const uploading=lines.some(x=>/^(\d{1,3}\s*%\s*업로드\s*중|업로드\s*중|Uploading(\s+\d{1,3}\s*%)?)$/i.test(x));
-    if(states.length===0&&uploading)return {identity:v.videoId,provider_id:v.videoId,status:'uploading',title,description:v.description,urls:[...hrefs,...(v.description.match(/https?:\/\/[^\s]+/g)||[])],page,
+    // A row that is still uploading, processing or queued for review has no
+    // visibility chip yet, and the wording changes as it moves through those
+    // phases. Read the provider's own draft status instead of chasing the text:
+    // a draft with no chip rendered has simply not surfaced one yet. Naming that
+    // stops one in-flight upload from making every scan unreadable, and a row
+    // with no state and no draft status still fails.
+    const notYetVisible=v.draftStatus&&v.draftStatus!=='DRAFT_STATUS_NONE';
+    if(states.length===0&&notYetVisible)return {identity:v.videoId,provider_id:v.videoId,status:'uploading',title,description:v.description,urls:[...hrefs,...(v.description.match(/https?:\/\/[^\s]+/g)||[])],page,
      metadata_origin:'studio_provider_row_model',model_channel_id:v.channelId,privacy:v.privacy,draft_status:v.draftStatus,
      scheduled_raw:v.scheduledPublishingDetails,published_seconds:v.timePublishedSeconds,
      direct_metadata_inspected:true,visibility_control_present:null};
-    if(states.length!==1)throw new Error('ambiguous visibility');
+    if(states.length!==1)throw new Error('ambiguous visibility '+JSON.stringify({id:v.videoId,title,states,lines:lines.slice(0,20)}));
     return {identity:v.videoId,provider_id:v.videoId,status:states[0],title,description:v.description,urls:[...hrefs,...(v.description.match(/https?:\/\/[^\s]+/g)||[])],page,
      metadata_origin:'studio_provider_row_model',model_channel_id:v.channelId,privacy:v.privacy,draft_status:v.draftStatus,
      scheduled_raw:v.scheduledPublishingDetails,published_seconds:v.timePublishedSeconds,
@@ -92,7 +95,9 @@ def normalize(raw: dict, manifest, phase: str) -> dict:
             row['published_at'] = datetime.fromtimestamp(int(row['published_seconds']), KST).isoformat()
         elif row['privacy'] != 'VIDEO_PRIVACY_PRIVATE':
             raise InventoryError('provider private status differs')
-        if (status == 'draft') != (row['draft_status'] != 'DRAFT_STATUS_NONE'):
+        # A row still uploading is a draft that has not finished transferring, so
+        # the provider marks it with a draft status just like a finished draft.
+        if (status in ('draft', 'uploading')) != (row['draft_status'] != 'DRAFT_STATUS_NONE'):
             raise InventoryError('provider draft state differs')
         rows.append(row)
     captured = datetime.fromisoformat(raw['captured_at'].replace('Z', '+00:00')).astimezone(KST).isoformat()
