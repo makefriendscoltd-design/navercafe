@@ -583,9 +583,70 @@ def find_forbidden_shorts_claims(value: str) -> dict[str, list[str]]:
     return hits
 
 
-def validate_shorts_verbatim_claims(value: str, *, preserve_authorized_wording: bool = False) -> dict[str, Any]:
+def _clear_fact_verified_claims(
+    value: str,
+    hits: dict[str, list[str]],
+    verifications: Any,
+) -> dict[str, Any]:
+    """Drop claim hits an operator verified against a cited source.
+
+    The project requires model, price and benchmark claims to be checked rather
+    than assumed, and to be corrected only where they contradict the vendor.  A
+    claim that survives that check is true, so removing it would damage the
+    verbatim answer -- but it may only stand with its evidence attached, quoted
+    from the narration itself, and never as a blanket exemption for a category.
+    """
+
+    if not isinstance(verifications, list) or not verifications:
+        return {"cleared": {}, "hits": hits}
+    narration = normalize_notebook_instruction(value)
+    cleared: dict[str, list[dict[str, Any]]] = {}
+    remaining = {name: list(values) for name, values in hits.items()}
+    for entry in verifications:
+        if not isinstance(entry, dict):
+            raise ProductionPolicyError("쇼츠 사실확인 항목이 객체 형식이 아닙니다.")
+        category = str(entry.get("category") or "")
+        claim = str(entry.get("claim") or "")
+        sentence = str(entry.get("narration_sentence") or "")
+        sources = entry.get("sources")
+        verdict = str(entry.get("verdict") or "")
+        if category not in remaining or claim not in remaining.get(category, []):
+            raise ProductionPolicyError(
+                f"쇼츠 사실확인 항목이 실제 걸린 주장과 맞지 않습니다: {category}/{claim}"
+            )
+        if verdict != "supported_by_source":
+            raise ProductionPolicyError(
+                "쇼츠 사실확인은 출처로 뒷받침된 주장만 통과시킵니다. "
+                "어긋나는 주장은 해당 주장만 고치거나 제거하세요."
+            )
+        if not sentence or sentence not in narration:
+            raise ProductionPolicyError(
+                "쇼츠 사실확인 항목의 인용 문장이 실제 나레이션에 없습니다."
+            )
+        if claim not in sentence:
+            raise ProductionPolicyError("쇼츠 사실확인 인용 문장에 해당 주장이 없습니다.")
+        if not isinstance(sources, list) or not sources or not all(
+            isinstance(url, str) and url.startswith("https://") for url in sources
+        ):
+            raise ProductionPolicyError("쇼츠 사실확인 항목에 https 출처가 없습니다.")
+        cleared.setdefault(category, []).append(
+            {"claim": claim, "narration_sentence": sentence, "sources": list(sources),
+             "checked_at": str(entry.get("checked_at") or "")}
+        )
+        remaining[category].remove(claim)
+    return {"cleared": cleared, "hits": {name: values for name, values in remaining.items() if values}}
+
+
+def validate_shorts_verbatim_claims(
+    value: str,
+    *,
+    preserve_authorized_wording: bool = False,
+    fact_verifications: Any = None,
+) -> dict[str, Any]:
     """Reject known generalized claims before verbatim narration can proceed."""
     hits = find_forbidden_shorts_claims(value)
+    verified = _clear_fact_verified_claims(value, hits, fact_verifications)
+    hits = verified["hits"]
     absolute_performance = re.findall(
         r"완벽(?:하게|한)[^.!?\n]{0,30}(?:처리|마무리|무인|동기화)|"
         r"(?:백\s*퍼센트|100\s*%)[^.!?\n]{0,15}위임|무조건\s*성공",
@@ -600,7 +661,8 @@ def validate_shorts_verbatim_claims(value: str, *, preserve_authorized_wording: 
         )
     return {"status": "pass", "forbidden_claim_hits": {},
             "authorized_original_wording": absolute_performance if preserve_authorized_wording else [],
-            "independently_fact_verified": False}
+            "fact_verified_claims": verified["cleared"],
+            "independently_fact_verified": bool(verified["cleared"])}
 
 
 def validate_shorts_notebook_retry(
@@ -708,10 +770,15 @@ def validate_recovered_provider_answer(
         raise ProductionPolicyError("복구 증거의 source_key가 대상과 다릅니다.")
     if evidence.get("provider_call_made") is not False:
         raise ProductionPolicyError("복구 경로에서는 새 공급자 호출을 할 수 없습니다.")
-    for field in ("citation_count", "indexed_span_count", "block_count"):
+    # Paragraph blocks and indexed answer spans must exist for the read to have
+    # happened at all.  Citations need not: a grounded answer can legitimately
+    # carry none, and the wording signature above is what proves fidelity.
+    for field in ("indexed_span_count", "block_count"):
         value = evidence.get(field)
         if not isinstance(value, int) or value <= 0:
             raise ProductionPolicyError(f"복구 증거의 {field} DOM 계측값이 없습니다.")
+    if not isinstance(evidence.get("citation_count"), int) or evidence["citation_count"] < 0:
+        raise ProductionPolicyError("복구 증거의 citation_count DOM 계측값이 없습니다.")
     return {
         "status": "pass",
         "source_key": source,

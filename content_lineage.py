@@ -127,7 +127,12 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
                   and wording.get('source_key') == source
                   and wording.get('answer_sha256') == sha256(answer)
                   and wording.get('instruction') == '쇼츠는 과장 표현 상관없이 진행한다. 원응답대로 하면된다.')
-    claims = policy.validate_shorts_verbatim_claims(parsed, preserve_authorized_wording=authorized)
+    fact_entry = origin.get('fact_verifications')
+    fact_verifications = []
+    if fact_entry:
+        fact_verifications = read_json(bound_file(root, fact_entry, 'fact_verifications')).get('verifications')
+    claims = policy.validate_shorts_verbatim_claims(
+        parsed, preserve_authorized_wording=authorized, fact_verifications=fact_verifications)
     shorts.validate_head_copy_connection(candidates[0], expected)
     report = shorts.cta_only_transform_report(parsed, expected, int(origin['source_minutes']), provider_answer=raw)
     if video is not None:

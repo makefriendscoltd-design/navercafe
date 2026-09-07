@@ -104,6 +104,7 @@ def prepare(source_key, plan_path):
         raise RuntimeError('Recovered NotebookLM answer and its evidence must appear together')
     if not answer_path.exists():
         answer_path = root / 'notebooklm/notebooklm-answer.md'
+    fact_path = root / 'notebooklm' / scripts.FACT_VERIFICATION_FILENAME
     heads = scripts.extract_head_copy_candidates(answer_path.read_text())
     title = ' '.join(scripts.head_copy_lines(heads[0]))
     presenter = PROJECT / 'outputs/pw8Bt97U6fk-20260902/repair-20260906/shorts-v18-continuous-v1/production_manifest.json'
@@ -119,6 +120,7 @@ def prepare(source_key, plan_path):
                 'stored_answer': binding(root / 'notebooklm/notebooklm-answer.md')}
                if recovery_path.exists() else {}),
             'script': binding(script_path), 'source_minutes': int(match[1]),
+            **({'fact_verifications': binding(fact_path)} if fact_path.exists() else {}),
             **({'cta_duration_correction': cta_correction} if cta_correction else {}),
             'wording_authorization': {'scope': 'preserve_original_absolute_wording',
                 'source_key': source_key, 'answer_sha256': answer['sha256'],

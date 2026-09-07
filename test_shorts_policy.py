@@ -1420,7 +1420,8 @@ def test_recovered_provider_answer_accepts_a_proven_reread():
     ({"notebook_id": "00000000-0000-0000-0000-000000000000"}, "노트북 ID"),
     ({"source_key": "AAAAAAAAAAA"}, "source_key가 대상과"),
     ({"provider_call_made": True}, "새 공급자 호출"),
-    ({"citation_count": 0}, "citation_count"),
+    ({"citation_count": None}, "citation_count"),
+    ({"block_count": 0}, "block_count"),
     ({"indexed_span_count": None}, "indexed_span_count"),
 ])
 def test_recovery_evidence_must_prove_a_read_only_dom_capture(overrides, match):
@@ -1431,3 +1432,68 @@ def test_recovery_evidence_must_prove_a_read_only_dom_capture(overrides, match):
             recovered_answer="원문 그대로입니다. 끝.",
             evidence=_recovery_evidence(**overrides),
         )
+
+
+def _fact_check(**overrides):
+    entry = {
+        "category": "free_or_unlimited",
+        "claim": "무료로",
+        "narration_sentence": "무료로 제공되는 기본 모델을 쓸 수 있습니다.",
+        "verdict": "supported_by_source",
+        "sources": ["https://openrouter.ai/pricing"],
+    }
+    entry.update(overrides)
+    return [entry]
+
+
+NARRATION = "무료로 제공되는 기본 모델을 쓸 수 있습니다."
+
+
+def test_a_source_claim_still_blocks_without_a_fact_check():
+    with pytest.raises(policy.ProductionPolicyError, match="free_or_unlimited"):
+        policy.validate_shorts_verbatim_claims(NARRATION)
+
+
+def test_a_verified_source_claim_may_stand_with_its_evidence():
+    result = policy.validate_shorts_verbatim_claims(
+        NARRATION, fact_verifications=_fact_check())
+    assert result["status"] == "pass"
+    assert result["independently_fact_verified"] is True
+    assert result["fact_verified_claims"]["free_or_unlimited"][0]["sources"] == [
+        "https://openrouter.ai/pricing"]
+
+
+@pytest.mark.parametrize("overrides, match", [
+    ({"verdict": "contradicted_by_source"}, "출처로 뒷받침된"),
+    ({"sources": []}, "https 출처"),
+    ({"sources": ["openrouter.ai/pricing"]}, "https 출처"),
+    ({"narration_sentence": "이 문장은 나레이션에 없습니다 무료로."}, "실제 나레이션에 없습니다"),
+    ({"category": "income_guarantee"}, "실제 걸린 주장과 맞지 않습니다"),
+    ({"claim": "공짜"}, "실제 걸린 주장과 맞지 않습니다"),
+])
+def test_a_fact_check_must_match_the_claim_it_clears(overrides, match):
+    with pytest.raises(policy.ProductionPolicyError, match=match):
+        policy.validate_shorts_verbatim_claims(
+            NARRATION, fact_verifications=_fact_check(**overrides))
+
+
+def test_a_fact_check_clears_only_the_claim_it_names():
+    """One verified claim must not smuggle a second, unchecked one past the gate."""
+    narration = NARRATION + " 공짜로 무제한 이용할 수 있습니다."
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_verbatim_claims(
+            narration,
+            fact_verifications=_fact_check(narration_sentence=NARRATION),
+        )
+
+
+def test_a_grounded_answer_with_no_citations_is_still_recoverable():
+    """Some answers carry no citation chips; wording identity is the real proof."""
+    result = policy.validate_recovered_provider_answer(
+        source_key="HTNz4L2XM58",
+        stored_answer="원문 그대로입니다. 끝.",
+        recovered_answer="원문 그대로입니다. 끝.",
+        evidence=_recovery_evidence(source_key="HTNz4L2XM58", citation_count=0),
+    )
+    assert result["status"] == "pass"
+    assert result["citation_count"] == 0

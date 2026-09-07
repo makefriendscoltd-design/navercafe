@@ -616,6 +616,23 @@ def load_shorts_config():
     return result, ""
 
 
+FACT_VERIFICATION_FILENAME = "fact-verification.json"
+
+
+def load_fact_verifications(evidence_dir: str | Path | None) -> list[dict]:
+    """Read operator fact checks for claims the source itself makes, if any."""
+    if not evidence_dir:
+        return []
+    path = Path(evidence_dir).expanduser().resolve() / FACT_VERIFICATION_FILENAME
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    entries = payload.get("verifications") if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        raise RuntimeError("쇼츠 사실확인 파일에 verifications 목록이 없습니다.")
+    return entries
+
+
 def fetch(
     url: str,
     log=print,
@@ -667,7 +684,9 @@ def fetch(
         script, chosen = extract_script(citation_stripped_answer)
         script, _layout = canonicalize_notebooklm_script_layout(script)
         adopted_body = keep_through_fifth(script)
-        validate_shorts_verbatim_claims(adopted_body)
+        validate_shorts_verbatim_claims(
+            adopted_body, fact_verifications=load_fact_verifications(evidence_dir)
+        )
         minutes = duration_minutes(get_video_duration(url))
         final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
         transform = cta_only_transform_report(
@@ -735,7 +754,9 @@ def recover(
     script, chosen = extract_script(citation_stripped_answer)
     script, _layout = canonicalize_notebooklm_script_layout(script)
     adopted_body = keep_through_fifth(script)
-    validate_shorts_verbatim_claims(adopted_body)
+    validate_shorts_verbatim_claims(
+        adopted_body, fact_verifications=load_fact_verifications(evidence_dir)
+    )
     minutes = duration_minutes(get_video_duration(url))
     final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
     transform = cta_only_transform_report(
