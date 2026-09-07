@@ -219,7 +219,9 @@ SHORTS_FORBIDDEN_CLAIM_PATTERNS = {
 # reasoning panel and the citation chip glyphs.  None of it is answer wording.
 # A lone "." line is not chrome — it is the sentence period the citation chip
 # split onto its own line, and it must survive into the signature.
-PROVIDER_ANSWER_CHROME_TOKENS = {"Thoughts", "expand_more", "expand_less", "lock"}
+PROVIDER_ANSWER_CHROME_TOKENS = {
+    "Thoughts", "expand_more", "expand_less", "more_horiz", "lock",
+}
 
 SHORTS_ATTEMPT_BLOCKING_STATUSES = {
     "started",
@@ -697,6 +699,27 @@ def validate_shorts_notebook_retry(
         )
         status = str(attempt.get("attempt_status") or attempt.get("status") or "")
         substantive = bool(attempt.get("substantive_failure")) or status in SHORTS_ATTEMPT_BLOCKING_STATUSES
+        # An attempt that died before the provider answered blocks because nobody
+        # can tell whether an answer was produced. Reading the notebook settles
+        # that: with the newest answer proven to be another source's, this attempt
+        # produced nothing, so retrying it is not re-rolling an answer.
+        if substantive and attempt.get("provider_response_absent") is True:
+            evidence = attempt.get("absence_evidence")
+            if not isinstance(evidence, dict):
+                raise ProductionPolicyError("응답 부재 기록에 공급자 조회 증거가 없습니다.")
+            if evidence.get("notebook_id") != SHORTS_NOTEBOOK["id"]:
+                raise ProductionPolicyError("응답 부재 증거의 노트북 ID가 정본과 다릅니다.")
+            if evidence.get("latest_answer_belongs_to") in (None, "", source):
+                raise ProductionPolicyError(
+                    "응답 부재 증거는 최신 답변이 다른 원본의 것임을 밝혀야 합니다."
+                )
+            if not isinstance(evidence.get("pair_count"), int) or evidence["pair_count"] <= 0:
+                raise ProductionPolicyError("응답 부재 증거에 채팅 쌍 계측값이 없습니다.")
+            if str(attempt.get("attempt_status") or "") == "provider_response_received":
+                raise ProductionPolicyError(
+                    "이미 응답을 받은 시도는 부재로 되돌릴 수 없습니다."
+                )
+            substantive = False
         if version == instruction_version and digest == instruction_sha256 and substantive:
             blocking.append(status or "substantive_failed")
     if blocking:
@@ -723,13 +746,21 @@ def provider_answer_content_signature(text: str) -> str:
     re-read of the stored answer rather than a rewrite.
     """
 
+    normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
     lines = [
         line
-        for line in str(text or "").replace("\r\n", "\n").replace("\r", "\n").splitlines()
+        for line in normalized.splitlines()
         if line.strip() not in PROVIDER_ANSWER_CHROME_TOKENS
     ]
     joined = "\n".join(lines)
     joined = re.sub(r"(?m)^\s*\d{1,2}\s*$\n?", "", joined)
+    # A chip does not always get its own line: read back inline, it arrives as a
+    # bare word inside the sentence it annotates. Drop it wherever it stands
+    # alone, so one response captured two different ways still has one signature.
+    # These are distinctive ASCII control labels, never Korean narration, so they
+    # are removed wherever they land -- including run together with the sentence.
+    chrome = "|".join(re.escape(token) for token in sorted(PROVIDER_ANSWER_CHROME_TOKENS))
+    joined = re.sub(rf"(?:{chrome})", "", joined)
     return re.sub(r"\s+", "", joined)
 
 

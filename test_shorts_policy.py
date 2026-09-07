@@ -1579,3 +1579,53 @@ def test_an_overlap_from_a_normal_length_cue_still_fails():
 
 def test_cues_that_go_backwards_still_fail():
     assert not _overlap_ok(_cues([(28.061, 28.161), (28.000, 28.524)]))
+
+
+def _absence_attempt(**overrides):
+    attempt = {
+        "source_key": "aQitMGtTfns",
+        "instruction_version": policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION,
+        "instruction_sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256,
+        "attempt_status": "unknown_after_provider_start",
+        "provider_response_absent": True,
+        "absence_evidence": {
+            "notebook_id": policy.SHORTS_NOTEBOOK["id"],
+            "pair_count": 10,
+            "latest_answer_belongs_to": "UXX5n6xLhWc",
+        },
+    }
+    attempt.update(overrides)
+    return attempt
+
+
+def test_a_died_attempt_blocks_until_the_notebook_says_it_left_nothing():
+    blocking = _absence_attempt()
+    blocking.pop("provider_response_absent")
+    blocking.pop("absence_evidence")
+    with pytest.raises(policy.ProductionPolicyError, match="재추출을 중단"):
+        policy.validate_shorts_notebook_retry("aQitMGtTfns", [blocking])
+    assert policy.validate_shorts_notebook_retry(
+        "aQitMGtTfns", [_absence_attempt()])["status"] == "pass"
+
+
+@pytest.mark.parametrize("overrides, match", [
+    ({"absence_evidence": None}, "공급자 조회 증거"),
+    ({"absence_evidence": {"notebook_id": "other", "pair_count": 10,
+                           "latest_answer_belongs_to": "UXX5n6xLhWc"}}, "노트북 ID"),
+    ({"absence_evidence": {"notebook_id": policy.SHORTS_NOTEBOOK["id"], "pair_count": 10,
+                           "latest_answer_belongs_to": "aQitMGtTfns"}}, "다른 원본의 것"),
+    ({"absence_evidence": {"notebook_id": policy.SHORTS_NOTEBOOK["id"], "pair_count": 0,
+                           "latest_answer_belongs_to": "UXX5n6xLhWc"}}, "채팅 쌍 계측값"),
+    ({"attempt_status": "provider_response_received"}, "부재로 되돌릴 수 없습니다"),
+])
+def test_absence_evidence_must_actually_prove_the_absence(overrides, match):
+    with pytest.raises(policy.ProductionPolicyError, match=match):
+        policy.validate_shorts_notebook_retry("aQitMGtTfns", [_absence_attempt(**overrides)])
+
+
+def test_inline_chrome_does_not_change_one_answer_into_two():
+    """A chip read back inline must not make a re-read look like a different answer."""
+    own_line = "문장입니다\nmore_horiz\n다음 문장입니다."
+    inline = "문장입니다more_horiz다음 문장입니다."
+    assert (policy.provider_answer_content_signature(own_line)
+            == policy.provider_answer_content_signature(inline))
