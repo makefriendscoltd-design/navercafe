@@ -652,23 +652,40 @@ def _clear_fact_verified_claims(
             raise ProductionPolicyError(
                 f"쇼츠 사실확인 항목이 실제 걸린 주장과 맞지 않습니다: {category}/{claim}"
             )
-        if verdict != "supported_by_source":
+        # Two ways a flagged claim may stand. Either a source backs it, or the
+        # owner has decided that the original video says it and the short should
+        # carry it as the source does. The second is the owner's call to make, so
+        # it is recorded per claim with their instruction rather than assumed.
+        owner_authorized = verdict == "owner_authorized_source_statement"
+        if verdict != "supported_by_source" and not owner_authorized:
             raise ProductionPolicyError(
-                "쇼츠 사실확인은 출처로 뒷받침된 주장만 통과시킵니다. "
-                "어긋나는 주장은 해당 주장만 고치거나 제거하세요."
+                "쇼츠 사실확인은 출처로 뒷받침된 주장이나 소유자가 승인한 원문 진술만 "
+                "통과시킵니다. 어긋나는 주장은 해당 주장만 고치거나 제거하세요."
+            )
+        if owner_authorized and not str(entry.get("authorization") or "").strip():
+            raise ProductionPolicyError(
+                "소유자 승인 항목에는 승인 문구가 기록돼야 합니다."
             )
         if not sentence or sentence not in narration:
             raise ProductionPolicyError(
                 "쇼츠 사실확인 항목의 인용 문장이 실제 나레이션에 없습니다."
             )
-        if claim not in sentence:
+        # This category names a sentence the narration is *missing*, so it cannot
+        # be quoted from it. The entry still has to quote the narration line that
+        # triggered the requirement, which the check above already enforces.
+        if category != "repurpose_boundary_missing" and claim not in sentence:
             raise ProductionPolicyError("쇼츠 사실확인 인용 문장에 해당 주장이 없습니다.")
-        if not isinstance(sources, list) or not sources or not all(
-            isinstance(url, str) and url.startswith("https://") for url in sources
+        if not owner_authorized and (
+            not isinstance(sources, list) or not sources or not all(
+                isinstance(url, str) and url.startswith("https://") for url in sources
+            )
         ):
             raise ProductionPolicyError("쇼츠 사실확인 항목에 https 출처가 없습니다.")
         cleared.setdefault(category, []).append(
-            {"claim": claim, "narration_sentence": sentence, "sources": list(sources),
+            {"claim": claim, "narration_sentence": sentence,
+             "sources": list(sources) if isinstance(sources, list) else [],
+             "verdict": verdict,
+             "authorization": str(entry.get("authorization") or ""),
              "checked_at": str(entry.get("checked_at") or "")}
         )
         remaining[category].remove(claim)

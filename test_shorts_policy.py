@@ -1665,3 +1665,51 @@ def test_shorts_already_scheduled_at_the_reference_pace_still_validate():
 def test_a_run_cannot_invent_its_own_narration_pace(value):
     with pytest.raises(policy.ProductionPolicyError):
         policy.validate_narration_target_cps(value)
+
+
+def _owner_entry(**overrides):
+    entry = {
+        "category": "free_or_unlimited",
+        "claim": "무료로",
+        "narration_sentence": "무료로 제공되는 기본 모델을 쓸 수 있습니다.",
+        "verdict": "owner_authorized_source_statement",
+        "authorization": "소유자 지시: 원본이 말하는 내용이면 그대로 생성한다.",
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_the_owner_may_let_a_claim_the_source_makes_stand():
+    result = policy.validate_shorts_verbatim_claims(
+        NARRATION, fact_verifications=[_owner_entry()])
+    assert result["status"] == "pass"
+    assert result["fact_verified_claims"]["free_or_unlimited"][0]["verdict"] == (
+        "owner_authorized_source_statement")
+
+
+def test_an_owner_decision_must_record_the_instruction():
+    with pytest.raises(policy.ProductionPolicyError, match="승인 문구"):
+        policy.validate_shorts_verbatim_claims(
+            NARRATION, fact_verifications=[_owner_entry(authorization="  ")])
+
+
+def test_an_owner_decision_still_has_to_quote_the_narration():
+    with pytest.raises(policy.ProductionPolicyError, match="실제 나레이션에 없습니다"):
+        policy.validate_shorts_verbatim_claims(
+            NARRATION, fact_verifications=[_owner_entry(
+                narration_sentence="이 문장은 나레이션에 없습니다 무료로.")])
+
+
+def test_a_missing_boundary_sentence_is_cleared_against_the_line_that_needed_it():
+    """That category names a sentence the narration lacks, so it cannot be quoted."""
+    narration = "소셜 미디어에 자동으로 배포합니다."
+    hits = policy.find_forbidden_shorts_claims(narration)
+    assert "repurpose_boundary_missing" in hits
+    entries = [
+        {"category": name, "claim": claim, "narration_sentence": narration,
+         "verdict": "owner_authorized_source_statement",
+         "authorization": "소유자 지시: 원본대로 생성한다."}
+        for name, claims in hits.items() for claim in claims
+    ]
+    assert policy.validate_shorts_verbatim_claims(
+        narration, fact_verifications=entries)["status"] == "pass"
