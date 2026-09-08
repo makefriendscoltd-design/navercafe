@@ -664,6 +664,10 @@ def validate_direct_evidence(
         "shorts_url": evidence.get("shorts_url") == canonical_url,
         "single_row": evidence.get("exact_row_count") == 1,
         "title": _editor_text(str(evidence.get("title") or "")) == _editor_text(manifest.title),
+        # The edit form reports what was typed into it, saved or not, so the form
+        # title alone once let seven shorts publish under their upload sentinel.
+        # The video list carries the provider's own stored title.
+        "list_row_title": _editor_text(str(evidence.get("list_row_title") or "")) == _editor_text(manifest.title),
         "description": _editor_text(direct_description) == _editor_text(manifest.description),
         "description_original_urls": all(
             _exact_url_present(direct_description, url) for url in manifest.canonical_urls

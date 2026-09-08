@@ -205,6 +205,7 @@ class FakeProvider:
             "shorts_url": f"https://www.youtube.com/shorts/{provider_id}",
             "exact_row_count": 1,
             "title": target["title"],
+            "list_row_title": target["title"],
             "description": target["description"],
             "original_urls": list(manifest.original_urls),
             "no_kids": True,
@@ -1005,6 +1006,7 @@ def test_direct_requery_requires_every_exact_provider_field(field: str, bad_valu
         "shorts_url": "https://www.youtube.com/shorts/newVID00001",
         "exact_row_count": 1,
         "title": manifest.title,
+        "list_row_title": manifest.title,
         "description": manifest.description,
         "original_urls": list(manifest.original_urls),
         "no_kids": True,
@@ -1047,6 +1049,7 @@ def test_direct_requery_rejects_semantic_whitespace_changes(
         "shorts_url": "https://www.youtube.com/shorts/newVID00001",
         "exact_row_count": 1,
         "title": manifest.title,
+        "list_row_title": manifest.title,
         "description": manifest.description,
         "original_urls": list(manifest.original_urls),
         "no_kids": True,
@@ -1087,6 +1090,7 @@ def test_direct_requery_allows_only_provider_safe_unicode_and_line_endings(tmp_p
         "shorts_url": "https://www.youtube.com/shorts/newVID00001",
         "exact_row_count": 1,
         "title": "Caf\u00e9\u200b title " + SOURCE_A,
+        "list_row_title": "Caf\u00e9\u200b title " + SOURCE_A,
         "description": manifest.description.replace("\u00a0", " ").replace("\n", "\r\n"),
         "original_urls": list(manifest.original_urls),
         "no_kids": True,
@@ -1179,3 +1183,58 @@ def test_a_row_with_no_readable_state_at_all_still_fails():
             "urls": [], "page": 1, "metadata_origin": "studio_provider_row_model",
             "direct_metadata_inspected": True,
         })
+
+
+def test_a_sentinel_title_in_the_list_blocks_even_when_the_form_reads_correctly(tmp_path: Path) -> None:
+    """The form shows what was typed; only the list shows what the provider stored."""
+    manifest_path, _digest = make_manifest(tmp_path)
+    manifest = publisher.load_manifest(manifest_path)
+    slot = datetime(2026, 9, 6, 11, tzinfo=KST)
+    evidence = {
+        "provider_id": "newVID00001",
+        "shorts_url": "https://www.youtube.com/shorts/newVID00001",
+        "exact_row_count": 1,
+        "title": manifest.title,
+        "list_row_title": manifest.draft_sentinel,
+        "description": manifest.description,
+        "original_urls": list(manifest.original_urls),
+        "no_kids": True,
+        "status": "scheduled",
+        "scheduled_at": slot.isoformat(),
+        "timezone": "Asia/Seoul",
+        "account": "u0",
+        "headless": True,
+        "channel": manifest.expected_channel,
+        "captured_at": datetime(2026, 9, 5, 9, tzinfo=KST).isoformat(),
+        "query_id": "q-1",
+    }
+    with pytest.raises(publisher.AmbiguousProviderState, match="list_row_title"):
+        publisher.validate_direct_evidence(
+            evidence, manifest, "newVID00001", slot, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+
+
+def test_a_missing_list_title_is_not_treated_as_verified(tmp_path: Path) -> None:
+    """Absent evidence must fail closed, not pass by default."""
+    manifest_path, _digest = make_manifest(tmp_path)
+    manifest = publisher.load_manifest(manifest_path)
+    slot = datetime(2026, 9, 6, 11, tzinfo=KST)
+    evidence = {
+        "provider_id": "newVID00001",
+        "shorts_url": "https://www.youtube.com/shorts/newVID00001",
+        "exact_row_count": 1,
+        "title": manifest.title,
+        "description": manifest.description,
+        "original_urls": list(manifest.original_urls),
+        "no_kids": True,
+        "status": "scheduled",
+        "scheduled_at": slot.isoformat(),
+        "timezone": "Asia/Seoul",
+        "account": "u0",
+        "headless": True,
+        "channel": manifest.expected_channel,
+        "captured_at": datetime(2026, 9, 5, 9, tzinfo=KST).isoformat(),
+        "query_id": "q-2",
+    }
+    with pytest.raises(publisher.AmbiguousProviderState, match="list_row_title"):
+        publisher.validate_direct_evidence(
+            evidence, manifest, "newVID00001", slot, now=datetime(2026, 9, 5, 9, tzinfo=KST))
