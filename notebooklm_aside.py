@@ -222,7 +222,7 @@ try{
 if(sourceAdded){
   try{
     const menus=p.locator('button[aria-label="더보기"]');let menuIndex=-1;
-    for(let i=0;i<await menus.count();i++){const desc=await menus.nth(i).getAttribute('aria-description');if(norm(desc)===targetNorm){menuIndex=i;break;}}
+    for(let i=0;i<await menus.count();i++){const desc=await menus.nth(i).getAttribute('aria-description');if(norm(desc)===targetNorm)menuIndex=i;}
     if(menuIndex<0)throw new Error('추가한 NotebookLM 소스의 삭제 메뉴를 찾지 못했습니다.');
     await menus.nth(menuIndex).click();await sleep(500);
     const del=p.locator('[role="menuitem"]').filter({hasText:'소스 삭제'}).last();
@@ -239,7 +239,10 @@ if(sourceAdded){
     for(let i=0;i<await currentBoxes.count();i++){const box=currentBoxes.nth(i),label=await box.getAttribute('aria-label'),key=norm(label);if((applied[key]||0)<(wanted[key]||0)){await box.click();applied[key]=(applied[key]||0)+1;}}
     selectedRestored=(await sourceState()).filter(x=>x.checked).map(x=>x.label);
     const finalState=await sourceState();
-    cleanupRestored=finalState.length===before.length&&!finalState.some(x=>norm(x.label)===targetNorm)&&sameCounts(selectedRestored,before.filter(x=>x.checked).map(x=>x.label));
+    // The notebook can already hold this video as a permanent source, in which
+    // case one copy of the label must survive. Restoration means the notebook
+    // matches what it held before, not that the label is gone.
+    cleanupRestored=finalState.length===before.length&&sameCounts(finalState.map(x=>x.label),before.map(x=>x.label))&&sameCounts(selectedRestored,before.filter(x=>x.checked).map(x=>x.label));
     if(!cleanupRestored)throw new Error('NotebookLM 소스 수/선택 상태가 원래대로 복구되지 않았습니다.');
   }catch(error){status='error';message=[message,String(error?.message||error)].filter(Boolean).join(' | ');}
 }

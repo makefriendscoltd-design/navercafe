@@ -27,12 +27,25 @@ def test_explicit_three_title_candidates_are_metadata_not_body():
     assert lineage.clean_cafe_answer(raw) == '첫 소제목\n본문입니다.'
 
 
-def test_real_cafe_rewrite_is_rejected():
-    root = Path(__file__).parent / 'outputs/0UFSZ_5OSIk-20260903/cafe'
-    if not root.exists():
-        pytest.skip('local production artifacts unavailable')
+def test_a_rewritten_cafe_body_is_rejected(tmp_path):
+    """A body that says something the answer does not must never pass."""
+    answer = tmp_path / 'notebooklm-answer.md'
+    answer.write_text('첫 소제목\n원문 그대로의 문장입니다.', encoding='utf-8')
+    body = tmp_path / '03_cafe_body.txt'
+    body.write_text('[BLOCKQUOTE]첫 소제목[/BLOCKQUOTE]\n손으로 고쳐 쓴 다른 문장입니다.',
+                    encoding='utf-8')
     with pytest.raises(lineage.LineageError, match='differs'):
-        lineage.cafe_body_lineage(root / 'notebooklm/notebooklm-answer.md', root / '03_cafe_body.txt')
+        lineage.cafe_body_lineage(answer, body)
+
+
+def test_formatting_markers_alone_do_not_count_as_a_rewrite(tmp_path):
+    """The formatter's own markers and headings are not a change of content."""
+    answer = tmp_path / 'notebooklm-answer.md'
+    answer.write_text('첫 소제목\n원문 그대로의 문장입니다.', encoding='utf-8')
+    body = tmp_path / '03_cafe_body.txt'
+    body.write_text('[BLOCKQUOTE]첫 소제목[/BLOCKQUOTE]\n\n원문 그대로의 [BOLD]문장[/BOLD]입니다.\n[IMAGE_HERE]',
+                    encoding='utf-8')
+    assert lineage.cafe_body_lineage(answer, body)['body_preserved'] is True
 
 
 def test_file_binding_rejects_replaced_artifact(tmp_path):
