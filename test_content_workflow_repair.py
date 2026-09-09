@@ -156,6 +156,44 @@ def test_a_forever_locked_queue_is_not_reported_as_merely_idle():
     assert healthy["by_reason"] == {"waiting": 1, "due": 2}
 
 
+def test_queue_guard_reports_normal_publish_throttle_without_measuring_source(monkeypatch, tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import cafe_manifest_publisher as publisher
+    import content_queue_guard as guard
+
+    queue = {"entries": [{
+        "source_key": "due", "status": "pending", "attempts": 0,
+        "not_before": "2026-09-09T10:00:00+09:00",
+        "publisher_command": "publisher",
+        "manifest": "outputs/due/cafe/06_cafe_manifest.json",
+    }]}
+    monkeypatch.setattr(guard, "QUEUE", tmp_path / "queue.json")
+    guard.QUEUE.write_text(__import__('json').dumps(queue), encoding="utf-8")
+    monkeypatch.setattr(guard, "datetime", type("Clock", (), {
+        "now": staticmethod(lambda _: datetime(2026, 9, 9, 23, 0, tzinfo=ZoneInfo("Asia/Seoul"))),
+        "fromisoformat": staticmethod(datetime.fromisoformat),
+    }))
+    monkeypatch.setattr(publisher, "resolve_manifest", lambda _: (tmp_path / "manifest", tmp_path, tmp_path, tmp_path))
+    monkeypatch.setattr(
+        publisher, "enforce_cafe_publish_window",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            publisher.CafePublishWindowClosed("daily_success_cap", "Cafe daily publish cap reached: 2/2")
+        ),
+    )
+    monkeypatch.setattr(
+        publisher, "validate_cafe_eligibility",
+        lambda *args: (_ for _ in ()).throw(AssertionError("must not measure while throttled")),
+    )
+
+    assert guard.audit() == {
+        "status": "throttled", "source_key": "due",
+        "reason": "daily_success_cap", "detail": "Cafe daily publish cap reached: 2/2",
+        "provider_mutation": False,
+    }
+
+
 def test_one_named_channel_is_not_cross_platform_distribution():
     """Outreach advice picks a single channel; the gate read that as publishing."""
     import content_production_policy as policy

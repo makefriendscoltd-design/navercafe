@@ -2308,7 +2308,8 @@ if (await pageLooksLoggedOut(p,'youtube')) {
       return hit?.href||'';
     });
     if(!href){
-      const channel=(p.url().match(/\/channel\/([^/?]+)/)||[])[1];
+      // Aside's tab URL may still be the pre-redirect Studio URL.
+      const channel=((await p.evaluate(()=>location.href)).match(/\/channel\/([^/?]+)/)||[])[1];
       if(channel)href=`https://www.youtube.com/channel/${channel}/posts?show_create_dialog=1`;
     }
     if(href){p=await openTab(href);await sleep(2200);}

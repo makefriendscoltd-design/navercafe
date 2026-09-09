@@ -115,8 +115,16 @@ def audit(*, live: bool = False) -> dict:
         return {'status': 'blocked', 'source_key': selected.get('source_key'), 'reason': 'legacy_publisher_requires_migration'}
     import cafe_manifest_publisher as publisher
     manifest, _, provider, evidence = publisher.resolve_manifest(selected['manifest'])
+    try:
+        # A full day or an active success gap is normal scheduler state. Check it
+        # before the live YouTube measurement in the eligibility gate so an idle
+        # hourly tick neither hits the network nor looks like a broken manifest.
+        publisher.enforce_cafe_publish_window(now, source_key=selected.get('source_key'))
+    except publisher.CafePublishWindowClosed as exc:
+        return {'status': 'throttled', 'source_key': selected.get('source_key'),
+                'reason': exc.reason, 'detail': str(exc),
+                'provider_mutation': False}
     result = publisher.validate_cafe_eligibility(manifest, provider, evidence)
-    publisher.enforce_cafe_publish_window(now, source_key=selected.get('source_key'))
     return {'status': result['status'], 'source_key': selected.get('source_key'),
             'failures': result['failures'], 'provider_mutation': False}
 

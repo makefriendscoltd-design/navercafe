@@ -292,5 +292,5 @@ def test_cafe_gate_refuses_a_source_it_cannot_measure(tmp_path, monkeypatch):
     _, _, provider, evidence = publisher.resolve_manifest(str(manifest_path))
     result = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
 
-    assert result["failures"] == ["source_is_longform"]
-    assert "측정 실패" in result["sourceVideo"]["error"]
+    assert result["failures"] == ["source_measurement_available"]
+    assert "측정 실패: network down" in result["sourceVideo"]["error"]

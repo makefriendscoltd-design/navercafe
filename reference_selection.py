@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent
 SEEN_PATH = Path.home() / ".agent-reach/navercafe-longform-seen.json"
 QUEUE_PATH = PROJECT / "outputs/cafe-publish-queue-20260823/queue.json"
+RUNS_PATH = PROJECT / "outputs/reference-daily-production/runs.jsonl"
 
 # A platform vendor or a conference stage is selling infrastructure to buyers,
 # not showing one person a workflow. Their talks have no five copyable steps.
@@ -52,7 +54,8 @@ def rejection_reason(candidate: dict) -> str | None:
     """Why this candidate is not the kind of source this channel republishes."""
     channel = str(candidate.get("channel") or "")
     title = str(candidate.get("title") or "")
-    minutes = int(candidate.get("minutes") or 0)
+    seconds = candidate.get("duration_seconds")
+    minutes = candidate.get("minutes")
     if channel in VENDOR_CHANNELS:
         return "벤더·컨퍼런스 발표"
     if channel in COURSE_MILL_CHANNELS:
@@ -63,22 +66,59 @@ def rejection_reason(candidate: dict) -> str | None:
         return "팟캐스트 회차"
     if KOREAN.search(title) or KOREAN.search(channel):
         return "이미 한국어 원본"
-    if minutes and minutes > MAX_MINUTES:
-        return f"{minutes}분 코스 덤프"
-    if minutes and minutes < MIN_MINUTES:
-        return f"{minutes}분으로 너무 짧음"
+    if seconds is None and (minutes is None or int(minutes) <= 0):
+        return "영상 길이 미확인"
+    seconds = int(seconds) if seconds is not None else int(minutes) * 60
+    if seconds > MAX_MINUTES * 60:
+        return f"{seconds // 60}분 코스 덤프"
+    if seconds < MIN_MINUTES * 60:
+        return f"{seconds // 60}분으로 너무 짧음"
     return None
 
 
+def _date_key(value: object) -> str:
+    """Normalize compact dates and ISO offsets to a UTC-sortable timestamp."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        if re.fullmatch(r"\d{8}", raw):
+            parsed = datetime.strptime(raw, "%Y%m%d").replace(tzinfo=timezone.utc)
+        else:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).isoformat()
+    except ValueError:
+        return ""
+
+
 def already_produced(source_key: str) -> bool:
-    """True when this source already has an output root or a Cafe queue entry."""
-    if any(p.is_dir() for p in (PROJECT / "outputs").glob(source_key + "-*")):
-        return True
-    if QUEUE_PATH.is_file():
-        queue = json.loads(QUEUE_PATH.read_text(encoding="utf-8"))
-        if any(e["source_key"] == source_key for e in queue["entries"]):
-            return True
-    return False
+    """True once production handed every channel off, even if Cafe is still queued."""
+    from content_run_state import source_state
+    return not source_state(PROJECT, source_key)["needs_production"]
+
+
+def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
+    attempts: dict[str, str] = {}
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    # Include legacy JSON reports until the append-only journal has history.
+    for report_path in path.parent.glob("*.json"):
+        try:
+            lines.append(report_path.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+    for line in lines:
+        try:
+            run = json.loads(line)
+        except ValueError:
+            continue
+        at = str(run.get("ran_at") or "")
+        for result in run.get("results", []):
+            key = result.get("source_key")
+            if key and at > attempts.get(key, ""):
+                attempts[key] = at
+    return attempts
 
 
 def load_candidates(seen_path: Path | None = None) -> list[dict]:
@@ -86,16 +126,21 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
     path = seen_path or SEEN_PATH
     seen = json.loads(path.read_text(encoding="utf-8"))
     out = []
+    attempts = _last_attempts()
     for vid, meta in (seen.get("videos") or {}).items():
         if already_produced(vid):
             continue
+        seconds = meta.get("duration_seconds", meta.get("duration"))
         out.append({
             "id": vid,
             "title": str(meta.get("title") or ""),
             "channel": str(meta.get("channel") or ""),
-            "minutes": round((meta.get("duration") or 0) / 60),
+            "minutes": round(seconds / 60) if seconds else None,
+            "duration_seconds": seconds,
             "upload_date": str(meta.get("upload_date") or ""),
-            "first_seen": str(meta.get("first_seen") or ""),
+            "first_seen": str(meta.get("seen_at") or meta.get("first_seen") or ""),
+            "has_output": bool(list((PROJECT / "outputs").glob(vid + "-20??????"))),
+            "last_attempt": attempts.get(vid, ""),
         })
     return out
 
@@ -109,8 +154,21 @@ def select(candidates: list[dict], *, limit: int | None = None) -> tuple[list[di
             drop.append({**candidate, "reason": reason})
         else:
             keep.append(candidate)
-    keep.sort(key=lambda c: (c.get("first_seen") or "", c.get("upload_date") or ""), reverse=True)
-    return (keep[:limit] if limit else keep), drop
+    retries = [c for c in keep if c.get("has_output")]
+    fresh = [c for c in keep if not c.get("has_output")]
+    retries.sort(key=lambda c: (_date_key(c.get("last_attempt")) or "0000",
+                                _date_key(c.get("first_seen"))))
+    fresh.sort(key=lambda c: (_date_key(c.get("first_seen")),
+                              _date_key(c.get("upload_date"))), reverse=True)
+    if limit is None:
+        selected = retries + fresh
+    elif limit == 1:
+        selected = (retries or fresh)[:1]
+    else:
+        selected = retries[:1] + fresh[:1]
+        chosen = {c["id"] for c in selected}
+        selected += [c for c in retries + fresh if c["id"] not in chosen][:limit-len(selected)]
+    return selected, drop
 
 
 def main(argv=None) -> int:

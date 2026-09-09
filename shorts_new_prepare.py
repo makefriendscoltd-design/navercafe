@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import notebooklm_shorts as scripts
@@ -39,22 +41,54 @@ def _download_source(source_key: str, root: Path) -> tuple[Path, str]:
     evidence = root / "source_download_evidence.json"
     if video.exists() and evidence.is_file():
         return video, json.loads(evidence.read_text(encoding="utf-8"))["source_credit"]
+    if video.exists() != evidence.exists():
+        raise RuntimeError("원본 영상과 다운로드 증거 중 하나만 있습니다. 기존 파일을 덮어쓰지 않습니다.")
     import yt_dlp
 
+    # Format 18 is absent on an increasing number of videos. Prefer it when the
+    # provider exposes it, then accept another real MP4 progressive stream or an
+    # MP4 video/audio pair. yt-dlp/ffmpeg performs the container merge locally.
+    root.mkdir(parents=True, exist_ok=True)
+    # Preserve failed attempts for diagnosis while letting the next scheduled
+    # attempt start cleanly. A stale .part file must not disable all future runs.
+    staging = Path(tempfile.mkdtemp(prefix=".source-download-", dir=root))
+    template = staging / "source.%(ext)s"
     options = {
-        "format": "18", "outtmpl": str(video), "noplaylist": True,
+        "format": "18/b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]",
+        "outtmpl": str(template), "noplaylist": True,
         "quiet": True, "no_warnings": False, "js_runtimes": {"node": {}},
+        "merge_output_format": "mp4",
         "extractor_args": {"youtube": {"player_client": ["mweb"]}},
     }
-    with yt_dlp.YoutubeDL(options) as downloader:
-        info = downloader.extract_info(f"https://youtu.be/{source_key}", download=True)
-    if info.get("id") != source_key:
-        raise RuntimeError("내려받은 영상의 ID가 대상과 다릅니다.")
-    credit = "출처: " + info["channel"]
+    try:
+        with yt_dlp.YoutubeDL(options) as downloader:
+            info = downloader.extract_info(f"https://youtu.be/{source_key}", download=True)
+        if info.get("id") != source_key:
+            raise RuntimeError("내려받은 영상의 ID가 대상과 다릅니다.")
+        channel = str(info.get("channel") or info.get("uploader") or "").strip()
+        if not channel:
+            raise RuntimeError("원본 채널명을 확인하지 못했습니다.")
+        candidates = [p for p in staging.iterdir() if p.is_file() and not p.name.endswith(".part")]
+        if len(candidates) != 1:
+            raise RuntimeError(f"다운로드 산출물이 정확히 1개여야 합니다 (현재 {len(candidates)}개).")
+        downloaded = candidates[0]
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=codec_type", "-of", "default=nw=1:nk=1", str(downloaded)],
+            capture_output=True, text=True, check=True,
+        )
+        if probe.stdout.strip() != "video":
+            raise RuntimeError("다운로드 산출물에서 영상 스트림을 확인하지 못했습니다.")
+        shutil.move(str(downloaded), video)
+    finally:
+        if staging.exists() and not any(staging.iterdir()):
+            staging.rmdir()
+    credit = "출처: " + channel
     evidence.write_text(json.dumps({
-        "source_key": source_key, "channel": info["channel"], "title": info["title"],
+        "source_key": source_key, "channel": channel, "title": info["title"],
         "duration_seconds": info["duration"], "source": binding(video),
-        "backend": "project yt-dlp mweb format 18; no cookies",
+        "backend": "project yt-dlp preferred format 18 with MP4 fallback; no cookies",
+        "selected_format_id": info.get("format_id"),
         "source_credit": credit,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     return video, credit

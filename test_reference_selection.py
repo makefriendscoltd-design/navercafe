@@ -64,6 +64,12 @@ def test_an_already_produced_source_is_never_offered_again(tmp_path, monkeypatch
     assert ids == ["zyxWVU54321"]
 
 
+def test_an_output_folder_alone_is_not_completion(tmp_path, monkeypatch):
+    monkeypatch.setattr(sel, "PROJECT", tmp_path)
+    (tmp_path / "outputs/abcDEF12345-20260909").mkdir(parents=True)
+    assert sel.already_produced("abcDEF12345") is False
+
+
 @pytest.mark.parametrize("title", [
     "Ep 850: Agent Risk, Security, and AI Sprawl in 2026",
     "Episode 12 - Building With Claude",
@@ -75,3 +81,51 @@ def test_a_podcast_episode_has_no_five_steps_to_lift(title):
 
 def test_a_tutorial_that_merely_mentions_a_number_is_not_a_podcast():
     assert sel.rejection_reason(candidate(title="Build 5 AI Agents in 30 Minutes")) is None
+
+
+def test_current_seen_schema_uses_duration_seconds_and_seen_at(tmp_path, monkeypatch):
+    seen = tmp_path / "seen.json"
+    seen.write_text(json.dumps({"videos": {"abcDEF12345": {
+        "title": "How I Automate My Business", "channel": "Practitioner",
+        "duration_seconds": 1200, "seen_at": "2026-09-09T02:06:50+00:00",
+        "upload_date": "20260908"}}}), encoding="utf-8")
+    monkeypatch.setattr(sel, "already_produced", lambda key: False)
+    row = sel.load_candidates(seen)[0]
+    assert row["minutes"] == 20
+    assert row["first_seen"].startswith("2026-09-09")
+
+
+def test_missing_duration_is_rejected_instead_of_bypassing_bounds():
+    assert sel.rejection_reason(candidate(minutes=None)) == "영상 길이 미확인"
+
+
+def test_eight_minute_boundary_uses_seconds_without_rounding_up():
+    assert sel.rejection_reason(candidate(minutes=8, duration_seconds=479)) == "7분으로 너무 짧음"
+    assert sel.rejection_reason(candidate(minutes=8, duration_seconds=480)) is None
+
+
+def test_seen_timestamps_sort_by_instant_not_offset_text():
+    assert sel._date_key("2026-09-09T10:00:00+09:00") < sel._date_key("2026-09-09T02:00:00+00:00")
+
+
+def test_daily_two_reserves_one_old_retry_and_one_new_source():
+    rows = [candidate(id="retryOld01", has_output=True, last_attempt="2026-09-08T10:00:00+09:00"),
+            candidate(id="retryNew02", has_output=True, last_attempt="2026-09-09T10:00:00+09:00"),
+            candidate(id="freshNew003", first_seen="2026-09-10", has_output=False),
+            candidate(id="freshOld004", first_seen="2026-09-09", has_output=False)]
+    keep, _ = sel.select(rows, limit=2)
+    assert [row["id"] for row in keep] == ["retryOld01", "freshNew003"]
+
+
+def test_limit_one_prioritizes_oldest_retry():
+    rows = [candidate(id="retryOld01", has_output=True, last_attempt="2026-09-08"),
+            candidate(id="freshNew003", has_output=False)]
+    assert sel.select(rows, limit=1)[0][0]["id"] == "retryOld01"
+
+
+def test_all_four_failed_outputs_remain_retry_candidates():
+    rows = [candidate(id=key, has_output=True, last_attempt="") for key in
+            ["ZzHsJW10iq4", "xlaSgpb_9hg", "_A80xAMOyxk", "I4kGV5sJEdA"]]
+    selected, rejected = sel.select(rows)
+    assert {row["id"] for row in selected} == {row["id"] for row in rows}
+    assert rejected == []

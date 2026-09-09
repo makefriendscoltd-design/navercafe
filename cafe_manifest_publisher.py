@@ -27,6 +27,14 @@ EXPECTED_CTA_URL = "https://cafe.naver.com/westudyssat/4188"
 EXPECTED_SOURCE_LABEL = "▶ 원본 영상"
 EXPECTED_CAFE_SLUG = "westudyssat"
 QUEUE_POLICY_PATH = Path("outputs/cafe-publish-queue-20260823/queue.json")
+
+
+class CafePublishWindowClosed(RuntimeError):
+    """A normal queue throttle, distinct from a broken eligibility gate."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
 sys.path.insert(0, str(PROJECT))
 
 from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
@@ -100,7 +108,10 @@ def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str 
     maximum = int(queue["maximum_successes_per_day"])
     minimum_gap = float(queue["minimum_gap_hours"])
     if len(today) >= maximum:
-        raise RuntimeError(f"Cafe daily publish cap reached: {len(today)}/{maximum}")
+        raise CafePublishWindowClosed(
+            "daily_success_cap",
+            f"Cafe daily publish cap reached: {len(today)}/{maximum}",
+        )
     if today and (current - max(today)).total_seconds() < minimum_gap * 3600:
         # A user-requested catch-up is bound to one reviewed manifest and expires.
         # It never raises the daily cap or changes the normal scheduler policy.
@@ -124,7 +135,10 @@ def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str 
                 authorized = False
             if authorized:
                 return
-        raise RuntimeError(f"Cafe publish gap has not reached {minimum_gap:g} hours")
+        raise CafePublishWindowClosed(
+            "minimum_success_gap",
+            f"Cafe publish gap has not reached {minimum_gap:g} hours",
+        )
 
 
 def resolve_manifest(raw: str) -> tuple[Path, Path, Path, Path]:
@@ -282,13 +296,15 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     try:
         source_shape = measure_source_video(source_key)
         longform = validate_longform_source(source_shape)
+        checks["source_measurement_available"] = True
         checks["source_is_longform"] = True
     except ProductionPolicyError as exc:
         longform = {"error": str(exc), **source_shape}
+        checks["source_measurement_available"] = True
         checks["source_is_longform"] = False
     except Exception as exc:
         longform = {"error": f"측정 실패: {exc}"}
-        checks["source_is_longform"] = False
+        checks["source_measurement_available"] = False
     failures = [name for name, passed in checks.items() if not passed]
     return {
         "sourceVideo": longform,

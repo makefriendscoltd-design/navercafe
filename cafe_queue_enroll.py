@@ -33,21 +33,27 @@ KST = ZoneInfo("Asia/Seoul")
 QUEUE = PROJECT / "outputs/cafe-publish-queue-20260823/queue.json"
 PUBLISH_SCRIPT = "outputs/cafe-publish-queue-20260823/publish_manifest_cafe.py"
 CONSISTENCY = Path.home() / ".agents/skills/launch-consistency-check/scripts/check_launch_consistency.py"
-# The queue posts inside these hours; a new entry starts at the next one.
-WINDOW_HOURS = list(range(10, 24))
-
-
 def next_slot(now: datetime, queue: dict) -> datetime:
-    """First window hour after everything already waiting."""
-    latest = now
+    """First policy-compliant window after all currently reserved first attempts."""
+    windows = sorted({int(value.split(":", 1)[0]) for value in queue["windows"]})
+    daily_maximum = int(queue["maximum_successes_per_day"])
+    minimum_gap = timedelta(hours=float(queue["minimum_gap_hours"]))
+    reserved = []
     for entry in queue.get("entries", []):
         raw = entry.get("not_before")
-        if raw and entry.get("status") not in {"published", "blocked"}:
-            latest = max(latest, datetime.fromisoformat(raw))
-    slot = latest.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    while slot.hour not in WINDOW_HOURS:
-        slot += timedelta(hours=1)
-    return slot
+        if (raw and entry.get("status") == "pending"
+                and not entry.get("published_url") and not entry.get("do_not_retry")):
+            reserved.append(datetime.fromisoformat(raw).astimezone(KST))
+
+    latest = max([now.astimezone(KST), *reserved])
+    candidate = latest.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    while True:
+        if candidate.hour in windows:
+            same_day = [stamp for stamp in reserved if stamp.date() == candidate.date()]
+            far_enough = all(abs(candidate - stamp) >= minimum_gap for stamp in same_day)
+            if len(same_day) < daily_maximum and far_enough:
+                return candidate
+        candidate += timedelta(hours=1)
 
 
 def write_launch_note(gate_dir: Path, manifest: dict, source_key: str, slot: datetime) -> Path:
@@ -84,7 +90,8 @@ def enroll(manifest_path: Path, *, now: datetime | None = None) -> dict:
     relative = str(manifest_path.relative_to(PROJECT))
 
     now = now or datetime.now(KST)
-    queue = json.loads(QUEUE.read_text(encoding="utf-8"))
+    original_queue = QUEUE.read_text(encoding="utf-8")
+    queue = json.loads(original_queue)
     if any(e["source_key"] == source_key for e in queue["entries"]):
         return {"status": "already_enrolled", "source_key": source_key}
     slot = next_slot(now, queue)
@@ -132,6 +139,8 @@ def enroll(manifest_path: Path, *, now: datetime | None = None) -> dict:
         "result": None, "enrolled_at": now.isoformat(),
     }
     queue["entries"].append(entry)
+    if QUEUE.read_text(encoding="utf-8") != original_queue:
+        raise RuntimeError("등록 검증 중 카페 큐가 변경됐습니다. 새 상태에서 다시 등록하세요.")
     tmp = QUEUE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, QUEUE)
