@@ -86,6 +86,13 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
     if manifest_path.exists():
         raise RuntimeError("카페 매니페스트가 이미 있습니다. 새로 만들지 말고 그것을 쓰세요.")
 
+    # Measure before building anything: a Short summarised into a column reads as
+    # a column and only shows itself in the vertical frames it uses as images.
+    from cafe_manifest_publisher import measure_source_video
+    from content_production_policy import validate_cafe_longform_source
+
+    source_shape = validate_cafe_longform_source(measure_source_video(source_key))
+
     answer_path = cafe / "notebooklm/notebooklm-answer.md"
     provider_path = cafe / "notebooklm/notebooklm-provider-evidence.json"
     for path in (answer_path, provider_path):
@@ -119,6 +126,7 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
         "provider_editor_opened": False,
         "source_url": f"https://youtu.be/{source_key}",
         "source_long_url": f"https://www.youtube.com/watch?v={source_key}",
+        "source_video": source_shape,
         "body_file": body_path.name,
         "notebooklm_answer": str(answer_path.resolve()),
         "notebooklm_provider_evidence": str(provider_path.resolve()),

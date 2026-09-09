@@ -37,9 +37,12 @@ def blocked_reason(entry: dict, now: datetime) -> str | None:
     """Why an unfinished entry cannot be selected, or None when it is due."""
     if entry.get('published_url'):
         return None
+    status = entry.get('status')
+    # A deliberate block records why; that is a decision, not a stall.
+    if status == 'blocked' and entry.get('last_error'):
+        return 'blocked'
     if entry.get('do_not_retry'):
         return 'do_not_retry'
-    status = entry.get('status')
     if status not in {'pending', 'failed'}:
         return str(status or 'no_status')
     if status == 'pending' and entry.get('attempts', 0) != 0:
@@ -64,7 +67,7 @@ def backlog(queue: dict, now: datetime) -> dict:
             continue
         reason = blocked_reason(entry, now) or 'due'
         counts[reason] = counts.get(reason, 0) + 1
-        if reason not in {'due', 'waiting'}:
+        if reason not in {'due', 'waiting', 'blocked'}:
             stuck.append(str(entry.get('source_key')))
     return {'unpublished': sum(counts.values()), 'by_reason': counts,
             'permanently_stuck': sorted(stuck)}

@@ -30,6 +30,7 @@ QUEUE_POLICY_PATH = Path("outputs/cafe-publish-queue-20260823/queue.json")
 sys.path.insert(0, str(PROJECT))
 
 from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
+from content_production_policy import ProductionPolicyError, validate_cafe_longform_source
 
 
 def read_json(path: Path) -> dict:
@@ -212,6 +213,19 @@ def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, caf
     }
 
 
+def measure_source_video(source_key: str) -> dict:
+    """Read the source's real duration and frame size from YouTube."""
+    import yt_dlp
+
+    options = {"quiet": True, "no_warnings": True, "skip_download": True,
+               "js_runtimes": {"node": {}},
+               "extractor_args": {"youtube": {"player_client": ["mweb"]}}}
+    with yt_dlp.YoutubeDL(options) as downloader:
+        info = downloader.extract_info(f"https://youtu.be/{source_key}", download=False)
+    return {"seconds": int(info.get("duration") or 0), "width": int(info.get("width") or 0),
+            "height": int(info.get("height") or 0), "title": str(info.get("title") or "")}
+
+
 def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Path) -> dict:
     manifest = read_json(manifest_path)
     cafe_local = read_json(manifest_path.parent / "11_local_validation.json")
@@ -263,8 +277,21 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "provider_evidence_absent": not (evidence / "13_provider_evidence.json").exists(),
         "crm_evidence_absent": not (evidence / "14_crm_evidence.json").exists(),
     }
+    # Measured live: no stored field can vouch for a source nobody ever measured,
+    # and every entry queued before this gate existed lacks one.
+    try:
+        source_shape = measure_source_video(source_key)
+        longform = validate_cafe_longform_source(source_shape)
+        checks["source_is_longform"] = True
+    except ProductionPolicyError as exc:
+        longform = {"error": str(exc), **source_shape}
+        checks["source_is_longform"] = False
+    except Exception as exc:
+        longform = {"error": f"측정 실패: {exc}"}
+        checks["source_is_longform"] = False
     failures = [name for name, passed in checks.items() if not passed]
     return {
+        "sourceVideo": longform,
         "schemaVersion": "cafe-eligibility-gate/v2",
         "status": "pass" if not failures else "fail",
         "scope": "cafe_only",

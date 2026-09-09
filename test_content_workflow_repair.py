@@ -136,6 +136,13 @@ def test_a_forever_locked_queue_is_not_reported_as_merely_idle():
         {"source_key": "locked", "status": "pending", "attempts": 0,
          "not_before": "2026-09-01T10:00:00+09:00", "do_not_retry": True},
     ]}
+    queue["entries"].append(
+        {"source_key": "not_longform", "status": "blocked", "do_not_retry": True,
+         "last_error": "source_is_not_longform"})
+    state = guard.backlog(queue, now)
+    assert state["by_reason"]["blocked"] == 1
+    assert "not_longform" not in state["permanently_stuck"]
+    queue["entries"].pop()
     state = guard.backlog(queue, now)
     assert state["unpublished"] == 3
     assert state["by_reason"] == {"waiting": 1, "pending_with_attempts": 1, "do_not_retry": 1}
@@ -190,3 +197,39 @@ def test_a_source_that_holds_one_slide_fails_the_render(tmp_path):
     assert verdict["largest_identical_group"] == 5
     assert verdict["largest_identical_group"] > builder.MAX_IDENTICAL_CHECKPOINTS
     assert verdict["example_frame"] in {str(p) for p in static}
+
+
+def test_a_short_is_not_a_cafe_column_source():
+    """A 54-second vertical Short was summarised into a Cafe post and published."""
+    import pytest
+
+    from content_production_policy import (
+        CAFE_MIN_SOURCE_SECONDS, ProductionPolicyError, validate_cafe_longform_source)
+
+    talk = validate_cafe_longform_source({"seconds": 495, "width": 640, "height": 360})
+    assert talk["seconds"] == 495 and talk["minimum_seconds"] == CAFE_MIN_SOURCE_SECONDS
+
+    with pytest.raises(ProductionPolicyError, match="세로 영상"):
+        validate_cafe_longform_source({"seconds": 54, "width": 360, "height": 640})
+    # Horizontal but far too short to hold five copyable steps.
+    with pytest.raises(ProductionPolicyError, match="롱폼 기준"):
+        validate_cafe_longform_source({"seconds": 453, "width": 640, "height": 360})
+    with pytest.raises(ProductionPolicyError, match="측정하지 못했"):
+        validate_cafe_longform_source({"seconds": 0, "width": 0, "height": 0})
+
+
+def test_a_shorts_link_never_becomes_a_cafe_candidate(monkeypatch, tmp_path):
+    """The gate has to stop at prepare time too, not only at publish time."""
+    import pytest
+
+    import cafe_new_prepare as prepare
+    from content_production_policy import ProductionPolicyError
+
+    root = tmp_path / "outputs" / "pw8Bt97U6fk-20260902"
+    (root / "cafe/notebooklm").mkdir(parents=True)
+    monkeypatch.setattr(prepare, "PROJECT", tmp_path)
+    monkeypatch.setattr("cafe_manifest_publisher.measure_source_video",
+                        lambda source_key: {"seconds": 54, "width": 360, "height": 640})
+
+    with pytest.raises(ProductionPolicyError, match="세로 영상"):
+        prepare.prepare("pw8Bt97U6fk")

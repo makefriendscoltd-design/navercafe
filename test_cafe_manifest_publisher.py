@@ -87,6 +87,10 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
             "localValidationSha256": local_hash,
         },
     )
+    # The gate measures the real source; the fixture's key is not a real video.
+    monkeypatch.setattr(publisher, "measure_source_video",
+                        lambda source_key: {"seconds": 1200, "width": 1920, "height": 1080,
+                                            "title": "fixture longform"})
     return manifest_path
 
 
@@ -261,3 +265,32 @@ def test_immediate_authorization_is_bound_expiring_and_keeps_cap(tmp_path, monke
     write_json(qp, queue)
     with pytest.raises(RuntimeError, match='cap'):
         publisher.enforce_cafe_publish_window(now, source_key='catchup')
+
+
+def test_cafe_gate_refuses_a_shorts_source(tmp_path, monkeypatch):
+    """A vertical Short reached Cafe publication because nothing measured the source."""
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    monkeypatch.setattr(publisher, "measure_source_video",
+                        lambda source_key: {"seconds": 54, "width": 360, "height": 640,
+                                            "title": "How I Make Retro Video Games Graphics"})
+    _, _, provider, evidence = publisher.resolve_manifest(str(manifest_path))
+    result = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
+
+    assert result["status"] == "fail"
+    assert result["failures"] == ["source_is_longform"]
+    assert "세로 영상" in result["sourceVideo"]["error"]
+
+
+def test_cafe_gate_refuses_a_source_it_cannot_measure(tmp_path, monkeypatch):
+    """Unverifiable is not the same as fine; the queue retries hourly anyway."""
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+
+    def unreachable(source_key):
+        raise OSError("network down")
+
+    monkeypatch.setattr(publisher, "measure_source_video", unreachable)
+    _, _, provider, evidence = publisher.resolve_manifest(str(manifest_path))
+    result = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
+
+    assert result["failures"] == ["source_is_longform"]
+    assert "측정 실패" in result["sourceVideo"]["error"]

@@ -725,6 +725,30 @@ def validate_shorts_verbatim_claims(
             "independently_fact_verified": bool(verified["cleared"])}
 
 
+# The Cafe column is written from a talk long enough to hold five copyable steps.
+# Nothing checked this, so a 54-second vertical Short was summarised into a Cafe
+# post and published with vertical frames as its images.
+CAFE_MIN_SOURCE_SECONDS = 480
+
+
+def validate_cafe_longform_source(measurement: dict[str, Any]) -> dict[str, Any]:
+    """Reject a Cafe source that is a Short rather than a longform talk."""
+
+    seconds = int(measurement.get("seconds") or 0)
+    width = int(measurement.get("width") or 0)
+    height = int(measurement.get("height") or 0)
+    if seconds <= 0 or width <= 0 or height <= 0:
+        raise ProductionPolicyError("카페 원본 길이·해상도를 측정하지 못했습니다.")
+    if height > width:
+        raise ProductionPolicyError(
+            f"카페 원본이 세로 영상(쇼츠)입니다: {width}x{height}")
+    if seconds < CAFE_MIN_SOURCE_SECONDS:
+        raise ProductionPolicyError(
+            f"카페 원본이 {seconds}초로 롱폼 기준 {CAFE_MIN_SOURCE_SECONDS}초에 못 미칩니다.")
+    return {"seconds": seconds, "width": width, "height": height,
+            "minimum_seconds": CAFE_MIN_SOURCE_SECONDS}
+
+
 def validate_shorts_notebook_retry(
     source_key: str,
     attempts: Iterable[dict[str, Any]],
