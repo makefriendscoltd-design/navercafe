@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -249,3 +250,21 @@ def test_a_shorts_link_never_becomes_a_short(monkeypatch, tmp_path):
 
     with pytest.raises(ProductionPolicyError, match="세로 영상"):
         prepare.prepare("p3NBGLYVp8s")
+
+
+def test_cardnews_refuses_a_shorts_source(tmp_path, monkeypatch, capsys):
+    """All three channels retell one talk, so all three ask how long it is."""
+    import pytest
+
+    import content_workflow
+    from content_production_policy import ProductionPolicyError
+
+    manifest = tmp_path / "06_cafe_manifest.json"
+    manifest.write_text(json.dumps({"source_key": "pw8Bt97U6fk", "title": "t"}), encoding="utf-8")
+    monkeypatch.setattr("cafe_manifest_publisher.measure_source_video",
+                        lambda source_key: {"seconds": 54, "width": 360, "height": 640})
+
+    with pytest.raises(ProductionPolicyError, match="세로 영상"):
+        content_workflow.main(["prepare-cardnews", "--cafe-manifest", str(manifest),
+                               "--candidate", str(tmp_path / "cardnews")])
+    assert not (tmp_path / "cardnews").exists()

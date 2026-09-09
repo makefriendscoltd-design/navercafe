@@ -118,6 +118,13 @@ def main(argv=None) -> int:
         from youtube_cardnews_pipeline import make_card_deck, make_youtube_post
         manifest_path = args.cafe_manifest.resolve()
         manifest = read_json(manifest_path)
+        # Cards and the community body retell the same talk the column does, and
+        # a Short is not one. Manifests predating the rule carry no measurement.
+        from cafe_manifest_publisher import measure_source_video
+        from content_production_policy import validate_longform_source
+
+        validate_longform_source(manifest.get('source_video')
+                                 or measure_source_video(manifest['source_key']))
         answer = manifest_path.parent / (manifest.get('notebook_answer') or manifest.get('notebooklm_answer') or 'notebooklm/notebooklm-answer.md')
         provider = manifest_path.parent / (manifest.get('notebooklm_provider_evidence') or 'notebooklm/notebooklm-provider-evidence.json')
         origin = {'mode': 'notebooklm_cafe_summary', 'source_key': manifest['source_key'],
