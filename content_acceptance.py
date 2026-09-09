@@ -8,7 +8,7 @@ was summarised from a 54-second vertical Short. Every one of those runs exited
 zero.
 
 This reads the finished artefacts and answers one question per channel: is this
-publishable. It writes nothing and touches no provider.
+publishable. It writes nothing; missing source metadata may be queried read-only.
 """
 
 from __future__ import annotations
@@ -35,13 +35,24 @@ def check_source(root: Path) -> list[str]:
     from cafe_manifest_publisher import measure_source_video
     from content_production_policy import ProductionPolicyError, validate_longform_source
 
+    source_key = root.name.rsplit("-", 1)[0]
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", source_key):
+        return ["공동 산출물 루트의 원본 ID를 확인할 수 없음"]
     manifest_path = root / "cafe/06_cafe_manifest.json"
-    if not manifest_path.is_file():
-        return ["카페 매니페스트가 없어 원본을 확인할 수 없음"]
-    manifest = _read(manifest_path)
-    shape = manifest.get("source_video")
+    shape = None
     try:
-        validate_longform_source(shape or measure_source_video(manifest["source_key"]))
+        if manifest_path.is_file():
+            # A failed Cafe draft must not block an independently valid Short.
+            # Malformed Cafe JSON belongs to its channel gate; source identity
+            # can still be measured from the common source key.
+            try:
+                manifest = _read(manifest_path)
+            except (ValueError, OSError):
+                manifest = {}
+            if manifest.get("source_key") not in {None, source_key}:
+                return ["카페 매니페스트와 공동 원본 ID 불일치"]
+            shape = manifest.get("source_video")
+        validate_longform_source(shape or measure_source_video(source_key))
     except ProductionPolicyError as exc:
         return [str(exc)]
     except Exception as exc:
@@ -156,8 +167,13 @@ def audit(root: Path) -> dict:
     if not (root / "cafe/06_cafe_manifest.json").is_file() and not (root / "shorts/final.mp4").is_file():
         return {"root": str(root), "source_key": root.name.rsplit("-", 1)[0],
                 "status": "not_a_production", "channels": {}}
-    channels = {"source": check_source(root), "cafe": check_cafe(root),
-                "cardnews": check_cardnews(root), "shorts": check_shorts(root)}
+    channels = {}
+    for name, check in (("source", check_source), ("cafe", check_cafe),
+                        ("cardnews", check_cardnews), ("shorts", check_shorts)):
+        try:
+            channels[name] = check(root)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            channels[name] = [f"검증 입력 오류: {type(exc).__name__}: {str(exc)[:160]}"]
     return {"root": str(root), "source_key": root.name.rsplit("-", 1)[0],
             "status": "pass" if not any(channels.values()) else "fail",
             "channels": {name: {"status": "pass" if not problems else "fail",

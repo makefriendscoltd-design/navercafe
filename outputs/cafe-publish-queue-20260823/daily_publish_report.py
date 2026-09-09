@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 import sys
+import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -211,8 +212,12 @@ def _messages(report: dict) -> list[str]:
 
 
 def _write_report(report_dir: Path, report: dict) -> Path:
-    path = report_dir / f"{report['report_date']}.json"
-    _write_state(path, report)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(KST).strftime("%Y%m%dT%H%M%S%f%z")
+    path = report_dir / f"{report['report_date']}--{stamp}--{uuid.uuid4().hex}.json"
+    with path.open("x", encoding="utf-8") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
     return path
 
 
@@ -225,6 +230,15 @@ def main() -> int:
     args = parser.parse_args()
 
     report_date = _report_date(args.date)
+    if args.send:
+        state = _load_state(args.state)
+        if state.get("last_reported_date") == report_date.isoformat():
+            print(json.dumps({
+                "status": "already_reported",
+                "report_date": report_date.isoformat(),
+                "destination": "CCIDA private",
+            }, ensure_ascii=False))
+            return 0
     events = _load_events(report_date)
     published_count = _published_count(events)
     report = _build_report(report_date, published_count)
@@ -242,12 +256,6 @@ def main() -> int:
         "expected_send_count": len(messages),
     }
     if not args.send:
-        print(json.dumps(output, ensure_ascii=False))
-        return 0
-
-    state = _load_state(args.state)
-    if state.get("last_reported_date") == report_date.isoformat():
-        output["status"] = "already_reported"
         print(json.dumps(output, ensure_ascii=False))
         return 0
 

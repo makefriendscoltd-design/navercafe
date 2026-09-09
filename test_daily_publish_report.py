@@ -87,15 +87,27 @@ def test_existing_duplicate_report_state_round_trips(tmp_path):
     assert reporter._load_state(state) == original
 
 
+def test_two_same_day_dry_run_reports_are_both_preserved(tmp_path):
+    report = {"report_date": "2026-09-09", "generated_at": "one"}
+    first = reporter._write_report(tmp_path, report)
+    second = reporter._write_report(tmp_path, {**report, "generated_at": "two"})
+
+    assert first != second
+    assert json.loads(first.read_text())["generated_at"] == "one"
+    assert json.loads(second.read_text())["generated_at"] == "two"
+    assert len(list(tmp_path.glob("2026-09-09--*.json"))) == 2
+
+
 def test_already_reported_date_does_not_send_again(monkeypatch, tmp_path, capsys):
     state = tmp_path / "state.json"
     write_json(state, {"last_reported_date": "2026-09-09", "send_count": 3})
-    report = {"universe": {"known_unique": 4},
-              "progress": {"complete_3_channels": 1, "actionable_incomplete": 3}}
-    monkeypatch.setattr(reporter, "_load_events", lambda _: [])
-    monkeypatch.setattr(reporter, "_build_report", lambda *args: report)
-    monkeypatch.setattr(reporter, "_write_report", lambda *args: tmp_path / "report.json")
-    monkeypatch.setattr(reporter, "_messages", lambda _: ["one", "two", "three"])
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("already-reported path must stop before I/O")
+
+    monkeypatch.setattr(reporter, "_load_events", must_not_run)
+    monkeypatch.setattr(reporter, "_build_report", must_not_run)
+    monkeypatch.setattr(reporter, "_write_report", must_not_run)
+    monkeypatch.setattr(reporter, "_messages", must_not_run)
     monkeypatch.setattr(sys, "argv", ["daily_publish_report.py", "--date", "2026-09-09",
                                       "--state", str(state), "--send"])
 

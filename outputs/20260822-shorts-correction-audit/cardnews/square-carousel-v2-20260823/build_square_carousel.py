@@ -51,6 +51,7 @@ body{font-family:"Apple SD Gothic Neo","Noto Sans KR",Arial,sans-serif;color:var
 .page span{color:#98A2B3}.footer{position:absolute;left:96px;right:96px;bottom:96px;height:50px;display:flex;align-items:center;justify-content:space-between;border-top:2px solid var(--line);padding-top:16px;font-size:22px;line-height:28px;font-weight:700;color:var(--muted)}
 .footer .mark{color:var(--blue);letter-spacing:.08em}.main{position:absolute;left:96px;right:96px;top:190px;bottom:180px;display:flex;flex-direction:column;justify-content:center}
 .kicker{font-size:26px;line-height:1.2;font-weight:900;letter-spacing:.13em;color:var(--blue);margin-bottom:36px}
+.inline-emphasis{color:var(--blue);font-weight:950}
 .title{font-size:72px;line-height:86px;font-weight:900;letter-spacing:-.045em;white-space:pre-line;text-wrap:balance;word-break:keep-all;overflow-wrap:normal;color:var(--ink)}
 .desc{font-size:46px;line-height:66px;font-weight:600;letter-spacing:-.025em;white-space:pre-line;text-wrap:pretty;word-break:keep-all;overflow-wrap:normal;color:var(--muted)}
 .rule{width:104px;height:8px;background:var(--blue);margin:42px 0 42px}
@@ -77,7 +78,24 @@ def write_json(path: Path, data: Any) -> None:
 
 
 def esc(value: Any) -> str:
-    return html.escape(str(value or ""), quote=True)
+    """Escape display text and render only paired, word-bounded *emphasis*."""
+    raw = str(value or "")
+    pattern = re.compile(r"(?<![*/\\])\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?![*/\\])")
+    pieces = []
+    cursor = 0
+    for match in pattern.finditer(raw):
+        pieces.append(html.escape(raw[cursor:match.start()], quote=True))
+        pieces.append('<strong class="inline-emphasis">'
+                      + html.escape(match.group(1), quote=True) + "</strong>")
+        cursor = match.end()
+    pieces.append(html.escape(raw[cursor:], quote=True))
+    return "".join(pieces)
+
+
+def plain_display_text(value: Any) -> str:
+    """Remove the same paired emphasis markers for non-HTML preview labels."""
+    raw = str(value or "")
+    return re.sub(r"(?<![*/\\])\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?![*/\\])", r"\1", raw)
 
 
 def layout_for(index: int, slide: dict[str, Any]) -> str:
@@ -227,7 +245,7 @@ def font(size: int, bold: bool = False) -> ImageFont.ImageFont:
 def contact_sheet(target: Path, source_id: str, topic: str) -> Path:
     sheet = Image.new("RGB", (2160, 1010), "white")
     draw = ImageDraw.Draw(sheet)
-    draw.text((48, 28), f"{source_id} · {topic}", fill="#101828", font=font(48, True))
+    draw.text((48, 28), f"{source_id} · {plain_display_text(topic)}", fill="#101828", font=font(48, True))
     draw.text((48, 82), "1080×1080 · 96px safe frame · local square carousel v2", fill="#155EEF", font=font(30))
     for i in range(10):
         im = Image.open(target / "png" / f"{i+1:02d}.png").convert("RGB").resize((400, 400), Image.Resampling.LANCZOS)
