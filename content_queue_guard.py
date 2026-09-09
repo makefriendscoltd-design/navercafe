@@ -33,6 +33,43 @@ def select_entry(queue: dict, now: datetime) -> dict | None:
     return min(eligible, key=lambda item: item[:2])[2] if eligible else None
 
 
+def blocked_reason(entry: dict, now: datetime) -> str | None:
+    """Why an unfinished entry cannot be selected, or None when it is due."""
+    if entry.get('published_url'):
+        return None
+    if entry.get('do_not_retry'):
+        return 'do_not_retry'
+    status = entry.get('status')
+    if status not in {'pending', 'failed'}:
+        return str(status or 'no_status')
+    if status == 'pending' and entry.get('attempts', 0) != 0:
+        return 'pending_with_attempts'
+    raw = entry.get('not_before') if status == 'pending' else entry.get('next_eligible_at')
+    if not raw:
+        return 'no_not_before' if status == 'pending' else 'no_next_eligible_at'
+    return None if datetime.fromisoformat(raw) <= now else 'waiting'
+
+
+def backlog(queue: dict, now: datetime) -> dict:
+    """Unpublished entries grouped by why they are not selectable.
+
+    ``no_due_entry`` used to read the same whether the queue was healthily
+    waiting or every remaining entry was locked out forever. It was the latter
+    for days and nothing said so.
+    """
+    counts: dict[str, int] = {}
+    stuck: list[str] = []
+    for entry in queue.get('entries', []):
+        if entry.get('status') == 'published' or entry.get('published_url'):
+            continue
+        reason = blocked_reason(entry, now) or 'due'
+        counts[reason] = counts.get(reason, 0) + 1
+        if reason not in {'due', 'waiting'}:
+            stuck.append(str(entry.get('source_key')))
+    return {'unpublished': sum(counts.values()), 'by_reason': counts,
+            'permanently_stuck': sorted(stuck)}
+
+
 def check_live_prompt() -> None:
     canonical = PROMPT.read_text(encoding='utf-8')
     committed = subprocess.run(['git', 'show', f'HEAD:{PROMPT.relative_to(PROJECT)}'],
@@ -67,7 +104,10 @@ def audit(*, live: bool = False) -> dict:
     now = datetime.now(ZoneInfo('Asia/Seoul'))
     selected = select_entry(queue, now)
     if selected is None:
-        return {'status': 'no_due_entry', 'provider_mutation': False}
+        state = backlog(queue, now)
+        # Waiting is normal; a queue where every remaining item is locked is not.
+        status = 'no_due_entry' if not state['permanently_stuck'] else 'backlog_locked'
+        return {'status': status, 'provider_mutation': False, **state}
     if not selected.get('publisher_command'):
         return {'status': 'blocked', 'source_key': selected.get('source_key'), 'reason': 'legacy_publisher_requires_migration'}
     import cafe_manifest_publisher as publisher

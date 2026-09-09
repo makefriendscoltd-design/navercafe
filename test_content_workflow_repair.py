@@ -114,3 +114,35 @@ def test_a_community_post_must_follow_the_owner_structure():
     ]:
         with pytest.raises(RuntimeError, match="지정 구조와 다릅니다"):
             pipeline.validate_youtube_post(broken)
+
+
+def test_a_forever_locked_queue_is_not_reported_as_merely_idle():
+    """`no_due_entry` hid a queue where nothing could ever be selected again."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    import content_queue_guard as guard
+
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+    queue = {"entries": [
+        {"source_key": "done", "status": "published",
+         "published_url": "https://cafe.naver.com/westudyssat/1"},
+        {"source_key": "later", "status": "pending", "attempts": 0,
+         "not_before": "2026-09-10T10:00:00+09:00"},
+        # Pending never gets picked once attempts>0, so this one waits forever.
+        {"source_key": "mislabelled", "status": "pending", "attempts": 1,
+         "next_eligible_at": "2026-09-08T11:00:00+09:00",
+         "last_error": "AsideLoginRequired"},
+        {"source_key": "locked", "status": "pending", "attempts": 0,
+         "not_before": "2026-09-01T10:00:00+09:00", "do_not_retry": True},
+    ]}
+    state = guard.backlog(queue, now)
+    assert state["unpublished"] == 3
+    assert state["by_reason"] == {"waiting": 1, "pending_with_attempts": 1, "do_not_retry": 1}
+    assert state["permanently_stuck"] == ["locked", "mislabelled"]
+
+    queue["entries"][2]["status"] = "failed"
+    queue["entries"][3]["do_not_retry"] = False
+    healthy = guard.backlog(queue, now)
+    assert healthy["permanently_stuck"] == []
+    assert healthy["by_reason"] == {"waiting": 1, "due": 2}
