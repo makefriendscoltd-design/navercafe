@@ -81,3 +81,36 @@ def test_preserved_interrupted_cafe_answer_can_rebuild_but_not_approve_replaceme
     replacement.write_text(answer.read_text())
     with pytest.raises(ValueError, match='source binding'):
         prepare_cafe(manifest, tmp_path / 'unapproved', replacement)
+
+
+def test_a_community_post_must_follow_the_owner_structure():
+    """Bracket hook, numbered sections, 결론, and the fixed closing line."""
+    import youtube_cardnews_pipeline as pipeline
+
+    good = (
+        "[단돈 1달러로 영화 같은 웹사이트를 만들 수 있습니다] Kimi K3 실전 가이드를 정리했습니다.\n\n"
+        "스크롤할 때마다 한 편의 영화처럼 전개되는 웹사이트를 본 적 있으신가요? "
+        "과거엔 수천 달러와 전문 개발자가 필요했습니다. "
+        "이제는 단돈 1~2달러면 가능합니다. "
+        "만드는 법을 정리했습니다.\n\n"
+        "----\n\n1. Kimi K3가 뭔가요\n\n저렴한 비용으로 강력한 성능을 제공하는 모델입니다.\n\n"
+        "----\n\n2. 매크로 여정 영상이 핵심입니다\n\n8~10초 분량으로 설정합니다.\n\n"
+        "----\n\n3. 시네마틱 스튜디오로 만드세요\n\n프롬프트를 입력하면 영상이 생성됩니다.\n\n"
+        "----\n\n4. 60fps로 보간해야 부드러워집니다\n\n프레임을 두 배로 늘립니다.\n\n"
+        "----\n\n결론은 코딩 실력이 없어도 된다는 것입니다. "
+        "중요한 건 어떤 여정을 선사할지에 대한 선택입니다. "
+        "오늘 하나 만들어 보세요.\n"
+        + pipeline.YOUTUBE_FINAL_LINE
+    )
+    assert pipeline.validate_youtube_post(good)["sections"] == 4
+
+    import pytest
+
+    for broken, why in [
+        (good.replace("[단돈 1달러로 영화 같은 웹사이트를 만들 수 있습니다] ", ""), "대괄호"),
+        (good.replace("결론은", "마무리는"), "결론"),
+        (good.replace(pipeline.YOUTUBE_FINAL_LINE, "감사합니다."), "마지막 문장"),
+        (good.replace("1. Kimi K3가 뭔가요", "Kimi K3가 뭔가요"), "섹션"),
+    ]:
+        with pytest.raises(RuntimeError, match="지정 구조와 다릅니다"):
+            pipeline.validate_youtube_post(broken)

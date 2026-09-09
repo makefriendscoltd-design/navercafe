@@ -115,7 +115,7 @@ def main(argv=None) -> int:
     elif args.command == 'prepare-cafe':
         result = prepare_cafe(args.manifest, args.candidate, args.recovered_answer)
     else:
-        from youtube_cardnews_pipeline import make_card_deck
+        from youtube_cardnews_pipeline import make_card_deck, make_youtube_post
         manifest_path = args.cafe_manifest.resolve()
         manifest = read_json(manifest_path)
         answer = manifest_path.parent / (manifest.get('notebook_answer') or manifest.get('notebooklm_answer') or 'notebooklm/notebooklm-answer.md')
@@ -125,9 +125,15 @@ def main(argv=None) -> int:
                   'provider_evidence': {'path': str(provider), 'sha256': sha256(provider)}}
         args.candidate.mkdir(parents=True, exist_ok=False)
         try:
-            deck = make_card_deck(clean_cafe_answer(answer.read_text(encoding='utf-8')), manifest['title'], content_lineage=origin, evidence_dir=args.candidate)
+            manuscript = clean_cafe_answer(answer.read_text(encoding='utf-8'))
+            deck = make_card_deck(manuscript, manifest['title'], content_lineage=origin, evidence_dir=args.candidate)
             (args.candidate / '04_cardnews_deck.json').write_text(json.dumps(deck, ensure_ascii=False, indent=2))
-            result = {'status': 'candidate_requires_semantic_and_visual_review', 'path': str(args.candidate), 'provider_mutation': False}
+            # The cards are only half of the post; the community body carries the
+            # owner's fixed structure and was never written on this path.
+            post = make_youtube_post(manuscript)
+            (args.candidate / '05_youtube_community_post.txt').write_text(post, encoding='utf-8')
+            result = {'status': 'candidate_requires_semantic_and_visual_review', 'path': str(args.candidate),
+                      'community_post_chars': len(post), 'provider_mutation': False}
         except Exception as exc:
             (args.candidate / 'generation_failure.json').write_text(json.dumps({'status': 'blocked', 'reason': str(exc), 'content_lineage': origin}, ensure_ascii=False, indent=2))
             raise

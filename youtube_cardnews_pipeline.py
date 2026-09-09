@@ -291,21 +291,90 @@ def extract_json(text):
     return json.loads(text[start:end + 1])
 
 
+def _codex_text(prompt, *, timeout=600):
+    """Ask through the owner's ChatGPT subscription and take the final message."""
+    import subprocess
+    import tempfile
+
+    executable = shutil.which("codex")
+    if not executable:
+        raise RuntimeError("codex CLI를 찾지 못했습니다.")
+    with tempfile.TemporaryDirectory() as work:
+        out_path = Path(work) / "post.txt"
+        completed = subprocess.run(
+            [executable, "exec", "--skip-git-repo-check", "--ephemeral",
+             "-C", work, "-o", str(out_path), prompt],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if completed.returncode != 0:
+            tail = (completed.stderr or completed.stdout or "").strip().splitlines()[-6:]
+            raise RuntimeError("codex exec 실패: " + " | ".join(tail))
+        if not out_path.is_file():
+            raise RuntimeError("codex exec가 최종 응답 파일을 남기지 않았습니다.")
+        return out_path.read_text(encoding="utf-8")
+
+
+def _gemini_text(prompt):
+    from google import genai
+
+    with genai.Client(api_key=auto.GEMINI_API_KEY) as client:
+        resp = client.models.generate_content(
+            model=os.environ.get("YOUTUBE_POST_MODEL", "gemini-2.5-flash"),
+            contents=prompt,
+        )
+    return resp.text or ""
+
+
 def make_youtube_post(manuscript):
+    """Write the community post in the owner's fixed structure.
+
+    The structure is not a suggestion: bracketed hook, four to seven intro
+    sentences, "----" section breaks, numbered action headings, then a 결론 that
+    ends on the fixed line. That is what YOUTUBE_POST_PROMPT states, and this is
+    the only place the post is written.
+    """
     prompt = YOUTUBE_POST_PROMPT.format(article=manuscript)
+    backend = os.environ.get("COMMUNITY_POST_BACKEND",
+                             "codex" if shutil.which("codex") else "gemini")
+    writer = _codex_text if backend == "codex" else _gemini_text
     try:
-        from google import genai
-        with genai.Client(api_key=auto.GEMINI_API_KEY) as client:
-            resp = client.models.generate_content(
-                model=os.environ.get("YOUTUBE_POST_MODEL", "gemini-2.5-flash"),
-                contents=prompt,
-            )
-        text = (resp.text or "").strip()
-        if text:
-            return sanitize_youtube_post(text)
+        text = (writer(prompt) or "").strip()
     except Exception as e:
         raise RuntimeError("Community 원고 생성 실패; 다른 원고로 자동 대체하지 않습니다.") from e
-    raise RuntimeError("Community 원고 생성 결과가 비어 있습니다.")
+    if not text:
+        raise RuntimeError("Community 원고 생성 결과가 비어 있습니다.")
+    post = sanitize_youtube_post(text)
+    validate_youtube_post(post)
+    return post
+
+
+def validate_youtube_post(post):
+    """Refuse a post that does not have the structure the owner specified."""
+    text = (post or "").strip()
+    problems = []
+    first = text.splitlines()[0] if text else ""
+    if not re.match(r"^\[[^\]]{2,60}\]\s*\S", first):
+        problems.append("첫 줄 대괄호 후킹 없음")
+    intro = text.split("\n----")[0]
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", intro.replace(first, "", 1)) if s.strip()]
+    if not 3 <= len(sentences) <= 12:
+        problems.append(f"도입부 문장 수 {len(sentences)}")
+    sections = re.findall(r"(?m)^\s*(\d+)\.\s+\S", text)
+    if not 4 <= len(sections) <= 5:
+        problems.append(f"번호 섹션 {len(sections)}개")
+    elif [int(n) for n in sections] != list(range(1, len(sections) + 1)):
+        problems.append("섹션 번호가 1부터 순서대로가 아님")
+    if text.count("\n----") < len(sections):
+        problems.append("---- 구분선 부족")
+    if not re.search(r"(?m)^결론", text):
+        problems.append("결론 없음")
+    if not text.rstrip().endswith(YOUTUBE_FINAL_LINE):
+        problems.append("고정 마지막 문장 없음")
+    if re.search(r"\*\*|^\s*[-*]\s+|^#{1,6}\s", text, re.M):
+        problems.append("마크다운 서식 잔존")
+    if problems:
+        raise RuntimeError("Community 원고가 지정 구조와 다릅니다: " + ", ".join(problems))
+    return {"status": "pass", "sections": len(sections)}
 
 
 def local_youtube_post(manuscript):
