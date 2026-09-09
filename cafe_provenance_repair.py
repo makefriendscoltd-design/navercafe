@@ -20,13 +20,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 PROJECT = Path(__file__).resolve().parent
 QUEUE_DIR = PROJECT / "outputs/cafe-publish-queue-20260823"
 QUEUE_PATH = QUEUE_DIR / "queue.json"
 CONTRACT_PATH = QUEUE_DIR / "onboard_20260902_cafe_entries.py"
 SUFFIX = "pre-provenance-repair"
+KST = ZoneInfo("Asia/Seoul")
 
 
 def load_contract():
@@ -121,8 +124,15 @@ def repair(source_key: str, *, fetch: bool = True) -> dict:
         entry[field] = fresh[field]
     entry["status"] = "pending"
     entry["result"] = None
-    entry["provenance_repaired_at"] = "2026-09-08"
+    entry["attempts"] = 0
+    # The lock is what actually keeps the queue guard from ever selecting this
+    # entry again. Clearing the status without it leaves the item looking ready
+    # while nothing can ever pick it up.
+    entry["do_not_retry"] = False
+    entry["next_eligible_at"] = None
+    entry["provenance_repaired_at"] = datetime.now(KST).strftime("%Y-%m-%d")
     entry.pop("blocked_at", None)
+    entry.pop("blocked_reason", None)
     entry.pop("prior_status", None)
     QUEUE_PATH.write_text(json.dumps(queue, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"status": "repaired", "source_key": source_key,
