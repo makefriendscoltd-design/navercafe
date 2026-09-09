@@ -999,6 +999,39 @@ def build_sfx_stem(markers: list[float], dur: float) -> Path:
     return stem
 
 
+# The source panel sits between the head copy and the Minsoo PIP. Captions are
+# drawn inside it and differ per checkpoint, so comparing this band understates
+# how static a source is -- a source that trips the check is genuinely dead.
+SOURCE_PANEL_BOX = (0, 340, 1080, 1240)
+# Two checkpoints landing on the same shot is ordinary; the median short does it.
+# Half the checkpoints showing one still is a 50-minute webinar holding a slide.
+STILL_FRAME_TOLERANCE = 6.0
+MAX_IDENTICAL_CHECKPOINTS = 3
+
+
+def still_source_group(frames: list[Path]) -> dict:
+    """Largest set of checkpoints whose source panel shows the same picture."""
+    from PIL import Image
+    import numpy as np
+
+    signatures = [
+        np.asarray(Image.open(frame).convert("L").crop(SOURCE_PANEL_BOX)
+                   .resize((48, 48), Image.BILINEAR), dtype=np.float32)
+        for frame in frames
+    ]
+    largest, member = 1, 0
+    for index, one in enumerate(signatures):
+        group = 1 + sum(
+            1 for other, two in enumerate(signatures)
+            if other != index and float(np.abs(one - two).mean()) < STILL_FRAME_TOLERANCE
+        )
+        if group > largest:
+            largest, member = group, index
+    return {"checkpoints": len(frames), "largest_identical_group": largest,
+            "example_frame": str(frames[member]) if frames else None,
+            "limit": MAX_IDENTICAL_CHECKPOINTS}
+
+
 def make_contact_sheets(final: Path, dur: float, markers: list[float]) -> dict:
     validation = ROOT / "validation"
     validation.mkdir(exist_ok=True)
@@ -1202,7 +1235,14 @@ def validate_existing_render() -> int:
         raise RuntimeError(f"machine gates failed: {failures}")
 
     visual_evidence = make_contact_sheets(FINAL, machine["duration_seconds"], markers)
+    stillness = still_source_group([Path(f) for f in visual_evidence["frames"]])
+    if stillness["largest_identical_group"] > MAX_IDENTICAL_CHECKPOINTS:
+        raise RuntimeError(
+            "원본 화면이 거의 정지해 있습니다: "
+            f"{stillness['largest_identical_group']}/{stillness['checkpoints']} 시점이 같은 화면 "
+            f"({stillness['example_frame']})")
     dump(ROOT / "visual_validation.json", {
+        "source_stillness": stillness,
         "status": "pending_human_inspection",
         "layout_checks": {
             "headline_90px_two_lines": True,

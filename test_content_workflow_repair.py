@@ -162,3 +162,31 @@ def test_one_named_channel_is_not_cross_platform_distribution():
     assert "automatic_cross_platform_distribution" in policy.find_forbidden_shorts_claims(spray)
     many = "여러 채널에 한 번에 게시합니다."
     assert "automatic_cross_platform_distribution" in policy.find_forbidden_shorts_claims(many)
+
+
+def test_a_source_that_holds_one_slide_fails_the_render(tmp_path):
+    """A 50-minute webinar sitting on one slide rendered as a dead short."""
+    from PIL import Image
+    import shorts_v7_builder as builder
+
+    def frame(name, shade, *, noisy=False):
+        path = tmp_path / name
+        image = Image.new("L", (1080, 1920), 0)
+        panel = Image.new("L", (1080, 900), shade)
+        if noisy:
+            panel.putpixel((5, 5), 255)
+            panel.paste(Image.new("L", (400, 400), 255 - shade), (100, 100))
+        image.paste(panel, (0, 340))
+        image.save(path)
+        return path
+
+    varied = [frame(f"v{i}.png", 20 + i * 25, noisy=True) for i in range(8)]
+    assert builder.still_source_group(varied)["largest_identical_group"] <= builder.MAX_IDENTICAL_CHECKPOINTS
+
+    # Five checkpoints on the same slide, three elsewhere.
+    static = [frame(f"s{i}.png", 90) for i in range(5)]
+    static += [frame(f"s{i}.png", 20 + i * 60, noisy=True) for i in range(5, 8)]
+    verdict = builder.still_source_group(static)
+    assert verdict["largest_identical_group"] == 5
+    assert verdict["largest_identical_group"] > builder.MAX_IDENTICAL_CHECKPOINTS
+    assert verdict["example_frame"] in {str(p) for p in static}
