@@ -146,3 +146,19 @@ def test_a_forever_locked_queue_is_not_reported_as_merely_idle():
     healthy = guard.backlog(queue, now)
     assert healthy["permanently_stuck"] == []
     assert healthy["by_reason"] == {"waiting": 1, "due": 2}
+
+
+def test_one_named_channel_is_not_cross_platform_distribution():
+    """Outreach advice picks a single channel; the gate read that as publishing."""
+    import content_production_policy as policy
+
+    single = ("내 서비스에 적합한 단 하나의 소통 채널을 고른 뒤 상대방의 고민에 맞춘 "
+              "메시지를 꾸준한 물량으로 전송해야 미팅 기회가 열립니다.")
+    assert policy.find_forbidden_shorts_claims(single) == {}
+    assert policy.find_forbidden_shorts_claims("적합한 단일 소통 채널을 고른 뒤 맞춤 메시지를 전송함") == {}
+
+    # Spraying several platforms is still exactly what the category catches.
+    spray = "제작한 영상을 인스타그램과 틱톡, 링크드인에 자동으로 배포합니다."
+    assert "automatic_cross_platform_distribution" in policy.find_forbidden_shorts_claims(spray)
+    many = "여러 채널에 한 번에 게시합니다."
+    assert "automatic_cross_platform_distribution" in policy.find_forbidden_shorts_claims(many)

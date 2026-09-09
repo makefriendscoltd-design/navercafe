@@ -428,6 +428,11 @@ SHORTS_DISTRIBUTION_PLATFORM_MARKER = (
 # claim category exists to catch, so those readings do not count as a platform.
 SHORTS_SINGLE_DESTINATION_CHANNEL = re.compile(
     r"(?:텔레그램|슬랙|디스코드|카카오\s*톡|카톡|이메일|메일|문자)\s*채널"
+    # A sentence that counts the channel as exactly one is arguing against
+    # spraying every platform, so it cannot be the cross-platform publishing this
+    # category exists to catch -- outreach advice reads that way constantly.
+    r"|(?:단\s*하나의|하나의|단일한?|한\s*개의)\s*"
+    r"(?:소통|커뮤니케이션|연락|메시지)?\s*채널"
 )
 SHORTS_DISTRIBUTION_PREDICATE = (
     r"(?:게시(?!물)|배포|(?<!다운)업로드|유포|발행(?!물)|"
