@@ -106,6 +106,12 @@ def check_shorts(root: Path) -> list[str]:
     if not cta:
         problems.append("고정 CTA 문장 없음")
 
+    # A refused render says so; without this it reads as merely unrendered.
+    visual_path = shorts / "visual_validation.json"
+    if visual_path.is_file() and _read(visual_path).get("status") == "rejected_still_source":
+        still = _read(visual_path)["source_stillness"]
+        return [f"원본이 거의 정지해 렌더 거부: {still['largest_identical_group']}/"
+                f"{still['checkpoints']} 시점 동일"]
     if not (shorts / "final.mp4").is_file():
         problems.append("final.mp4 없음 (렌더 전)")
         return problems
@@ -116,7 +122,6 @@ def check_shorts(root: Path) -> list[str]:
     elif _read(machine).get("status") != "pass":
         problems.append("기계 검증 불합격")
 
-    visual_path = shorts / "visual_validation.json"
     if not visual_path.is_file():
         problems.append("visual_validation.json 없음")
     else:

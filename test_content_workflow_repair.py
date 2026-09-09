@@ -347,3 +347,17 @@ def test_acceptance_does_not_report_a_recovery_workspace_as_broken(tmp_path):
     root = tmp_path / "provider-batch-recovery-20260831"
     (root / "provider").mkdir(parents=True)
     assert content_acceptance.audit(root)["status"] == "not_a_production"
+
+
+def test_a_refused_render_reports_why_not_a_missing_file(tmp_path, monkeypatch):
+    """The gate used to raise before writing, leaving no record of the refusal."""
+    import content_acceptance
+
+    root = _acceptance_root(tmp_path)
+    (root / "shorts/visual_validation.json").write_text(json.dumps(
+        {"status": "rejected_still_source",
+         "source_stillness": {"largest_identical_group": 5, "checkpoints": 8, "limit": 3}}),
+        encoding="utf-8")
+
+    problems = content_acceptance.audit(root)["channels"]["shorts"]["problems"]
+    assert problems == ["원본이 거의 정지해 렌더 거부: 5/8 시점 동일"]

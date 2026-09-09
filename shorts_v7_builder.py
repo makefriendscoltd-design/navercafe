@@ -1236,14 +1236,12 @@ def validate_existing_render() -> int:
 
     visual_evidence = make_contact_sheets(FINAL, machine["duration_seconds"], markers)
     stillness = still_source_group([Path(f) for f in visual_evidence["frames"]])
-    if stillness["largest_identical_group"] > MAX_IDENTICAL_CHECKPOINTS:
-        raise RuntimeError(
-            "원본 화면이 거의 정지해 있습니다: "
-            f"{stillness['largest_identical_group']}/{stillness['checkpoints']} 시점이 같은 화면 "
-            f"({stillness['example_frame']})")
+    still = stillness["largest_identical_group"] > MAX_IDENTICAL_CHECKPOINTS
+    # Write the evidence before refusing: a run that dies without saying why
+    # reads afterwards as a missing file rather than as a rejected source.
     dump(ROOT / "visual_validation.json", {
+        "status": "rejected_still_source" if still else "pending_human_inspection",
         "source_stillness": stillness,
-        "status": "pending_human_inspection",
         "layout_checks": {
             "headline_90px_two_lines": True,
             "original_source_center": True,
@@ -1253,6 +1251,11 @@ def validate_existing_render() -> int:
         },
         **visual_evidence,
     })
+    if still:
+        raise RuntimeError(
+            "원본 화면이 거의 정지해 있습니다: "
+            f"{stillness['largest_identical_group']}/{stillness['checkpoints']} 시점이 같은 화면 "
+            f"({stillness['example_frame']})")
     production = {
         **json.loads((ROOT / "production_manifest.json").read_text()),
         "source_id": SOURCE_ID,
