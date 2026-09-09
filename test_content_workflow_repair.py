@@ -268,3 +268,82 @@ def test_cardnews_refuses_a_shorts_source(tmp_path, monkeypatch, capsys):
         content_workflow.main(["prepare-cardnews", "--cafe-manifest", str(manifest),
                                "--candidate", str(tmp_path / "cardnews")])
     assert not (tmp_path / "cardnews").exists()
+
+
+def _acceptance_root(tmp_path):
+    """A run root that is complete except for what each test breaks."""
+    root = tmp_path / "abcdefghijk-20260909"
+    (root / "cafe").mkdir(parents=True)
+    (root / "cardnews").mkdir()
+    (root / "shorts").mkdir()
+    (root / "cafe/06_cafe_manifest.json").write_text(json.dumps(
+        {"source_key": "abcdefghijk", "title": "t",
+         "source_video": {"seconds": 1200, "width": 1920, "height": 1080}}), encoding="utf-8")
+    (root / "cafe/11_local_validation.json").write_text(json.dumps(
+        {"status": "pass", "checks": {"five_quotes": True, "five_image_markers": True}}),
+        encoding="utf-8")
+    (root / "cafe/03_cafe_body.txt").write_text("본문", encoding="utf-8")
+    (root / "cardnews/04_cardnews_deck.json").write_text("{}", encoding="utf-8")
+    (root / "cardnews/05_youtube_community_post.txt").write_text("본문", encoding="utf-8")
+    (root / "shorts/07_script_final.txt").write_text(
+        "내용\n\n53분 짜리 영상 내용을 모두 정리했습니다.\n", encoding="utf-8")
+    return root
+
+
+def test_acceptance_names_what_is_wrong_per_channel(tmp_path, monkeypatch):
+    """Exit codes called these runs successful; the artefacts were not."""
+    import content_acceptance
+
+    root = _acceptance_root(tmp_path)
+    monkeypatch.setattr("content_lineage.validate_cardnews_origin",
+                        lambda deck: {"ok": True})
+    monkeypatch.setattr("youtube_cardnews_pipeline.validate_youtube_post",
+                        lambda post: {"sections": 5})
+
+    verdict = content_acceptance.audit(root)
+    assert verdict["status"] == "fail"
+    assert verdict["channels"]["source"]["status"] == "pass"
+    assert verdict["channels"]["cafe"]["status"] == "pass"
+    assert verdict["channels"]["cardnews"]["status"] == "pass"
+    # Nothing was rendered yet, and that is the one thing outstanding.
+    assert verdict["channels"]["shorts"]["problems"] == ["final.mp4 없음 (렌더 전)"]
+
+    (root / "cardnews/05_youtube_community_post.txt").unlink()
+    (root / "cafe/11_local_validation.json").write_text(json.dumps(
+        {"status": "pass", "checks": {"five_quotes": False}}), encoding="utf-8")
+    (root / "cafe/06_cafe_manifest.json").write_text(json.dumps(
+        {"source_key": "abcdefghijk", "title": "t",
+         "source_video": {"seconds": 54, "width": 360, "height": 640}}), encoding="utf-8")
+    broken = content_acceptance.audit(root)
+    assert "세로 영상" in broken["channels"]["source"]["problems"][0]
+    assert broken["channels"]["cafe"]["problems"] == ["로컬 검증 실패: five_quotes"]
+    assert broken["channels"]["cardnews"]["problems"] == ["05_youtube_community_post.txt 없음"]
+
+
+def test_acceptance_rejects_a_sentinel_title_and_a_still_source(tmp_path, monkeypatch):
+    """Both defects shipped to the channel before anything read the artefacts."""
+    import content_acceptance
+
+    root = _acceptance_root(tmp_path)
+    shorts = root / "shorts"
+    (shorts / "final.mp4").write_bytes(b"0")
+    (shorts / "machine_validation.json").write_text(json.dumps({"status": "pass"}), encoding="utf-8")
+    (shorts / "visual_validation.json").write_text(json.dumps(
+        {"source_stillness": {"largest_identical_group": 6, "checkpoints": 8, "limit": 3}}),
+        encoding="utf-8")
+    (shorts / "production_manifest.json").write_text(json.dumps(
+        {"title_candidate": "shorts-abcdefghijk-0123456789ab"}), encoding="utf-8")
+    monkeypatch.setattr("content_lineage.validate_shorts_origin", lambda root: {"ok": True})
+
+    problems = content_acceptance.audit(root)["channels"]["shorts"]["problems"]
+    assert any("6/8" in p for p in problems)
+    assert any("센티넬" in p for p in problems)
+
+
+def test_acceptance_does_not_report_a_recovery_workspace_as_broken(tmp_path):
+    """Four channel failures for a folder that was never a production hides real ones."""
+    import content_acceptance
+
+    root = tmp_path / "provider-batch-recovery-20260831"
+    (root / "provider").mkdir(parents=True)
+    assert content_acceptance.audit(root)["status"] == "not_a_production"

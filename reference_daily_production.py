@@ -11,6 +11,9 @@ day only inflates the backlog.
 Shorts are rendered and gated but not published here: the spec requires a real
 human look at the eight checkpoint frames, and an unattended job cannot do that.
 Each run leaves them rendered with the visual check pending.
+
+A run counts as complete only when ``content_acceptance`` passes every channel.
+Commands exiting zero never meant the artefacts were right.
 """
 
 from __future__ import annotations
@@ -70,8 +73,17 @@ def produce(source_key: str, today: str) -> dict:
                          "--candidate", str(root / "cardnews")])
         steps["cardnews"] = "ok" if ok else f"fail: {note}"
 
+    # Exit codes said every one of these runs succeeded while the community body
+    # was missing, decks carried no anchor and titles were still sentinels.
+    import content_acceptance
+
+    verdict = content_acceptance.audit(root)
     return {"source_key": source_key, "root": str(root), "steps": steps,
-            "complete": all(v == "ok" for v in steps.values()) and len(steps) == 5}
+            "acceptance": verdict["status"],
+            "problems": {name: channel["problems"]
+                         for name, channel in verdict["channels"].items()
+                         if channel["problems"]},
+            "complete": verdict["status"] == "pass"}
 
 
 def main(argv=None) -> int:
@@ -103,7 +115,7 @@ def main(argv=None) -> int:
     (REPORT_DIR / f"{today}.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     done = sum(1 for r in report["results"] if r.get("complete"))
-    print(f"완료 {done}/{len(selected)} · 쇼츠는 8시점 육안검사 후 발행", flush=True)
+    print(f"인수 통과 {done}/{len(selected)} · 쇼츠는 8시점 육안검사 후 발행", flush=True)
     return 0 if done == len(selected) else 1
 
 
