@@ -2485,13 +2485,33 @@ if (await pageLooksLoggedOut(p,'youtube')) {
 	        _preview_png:preview,_preview_cards_png:cardsPreview});
     }
     else {
-      const all=await contextsFor(p); let clicked=false;
-      for(const c of all) if(!clicked) clicked=await c.evaluate(()=>{
-        const root=document.querySelector('ytd-backstage-post-dialog-renderer[is-open]');
-        const b=[...(root?.querySelectorAll('button,[role=button]')||[])].find(x=>(x.innerText||x.getAttribute('aria-label')||'').trim()==='게시');
-        if(b&&!b.disabled&&b.getAttribute('aria-disabled')!=='true'){b.click();return true;} return false;
-      });
-      if(!clicked) emit({status:'error',message:'활성화된 YouTube 게시 버튼을 찾지 못했습니다.'});
+      // Ten card images are still uploading when the composer is filled, so 게시
+      // is disabled at first; reading that as "no button" was why publishing
+      // never ran. Wait inside one evaluate: polling across repeated round trips
+      // tore down the session and surfaced as an unreachable daemon.
+      let outcome='no_dialog';const readyBy=Date.now()+30000;
+      while(Date.now()<readyBy){
+        outcome=await p.evaluate(()=>{
+          // The page keeps hidden copies of the composer; a hidden one's 게시 is
+          // permanently disabled, which is what an unfiltered match kept finding.
+          const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+            return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};
+          const roots=[...document.querySelectorAll('ytd-backstage-post-dialog-renderer[is-open]')];
+          const scopes=roots.length?roots:[document.body];
+          const buttons=scopes.flatMap(root=>[...root.querySelectorAll('button,[role=button]')])
+            .filter(x=>(x.innerText||x.getAttribute('aria-label')||'').trim()==='게시');
+          if(!buttons.length) return roots.length?'no_button':'no_dialog';
+          const shown=buttons.filter(vis);
+          if(!shown.length) return 'hidden';
+          const b=shown.find(x=>!x.disabled&&x.getAttribute('aria-disabled')!=='true');
+          if(!b) return 'disabled';
+          b.click();return 'clicked';
+        });
+        if(outcome==='clicked') break;
+        await sleep(2500);
+      }
+      const clicked=outcome==='clicked';
+      if(!clicked) emit({status:'error',message:'활성화된 YouTube 게시 버튼을 찾지 못했습니다: '+outcome});
       else {
         let confirmed=false;
         const end=Date.now()+15000;
@@ -2516,7 +2536,10 @@ if (await pageLooksLoggedOut(p,'youtube')) {
   }
 }
 """
-        result = run_repl(code, cwd=upload_dir, timeout=300, account=account)
+        # Attaching ten cards and then waiting for 게시 to enable runs past five
+        # minutes; overrunning the budget drops the session and surfaces as
+        # "Aside daemon is not reachable" rather than as a timeout.
+        result = run_repl(code, cwd=upload_dir, timeout=900, account=account)
         return _save_preview(result, preview_path)
 
 

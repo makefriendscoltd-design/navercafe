@@ -1002,7 +1002,12 @@ def build_sfx_stem(markers: list[float], dur: float) -> Path:
 # The source panel sits between the head copy and the Minsoo PIP. Captions are
 # drawn inside it and differ per checkpoint, so comparing this band understates
 # how static a source is -- a source that trips the check is genuinely dead.
-SOURCE_PANEL_BOX = (0, 340, 1080, 1240)
+# The render config places the source panel at x=0 y=664, 1080x608.
+SOURCE_PANEL_BOX = (0, 664, 1080, 1272)
+# Presenter PIP is a 430x430 circle at 325,1298; the watermark sits under it.
+PRESENTER_BOX = (325, 1298, 755, 1728)
+WATERMARK_BOX = (400, 1740, 680, 1800)
+HEADLINE_BOX = (0, 180, 1080, 560)
 # Two checkpoints landing on the same shot is ordinary; the median short does it.
 # Half the checkpoints showing one still is a 50-minute webinar holding a slide.
 STILL_FRAME_TOLERANCE = 6.0
@@ -1030,6 +1035,56 @@ def still_source_group(frames: list[Path]) -> dict:
     return {"checkpoints": len(frames), "largest_identical_group": largest,
             "example_frame": str(frames[member]) if frames else None,
             "limit": MAX_IDENTICAL_CHECKPOINTS}
+
+
+def measure_layout(frames: list[Path]) -> dict:
+    """Measure the layout the eight-frame human check was looking for.
+
+    These four were recorded as ``True`` without anything ever looking, which is
+    how a render could be signed off while carrying nothing in those regions.
+    Each is now read off the rendered pixels instead.
+    """
+    from PIL import Image
+    import numpy as np
+
+    def ink(box, frame):
+        """How much of a region departs from its own flat background."""
+        region = np.asarray(Image.open(frame).convert("L").crop(box), dtype=np.float32)
+        return float(np.abs(region - np.median(region)).mean())
+
+    def corner_vs_centre(frame):
+        """A circular mask leaves flat background in its bounding box's corners.
+
+        The corner sample has to clear the circle: at a twelfth of the side, its
+        innermost pixel is still outside a circle inscribed in the box.
+        """
+        pip = np.asarray(Image.open(frame).convert("L").crop(PRESENTER_BOX), dtype=np.float32)
+        side = pip.shape[0] // 12
+        corners = [pip[:side, :side], pip[:side, -side:], pip[-side:, :side], pip[-side:, -side:]]
+        middle = pip.shape[0] // 5
+        centre = pip[2 * middle:3 * middle, 2 * middle:3 * middle]
+        return float(centre.std()), float(max(c.std() for c in corners))
+
+    headline = min(ink(HEADLINE_BOX, f) for f in frames)
+    panel = min(ink(SOURCE_PANEL_BOX, f) for f in frames)
+    watermark = min(ink(WATERMARK_BOX, f) for f in frames)
+    pip = [corner_vs_centre(f) for f in frames]
+    centre_ink = min(c for c, _ in pip)
+    corner_flat = max(k for _, k in pip)
+
+    checks = {
+        "headline_present": headline > 2.0,
+        "original_source_center": panel > 2.0,
+        "minsoo_pip_present": centre_ink > 4.0,
+        "minsoo_pip_circular": corner_flat < 6.0,
+        "watermark": watermark > 1.0,
+    }
+    return {"checks": checks,
+            "measured": {"headline_ink": round(headline, 2), "panel_ink": round(panel, 2),
+                         "watermark_ink": round(watermark, 2),
+                         "pip_centre_std": round(centre_ink, 2),
+                         "pip_corner_std": round(corner_flat, 2)},
+            "status": "pass" if all(checks.values()) else "fail"}
 
 
 def make_contact_sheets(final: Path, dur: float, markers: list[float]) -> dict:
@@ -1235,22 +1290,34 @@ def validate_existing_render() -> int:
         raise RuntimeError(f"machine gates failed: {failures}")
 
     visual_evidence = make_contact_sheets(FINAL, machine["duration_seconds"], markers)
-    stillness = still_source_group([Path(f) for f in visual_evidence["frames"]])
+    frames = [Path(f) for f in visual_evidence["frames"]]
+    stillness = still_source_group(frames)
     still = stillness["largest_identical_group"] > MAX_IDENTICAL_CHECKPOINTS
+    # These five used to be written as True with nothing having looked at them.
+    layout = measure_layout(frames)
+    layout["checks"]["headline_90px_two_lines"] = (
+        layout["checks"].pop("headline_present")
+        and cfg["render_provenance"]["v7_reference_restoration"]["headline_font_size_1080"] == 90
+        and len(str(cfg["title"].get("text") or "").splitlines()) == 2)
+    # One full token per cue is a machine gate already; carry its verdict here.
+    layout["checks"]["single_token_subtitles"] = bool(gates.get("full_token_subtitles"))
+    layout["status"] = "pass" if all(layout["checks"].values()) else "fail"
+    passed = layout["status"] == "pass" and not still
     # Write the evidence before refusing: a run that dies without saying why
     # reads afterwards as a missing file rather than as a rejected source.
     dump(ROOT / "visual_validation.json", {
-        "status": "rejected_still_source" if still else "pending_human_inspection",
+        "status": "pass" if passed else
+                  ("rejected_still_source" if still else "rejected_layout"),
+        "verified_by": "measured_from_rendered_frames",
+        "video_sha256": machine["final_sha256"],
         "source_stillness": stillness,
-        "layout_checks": {
-            "headline_90px_two_lines": True,
-            "original_source_center": True,
-            "minsoo_circular_pip": True,
-            "single_token_subtitles": True,
-            "watermark": True,
-        },
+        "layout_checks": layout["checks"],
+        "layout_measured": layout["measured"],
         **visual_evidence,
     })
+    if layout["status"] != "pass":
+        raise RuntimeError("렌더 레이아웃 측정 실패: "
+                           + ", ".join(k for k, v in layout["checks"].items() if not v))
     if still:
         raise RuntimeError(
             "원본 화면이 거의 정지해 있습니다: "

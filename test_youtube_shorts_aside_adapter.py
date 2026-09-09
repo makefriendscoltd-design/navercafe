@@ -928,7 +928,12 @@ def test_direct_requery_returns_exact_provider_metadata_and_kst_time(tmp_path: P
     assert all(verified["checks"].values())
     assert evidence["scheduled_at"] == slot.isoformat()
     assert evidence["status"] == "scheduled"
-    assert len(aside.calls) == 1
+    # The list row is read in its own single-tab call: opening a second tab
+    # inside the edit script closed the last one and ended the session.
+    assert len(aside.calls) == 2
+    assert "ytcp-video-row" in aside.calls[1]["body"]
+    assert aside.calls[1]["payload"]["provider_id"] == PROVIDER_ID
+    assert "#title-textarea" not in aside.calls[1]["body"]
 
 
 def create_crm_db(path: Path, *, dedupe_key: str | None = None) -> None:

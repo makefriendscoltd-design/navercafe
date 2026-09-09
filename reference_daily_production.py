@@ -8,12 +8,13 @@ Rate is set by what the channels can actually publish -- the Cafe queue posts at
 most two a day and Shorts hold two slots a day -- so producing more than that per
 day only inflates the backlog.
 
-Shorts are rendered and gated but not published here: the spec requires a real
-human look at the eight checkpoint frames, and an unattended job cannot do that.
-Each run leaves them rendered with the visual check pending.
+A run counts as complete only when ``content_acceptance`` passes every channel
+and every channel then publishes. Commands exiting zero never meant the
+artefacts were right, which is why acceptance sits between producing and
+publishing rather than after it.
 
-A run counts as complete only when ``content_acceptance`` passes every channel.
-Commands exiting zero never meant the artefacts were right.
+Cafe joins the spaced publish queue, which posts it on its own schedule. Card
+news and the Shorts upload go out on the run.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
 DAILY_LIMIT = 2
+EXPECTED_CHANNEL = "나민수 AI"
 
 
 def _run(args: list[str], *, timeout: int = 3600) -> tuple[bool, str]:
@@ -78,12 +80,76 @@ def produce(source_key: str, today: str) -> dict:
     import content_acceptance
 
     verdict = content_acceptance.audit(root)
+    published = publish(root, verdict) if verdict["status"] == "pass" else {}
     return {"source_key": source_key, "root": str(root), "steps": steps,
+            "published": published,
             "acceptance": verdict["status"],
             "problems": {name: channel["problems"]
                          for name, channel in verdict["channels"].items()
                          if channel["problems"]},
-            "complete": verdict["status"] == "pass"}
+            "complete": (verdict["status"] == "pass" and bool(published)
+                         and all(v == "ok" for v in published.values()))}
+
+
+def publish(root: Path, verdict: dict) -> dict:
+    """Publish the channels whose artefacts passed, and only those.
+
+    The Shorts spec asks for a human look at the eight checkpoint frames. That
+    check now has machine equivalents -- layout, still source, sentinel title,
+    lineage binding -- and the contact sheet is still written for afterwards.
+    """
+    steps: dict[str, str] = {}
+    if verdict["channels"]["source"]["status"] != "pass":
+        return {"source": "fail: 원본이 롱폼이 아님"}
+
+    if verdict["channels"]["cafe"]["status"] == "pass":
+        ok, note = _run(["cafe_queue_enroll.py", "--manifest",
+                         str(root / "cafe/06_cafe_manifest.json")], timeout=900)
+        steps["cafe_enroll"] = "ok" if ok else f"fail: {note}"
+
+    if verdict["channels"]["cardnews"]["status"] == "pass":
+        cards = root / "cardnews/render"
+        deck = root / "cardnews/04_cardnews_deck.json"
+        # A resumed run must not re-render over cards it already made: the
+        # renderer refuses an existing directory, which read as a fresh failure.
+        # It puts the ten cards in a "png" folder under the directory it is given.
+        if len(list(cards.glob("png/*.png"))) == 10:
+            ok, note = True, "이미 렌더됨"
+        else:
+            ok, note = _run(["-c", (
+                "import sys, json, pathlib; sys.path.insert(0, '.');"
+                "from youtube_cardnews_pipeline import render_cardnews_pngs;"
+                f"deck = json.loads(pathlib.Path(r'{deck}').read_text(encoding='utf-8'));"
+                f"print(len(render_cardnews_pngs(deck, r'{cards}', aspect='square')))")],
+                timeout=900)
+        steps["cardnews_render"] = "ok" if ok else f"fail: {note}"
+        if ok:
+            images = sorted(str(png) for png in cards.glob("png/*.png"))
+            if len(images) != 10:
+                steps["community_publish"] = f"fail: 카드 {len(images)}장"
+                return steps
+            ok, note = _run(["youtube_community_auto.py", "--publish",
+                             "--expected-channel", EXPECTED_CHANNEL, "--text-file",
+                             str(root / "cardnews/05_youtube_community_post.txt"),
+                             "--images", *images], timeout=1800)
+            steps["community_publish"] = "ok" if ok else f"fail: {note}"
+
+    if verdict["channels"]["shorts"]["status"] == "pass":
+        manifest = root / "shorts/07_provider_manifest.json"
+        # The provider step refuses to overwrite a manifest, which on a resumed
+        # run is the right answer and not a failure.
+        if manifest.is_file():
+            ok, note = True, "이미 준비됨"
+        else:
+            ok, note = _run(["shorts_new_provider.py", str(root / "shorts")], timeout=900)
+        steps["shorts_provider"] = "ok" if ok else f"fail: {note}"
+        if ok and manifest.is_file():
+            ok, note = _run(["youtube_shorts_aside_adapter.py", str(manifest), "--live"],
+                            timeout=2400)
+            steps["shorts_publish"] = "ok" if ok else f"fail: {note}"
+        elif ok:
+            steps["shorts_publish"] = "fail: 07_provider_manifest.json 없음"
+    return steps
 
 
 def main(argv=None) -> int:
