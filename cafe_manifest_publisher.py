@@ -30,7 +30,7 @@ QUEUE_POLICY_PATH = Path("outputs/cafe-publish-queue-20260823/queue.json")
 sys.path.insert(0, str(PROJECT))
 
 from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
-from content_production_policy import ProductionPolicyError, validate_cafe_longform_source
+from content_production_policy import ProductionPolicyError, validate_longform_source
 
 
 def read_json(path: Path) -> dict:
@@ -281,7 +281,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     # and every entry queued before this gate existed lacks one.
     try:
         source_shape = measure_source_video(source_key)
-        longform = validate_cafe_longform_source(source_shape)
+        longform = validate_longform_source(source_shape)
         checks["source_is_longform"] = True
     except ProductionPolicyError as exc:
         longform = {"error": str(exc), **source_shape}

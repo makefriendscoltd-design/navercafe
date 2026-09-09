@@ -89,9 +89,9 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
     # Measure before building anything: a Short summarised into a column reads as
     # a column and only shows itself in the vertical frames it uses as images.
     from cafe_manifest_publisher import measure_source_video
-    from content_production_policy import validate_cafe_longform_source
+    from content_production_policy import validate_longform_source
 
-    source_shape = validate_cafe_longform_source(measure_source_video(source_key))
+    source_shape = validate_longform_source(measure_source_video(source_key))
 
     answer_path = cafe / "notebooklm/notebooklm-answer.md"
     provider_path = cafe / "notebooklm/notebooklm-provider-evidence.json"

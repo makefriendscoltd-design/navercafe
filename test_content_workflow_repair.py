@@ -204,18 +204,18 @@ def test_a_short_is_not_a_cafe_column_source():
     import pytest
 
     from content_production_policy import (
-        CAFE_MIN_SOURCE_SECONDS, ProductionPolicyError, validate_cafe_longform_source)
+        MIN_LONGFORM_SOURCE_SECONDS, ProductionPolicyError, validate_longform_source)
 
-    talk = validate_cafe_longform_source({"seconds": 495, "width": 640, "height": 360})
-    assert talk["seconds"] == 495 and talk["minimum_seconds"] == CAFE_MIN_SOURCE_SECONDS
+    talk = validate_longform_source({"seconds": 495, "width": 640, "height": 360})
+    assert talk["seconds"] == 495 and talk["minimum_seconds"] == MIN_LONGFORM_SOURCE_SECONDS
 
     with pytest.raises(ProductionPolicyError, match="세로 영상"):
-        validate_cafe_longform_source({"seconds": 54, "width": 360, "height": 640})
+        validate_longform_source({"seconds": 54, "width": 360, "height": 640})
     # Horizontal but far too short to hold five copyable steps.
     with pytest.raises(ProductionPolicyError, match="롱폼 기준"):
-        validate_cafe_longform_source({"seconds": 453, "width": 640, "height": 360})
+        validate_longform_source({"seconds": 453, "width": 640, "height": 360})
     with pytest.raises(ProductionPolicyError, match="측정하지 못했"):
-        validate_cafe_longform_source({"seconds": 0, "width": 0, "height": 0})
+        validate_longform_source({"seconds": 0, "width": 0, "height": 0})
 
 
 def test_a_shorts_link_never_becomes_a_cafe_candidate(monkeypatch, tmp_path):
@@ -233,3 +233,19 @@ def test_a_shorts_link_never_becomes_a_cafe_candidate(monkeypatch, tmp_path):
 
     with pytest.raises(ProductionPolicyError, match="세로 영상"):
         prepare.prepare("pw8Bt97U6fk")
+
+
+def test_a_shorts_link_never_becomes_a_short(monkeypatch, tmp_path):
+    """Ten Shorts on the channel were built from other people's Shorts."""
+    import pytest
+
+    import shorts_new_prepare as prepare
+    from content_production_policy import ProductionPolicyError
+
+    monkeypatch.setattr(prepare, "PROJECT", tmp_path)
+    monkeypatch.setattr(prepare, "_source_root", lambda key: tmp_path / f"{key}-20260909")
+    monkeypatch.setattr("cafe_manifest_publisher.measure_source_video",
+                        lambda source_key: {"seconds": 27, "width": 360, "height": 640})
+
+    with pytest.raises(ProductionPolicyError, match="세로 영상"):
+        prepare.prepare("p3NBGLYVp8s")

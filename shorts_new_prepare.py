@@ -66,6 +66,13 @@ def prepare(source_key: str) -> dict:
     if (root / "final.mp4").exists():
         raise RuntimeError("이미 렌더된 후보가 있습니다. 새로 만들지 말고 그것을 검토·복구하세요.")
     root.mkdir(parents=True, exist_ok=True)
+
+    # A one-minute source retold as a one-minute Short is a re-upload, and its
+    # fixed CTA reads "1분 짜리 영상 내용을 모두 정리했습니다".
+    from cafe_manifest_publisher import measure_source_video
+    from content_production_policy import validate_longform_source
+
+    validate_longform_source(measure_source_video(source_key))
     subprocess.run(
         [sys.executable, str(PROJECT / "content_workflow_preflight.py"), "--runtime", "--json"],
         stdout=subprocess.DEVNULL, check=True,
