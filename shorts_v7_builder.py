@@ -974,7 +974,7 @@ def build_config(markers: list[float]) -> dict:
         "presenter_audio_mapped": False,
         "final_audio_sources": ["approved Minsoo narration", "locked BGM", "five locked ordinal SFX"],
         "screen_method": f"exact public YouTube video; center cover crop; start_at={SOURCE_START_AT}; speed=2.0",
-        "delivery_encoding": "H.264 libx264 CRF 24 / medium / yuv420p / 30fps; AAC 192k passthrough",
+        "delivery_encoding": "H.264 libx264 CRF 24 / medium / yuv420p / 30fps; AAC 192k fast coder passthrough",
         "v7_reference_restoration": {
             "voice_settings": MINSOO_VOICE_SETTINGS,
             "subtitle_rule": "one full token; no Latin/mixed-token slicing",
@@ -1186,7 +1186,10 @@ def render() -> int:
     final_m4a = ROOT / "final_master.m4a"
     run([
         "ffmpeg", "-hide_banner", "-y", "-i", final_master,
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", final_m4a,
+        # The default two-loop coder produced large peak overshoots on a real
+        # narration despite a -3 dBTP PCM master. Keep bitrate and loudness
+        # targets; the fast coder passed the decoded AAC peak measurement.
+        "-c:a", "aac", "-aac_coder", "fast", "-b:a", "192k", "-ar", "48000", "-ac", "2", final_m4a,
     ])
     run([
         "ffmpeg", "-hide_banner", "-y", "-i", visual, "-i", final_m4a,
