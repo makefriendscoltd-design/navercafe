@@ -7,4 +7,4 @@ pytest
 python-multipart
 uvicorn
 youtube-transcript-api
-yt-dlp
+yt-dlp[default]==2026.8.19

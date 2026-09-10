@@ -19,6 +19,7 @@ from pathlib import Path
 
 import notebooklm_shorts as scripts
 from shorts_repair_prepare import PROJECT, binding
+from youtube_source_options import source_options
 
 PRESENTER_SOURCE = (
     PROJECT
@@ -54,11 +55,10 @@ def _download_source(source_key: str, root: Path) -> tuple[Path, str]:
     staging = Path(tempfile.mkdtemp(prefix=".source-download-", dir=root))
     template = staging / "source.%(ext)s"
     options = {
+        **source_options(),
         "format": "18/b[ext=mp4]/bv*[ext=mp4]+ba[ext=m4a]",
         "outtmpl": str(template), "noplaylist": True,
-        "quiet": True, "no_warnings": False, "js_runtimes": {"node": {}},
         "merge_output_format": "mp4",
-        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
     }
     try:
         with yt_dlp.YoutubeDL(options) as downloader:
@@ -87,7 +87,7 @@ def _download_source(source_key: str, root: Path) -> tuple[Path, str]:
     evidence.write_text(json.dumps({
         "source_key": source_key, "channel": channel, "title": info["title"],
         "duration_seconds": info["duration"], "source": binding(video),
-        "backend": "project yt-dlp preferred format 18 with MP4 fallback; no cookies",
+        "backend": "project yt-dlp default clients; preferred format 18 with MP4 fallback; no cookies",
         "selected_format_id": info.get("format_id"),
         "source_credit": credit,
     }, ensure_ascii=False, indent=2), encoding="utf-8")

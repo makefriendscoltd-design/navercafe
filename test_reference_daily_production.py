@@ -5,6 +5,16 @@ import reference_daily_production as daily
 import content_run_state as state
 
 
+def test_source_measurement_failure_is_preserved_and_never_published(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unverified source must not publish")
+    monkeypatch.setattr(daily, '_run', forbidden)
+    problem = '원본 측정 실패: Requested format is not available'
+    result = daily.publish(tmp_path / 'abcdefghijk-20260910', {
+        'channels': {'source': {'status': 'fail', 'problems': [problem]}}})
+    assert result == {'source': 'fail: ' + problem}
+
+
 def test_channel_failure_does_not_block_other_provider(tmp_path, monkeypatch):
     root = tmp_path / 'outputs/abcdefghijk-20260910'
     (root / 'shorts').mkdir(parents=True)

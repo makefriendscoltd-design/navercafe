@@ -591,8 +591,9 @@ def factpack_recovery_report(
 
 def get_video_duration(url: str) -> float:
     import yt_dlp
+    from youtube_source_options import source_options
 
-    options = {"quiet": True, "no_warnings": True, "skip_download": True}
+    options = {**source_options(), "skip_download": True}
     with yt_dlp.YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)
     return float((info or {}).get("duration") or 0)

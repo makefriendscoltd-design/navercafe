@@ -230,10 +230,9 @@ def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, caf
 def measure_source_video(source_key: str) -> dict:
     """Read the source's real duration and frame size from YouTube."""
     import yt_dlp
+    from youtube_source_options import source_options
 
-    options = {"quiet": True, "no_warnings": True, "skip_download": True,
-               "js_runtimes": {"node": {}},
-               "extractor_args": {"youtube": {"player_client": ["mweb"]}}}
+    options = {**source_options(), "skip_download": True}
     with yt_dlp.YoutubeDL(options) as downloader:
         info = downloader.extract_info(f"https://youtu.be/{source_key}", download=False)
     return {"seconds": int(info.get("duration") or 0), "width": int(info.get("width") or 0),

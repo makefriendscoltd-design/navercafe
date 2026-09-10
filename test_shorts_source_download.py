@@ -39,7 +39,7 @@ def test_download_prefers_18_but_allows_mp4_fallback(monkeypatch, tmp_path):
 
     assert captured["format"].startswith("18/")
     assert captured["merge_output_format"] == "mp4"
-    assert captured["extractor_args"]["youtube"]["player_client"] == ["mweb"]
+    assert "extractor_args" not in captured
     assert video.read_bytes() == b"downloaded-video"
     evidence = json.loads((tmp_path / "source_download_evidence.json").read_text())
     assert evidence["selected_format_id"] == "137+140"

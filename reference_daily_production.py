@@ -121,8 +121,10 @@ def publish(root: Path, verdict: dict) -> dict:
     steps: dict[str, str] = {}
     import content_run_state
     source_key = root.name.rsplit("-", 1)[0]
-    if not verdict.get("channels") or verdict["channels"]["source"]["status"] != "pass":
-        return {"source": "fail: 원본이 롱폼이 아님"}
+    source = verdict.get("channels", {}).get("source", {})
+    if source.get("status") != "pass":
+        problems = source.get("problems") or ["원본 검증 결과 없음"]
+        return {"source": "fail: " + "; ".join(problems)}
 
     if verdict["channels"]["cafe"]["status"] == "pass":
         cafe = content_run_state.cafe_state(PROJECT, source_key)
