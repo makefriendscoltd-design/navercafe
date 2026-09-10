@@ -40,6 +40,7 @@ from notebooklm_shorts import fixed_cta, validate_head_copy, validate_head_copy_
 SOURCE_ID = "7cimtg6LPHg"
 SOURCE_URL = "https://youtu.be/7cimtg6LPHg"
 SOURCE_CREDIT = ""
+SOURCE_START_AT = 0.0
 SOURCE = ROOT / "source_original.mp4"
 PRESENTER = Path("/Users/apple/Downloads/2026-07-02 15-39-18.mp4")
 SCRIPT = ROOT / "07_script_final.txt"
@@ -905,6 +906,18 @@ def load_renderer():
     return module
 
 
+def validate_source_window(start: float, source_seconds: float, output_seconds: float = 0) -> float:
+    import math
+    start = float(start)
+    if not all(math.isfinite(v) for v in (start, source_seconds, output_seconds)):
+        raise RuntimeError("source window must contain finite times")
+    if start < 0 or output_seconds < 0 or start >= source_seconds:
+        raise RuntimeError("source window starts outside the original video")
+    if start + output_seconds * 2.0 > source_seconds:
+        raise RuntimeError("source window is too short for the locked 2x playback")
+    return start
+
+
 def build_config(markers: list[float]) -> dict:
     cfg = json.loads(REFERENCE_CONFIG.read_text(encoding="utf-8"))
     candidate_lines = []
@@ -933,7 +946,7 @@ def build_config(markers: list[float]) -> dict:
         "crop": "", "color_filter": "eq=brightness=0.025:contrast=1.14:saturation=1.06,colorbalance=bs=0.035:gs=0.01",
         "left_light": {"color": "00C8FF", "alpha": 0.38, "width": 260},
     }
-    cfg["screen"] = {"fit": "cover", "x": 0, "y": 664, "width": 1080, "height": 608, "start_at": 0, "speed": 2.0}
+    cfg["screen"] = {"fit": "cover", "x": 0, "y": 664, "width": 1080, "height": 608, "start_at": SOURCE_START_AT, "speed": 2.0}
     cfg["watermark"].update({
         "text": "@aimax", "font_path": str(TITLE_FONT),
         "x": 540, "y": 1768, "font_size": 44,
@@ -953,14 +966,14 @@ def build_config(markers: list[float]) -> dict:
         "source_footage_sha256": sha(SOURCE),
         "source_url": SOURCE_URL,
         "source_id": SOURCE_ID,
-        "source_fetch_backend": "source task manifest URL / project .venv312 yt-dlp mweb format 18 / public source / no cookies",
+        "source_fetch_backend": "source task manifest URL / project .venv312 yt-dlp / public source / no cookies",
         "script_exact": str(SCRIPT),
         "script_exact_sha256": sha(SCRIPT),
         "source_and_presenter_audio_mapped": False,
         "source_audio_mapped": False,
         "presenter_audio_mapped": False,
         "final_audio_sources": ["approved Minsoo narration", "locked BGM", "five locked ordinal SFX"],
-        "screen_method": "exact public YouTube video; center cover crop; start_at=0; speed=2.0",
+        "screen_method": f"exact public YouTube video; center cover crop; start_at={SOURCE_START_AT}; speed=2.0",
         "delivery_encoding": "H.264 libx264 CRF 24 / medium / yuv420p / 30fps; AAC 192k passthrough",
         "v7_reference_restoration": {
             "voice_settings": MINSOO_VOICE_SETTINGS,
@@ -1147,6 +1160,7 @@ def render() -> int:
     normalize_loudness(tailbite_audio, voice_stem, -14.8, -1.8)
     calibrate_voice_lufs(voice_stem)
     dur = duration(voice_stem)
+    validate_source_window(SOURCE_START_AT, duration(SOURCE), dur)
     markers = build_scene_manifest(captions, dur)
     cfg = build_config(markers)
     dump(ROOT / "render_config.json", cfg)
@@ -1193,6 +1207,9 @@ def validate_existing_render() -> int:
     premaster, final_master = ROOT / 'premaster_mix.wav', ROOT / 'final_master.wav'
     srt, ass = ROOT / 'captions.srt', ROOT / 'captions.ass'
     cfg = json.loads((ROOT / 'render_config.json').read_text())
+    if cfg["screen"]["start_at"] != SOURCE_START_AT:
+        raise RuntimeError("rendered source window differs from the production manifest")
+    validate_source_window(SOURCE_START_AT, duration(SOURCE), duration(FINAL))
     runtime_gate = json.loads((ROOT / '02_exact_runtime_gate.json').read_text())
     captions = parse_srt(srt)
     markers = [next(x['start'] for x in captions if x['text'] == word)
@@ -1344,6 +1361,7 @@ def validate_existing_render() -> int:
 def configure(root: Path) -> None:
     global ROOT, SOURCE_ID, SOURCE_URL, SOURCE, PRESENTER, SCRIPT, HEADCOPY, FINAL
     global SOURCE_MINUTES, SCENE_JOBS, SCENE_SENTINELS, UPLOAD_TITLE, SOURCE_CREDIT
+    global SOURCE_START_AT
     from content_lineage import bound_file, validate_shorts_origin
     ROOT = root.resolve()
     origin = validate_shorts_origin(ROOT)
@@ -1352,6 +1370,7 @@ def configure(root: Path) -> None:
     SOURCE_ID = origin["source_key"]
     SOURCE_URL = f"https://youtu.be/{SOURCE_ID}"
     SOURCE = bound_file(ROOT, data["source"], "source video")
+    SOURCE_START_AT = validate_source_window(data.get("source_start_at", 0), duration(SOURCE))
     PRESENTER = bound_file(ROOT, data["presenter"], "presenter")
     SCRIPT = bound_file(ROOT, manifest["content_lineage"]["script"], "script")
     HEADCOPY = bound_file(ROOT, data["headcopy"], "headcopy")

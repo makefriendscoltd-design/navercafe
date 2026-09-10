@@ -24,6 +24,18 @@ def load_builder():
     return module
 
 
+def test_source_window_keeps_locked_speed_and_original_bounds():
+    module = load_builder()
+    assert module.validate_source_window(40, 2056, 60) == 40
+    assert module.validate_source_window(0, 120, 60) == 0
+    for start, source_seconds, output_seconds in [
+        (-1, 200, 60), (200, 200, 0), (90, 200, 60),
+        (float('nan'), 200, 60), (40, 200, float('inf')),
+    ]:
+        with pytest.raises(RuntimeError):
+            module.validate_source_window(start, source_seconds, output_seconds)
+
+
 def fake_section_writer(module, calls):
     def write(script, audio_path, alignment_path, *, previous_text, next_text, seed):
         calls.append({
