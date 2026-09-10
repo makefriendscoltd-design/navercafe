@@ -72,6 +72,13 @@ def community_state(root: Path, source_key: str) -> dict:
     if verified:
         return {"status": "published", "verified": True, "protected": False,
                 "url": receipt.get("url")}
+    scheduled = (receipt.get("status") == "scheduled" and receipt.get("verified") is True
+                 and receipt.get("source_key") == source_key and bool(receipt.get("url"))
+                 and bool(receipt.get("scheduled_at")))
+    if scheduled:
+        return {"status": "scheduled", "verified": False, "provider_verified": True,
+                "protected": True, "url": receipt.get("url"),
+                "scheduled_at": receipt.get("scheduled_at")}
     legacy_paths = list((root / "cardnews/provider").glob("*.json"))
     legacy_paths += list((root / "community/provider").glob("*.json"))
     for path in legacy_paths:
@@ -95,7 +102,8 @@ def source_state(project: Path, source_key: str) -> dict:
                   and channels["shorts"]["verified"]
                   and community_handed_off)
     visual = read_json(root / "shorts/visual_validation.json")
-    terminal_blocked = (visual.get("status") == "rejected_still_source"
+    terminal_blocked = (not channels["shorts"]["verified"]
+                        and visual.get("status") == "rejected_still_source"
                         and channels["cafe"].get("enrolled", False)
                         and community_handed_off)
     complete = all(x["verified"] for x in channels.values())

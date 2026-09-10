@@ -90,6 +90,19 @@ def test_legacy_community_provider_evidence_is_protected_from_reposting(tmp_path
     assert got["status"] == "legacy_provider_verify_only"
 
 
+def test_scheduled_community_receipt_is_not_reported_as_published(tmp_path):
+    root = tmp_path / "outputs/abcDEF12345-20260909"
+    write(root / "cardnews/provider/publish_receipt.json",
+          {"source_key": "abcDEF12345", "status": "scheduled", "verified": True,
+           "url": "https://youtube.com/post/Ugkx123",
+           "scheduled_at": "2026-09-26T20:00:00+09:00"})
+    got = state.community_state(root, "abcDEF12345")
+    assert got["status"] == "scheduled"
+    assert got["verified"] is False
+    assert got["provider_verified"] is True
+    assert got["protected"] is True
+
+
 def test_truncated_canonical_artifact_is_needs_review_not_overwrite_retry(tmp_path):
     root = tmp_path / "outputs/abcDEF12345-20260909"
     root.mkdir(parents=True)
@@ -99,3 +112,20 @@ def test_truncated_canonical_artifact_is_needs_review_not_overwrite_retry(tmp_pa
     assert got["needs_review"] == ["shorts/final.mp4: truncated"]
     assert got["needs_production"] is False
     assert got["complete"] is False
+
+
+def test_verified_recovery_supersedes_preserved_render_failure(tmp_path):
+    root = tmp_path / 'outputs/abcDEF12345-20260910'
+    write(tmp_path / 'outputs/cafe-publish-queue-20260823/queue.json',
+          {'entries': [{'source_key': 'abcDEF12345', 'status': 'pending'}]})
+    write(root / 'shorts/visual_validation.json', {'status': 'rejected_still_source'})
+    write(root / 'shorts/provider/journal.json', {
+        'source_key': 'abcDEF12345', 'status': 'complete',
+        'verified': {'shorts_url': 'https://youtube.com/shorts/verified', 'checks': {'source': True}}})
+    write(root / 'cardnews/provider/publish_receipt.json', {
+        'source_key': 'abcDEF12345', 'status': 'scheduled', 'verified': True,
+        'url': 'https://youtube.com/post/verified', 'scheduled_at': '2099-01-03T20:00:00+09:00'})
+    result = state.source_state(tmp_path, 'abcDEF12345')
+    assert result['handed_off'] is True
+    assert result['terminal_blocked'] is False
+    assert result['complete'] is False

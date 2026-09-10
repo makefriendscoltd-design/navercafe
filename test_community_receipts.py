@@ -1,5 +1,7 @@
 import json
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 import youtube_community_auto as community
@@ -90,3 +92,90 @@ def test_legacy_scheduled_post_absent_from_public_feed_is_never_reposted(inputs,
     monkeypatch.setattr(community, 'post_to_youtube_community', lambda *a, **k: pytest.fail('duplicate'))
     with pytest.raises(RuntimeError, match='ambiguous'):
         community.publish_verified(**inputs)
+
+
+def test_schedule_records_distinct_verified_state_and_planned_crm(inputs, monkeypatch, tmp_path):
+    slot = datetime(2099, 1, 3, 20, 0, tzinfo=ZoneInfo('Asia/Seoul'))
+    monkeypatch.setattr(community, 'PROVIDER_LOCK', tmp_path / 'provider.lock')
+    monkeypatch.setattr(community, '_schedule_inventory', lambda **kw: {
+        'scheduled': {'rows': []}, 'public': {'rows': []}})
+    monkeypatch.setattr(community, '_schedule_provider', lambda *a, **kw: {
+        'status': 'scheduled_verified', 'provider_schedule_click_count': 1,
+        'post_id': 'UgScheduled', 'url': 'https://www.youtube.com/post/UgScheduled',
+        'images': 10, 'provider_status_text': '2099. 1. 3. 20:00 예정(현지 시간)',
+        'page_reloaded': True})
+    tracked = []
+    monkeypatch.setattr(community, 'track_external_event',
+                        lambda channel, key, stage: tracked.append((channel, key, stage)) or True)
+    result = community.schedule_verified(**inputs,
+        community_url='https://www.youtube.com/channel/UCExample/posts', schedule_at=slot)
+    assert result['status'] == 'scheduled'
+    assert result['verified'] is True
+    assert result['scheduled_at'] == slot.isoformat()
+    assert tracked == [('youtube_community', KEY, 'planned')]
+    assert json.loads(inputs['receipt'].read_text())['status'] == 'scheduled'
+
+
+def test_schedule_never_retries_unresolved_provider_attempt(inputs, monkeypatch, tmp_path):
+    slot = datetime(2099, 1, 3, 20, 0, tzinfo=ZoneInfo('Asia/Seoul'))
+    monkeypatch.setattr(community, 'PROVIDER_LOCK', tmp_path / 'provider.lock')
+    inputs['receipt'].parent.mkdir(parents=True, exist_ok=True)
+    identity = {
+        'source_key': KEY,
+        'text_sha256': community.hashlib.sha256(TEXT.encode()).hexdigest(),
+        'images_sha256': [community.hashlib.sha256(Path(p).read_bytes()).hexdigest()
+                          for p in inputs['images']],
+        'status': 'reserved_schedule_verify_only',
+    }
+    inputs['receipt'].write_text(json.dumps(identity))
+    monkeypatch.setattr(community, '_schedule_inventory',
+                        lambda **kw: pytest.fail('must not inspect or retry'))
+    with pytest.raises(RuntimeError, match='unresolved provider attempt'):
+        community.schedule_verified(**inputs,
+            community_url='https://www.youtube.com/channel/UCExample/posts', schedule_at=slot)
+
+
+def test_schedule_reconciliation_locks_state_and_retries_only_failed_tracking(inputs, monkeypatch, tmp_path):
+    import fcntl
+    import hashlib
+
+    receipt = inputs['receipt']
+    receipt.parent.mkdir()
+    receipt.write_text(json.dumps({
+        'source_key': KEY, 'text_sha256': hashlib.sha256(TEXT.encode()).hexdigest(),
+        'images_sha256': [hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in inputs['images']],
+        'status': 'reserved_schedule_verify_only', 'provider_schedule_click_count': 1,
+        'scheduled_at': '2099-01-03T20:00:00+09:00'}))
+    lock_path = tmp_path / 'provider.lock'
+    monkeypatch.setattr(community, 'PROVIDER_LOCK', lock_path)
+    scans = []
+
+    def inventory(**kwargs):
+        for path in (lock_path, receipt.with_suffix('.lock')):
+            with path.open('a') as handle:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        scans.append(1)
+        return {'public': {'rows': []}, 'scheduled': {'exhausted': True, 'rows': [{
+            'text': TEXT, 'post_id': 'UgScheduled', 'image_count': 10,
+            'time': '2099. 1. 3. 20:00 예정(현지 시간)'}]}}
+
+    monkeypatch.setattr(community, '_schedule_inventory', inventory)
+    monkeypatch.setattr(community, '_schedule_provider', lambda *a, **kw: pytest.fail('duplicate schedule'))
+    attempts = []
+
+    def track(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError('tracking unavailable')
+        return True
+
+    monkeypatch.setattr(community, 'track_external_event', track)
+    kwargs = dict(inputs, community_url='https://www.youtube.com/channel/UC123/posts')
+    with pytest.raises(RuntimeError, match='tracking unavailable'):
+        community.reconcile_scheduled(**kwargs)
+    saved = json.loads(receipt.read_text())
+    assert saved['status'] == 'scheduled' and saved['fresh_inventory_query'] is True
+    assert 'page_reloaded' not in saved
+    assert community.reconcile_scheduled(**kwargs)['crm_tracked'] is True
+    assert scans == [1] and attempts == [1, 1]

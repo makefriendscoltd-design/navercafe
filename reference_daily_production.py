@@ -36,7 +36,10 @@ PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
 DAILY_LIMIT = 2
-EXPECTED_CHANNEL = "나민수 AI"
+from youtube_shorts_aside_adapter import CHANNEL_ID, CHANNEL_NAME
+
+EXPECTED_CHANNEL = CHANNEL_NAME
+COMMUNITY_URL = f"https://www.youtube.com/channel/{CHANNEL_ID}/posts"
 
 
 def _run(args: list[str], *, timeout: int = 3600) -> tuple[bool, str]:
@@ -139,6 +142,8 @@ def publish(root: Path, verdict: dict) -> dict:
         community = content_run_state.community_state(root, source_key)
         if community["verified"]:
             steps["community_publish"] = "ok"
+        elif community.get("status") == "scheduled" and community.get("provider_verified"):
+            steps["community_publish"] = f"scheduled: {community.get('scheduled_at')}"
         elif community.get("protected"):
             steps["community_publish"] = "needs_review: 기존 provider 게시물 보호"
         else:
@@ -165,10 +170,11 @@ def publish(root: Path, verdict: dict) -> dict:
             if len(images) != 10:
                 steps["community_publish"] = f"fail: 카드 {len(images)}장"
             else:
-                ok, note = _run(["youtube_community_auto.py", "--publish",
+                ok, note = _run(["youtube_community_auto.py", "--schedule-next",
                                  "--expected-channel", EXPECTED_CHANNEL, "--text-file",
                                  str(root / "cardnews/05_youtube_community_post.txt"),
                                  "--images", *images, "--source-key", root.name.rsplit("-", 1)[0],
+                                 "--community-url", COMMUNITY_URL,
                                  "--receipt", str(root / "cardnews/provider/publish_receipt.json")], timeout=1800)
                 steps["community_publish"] = "ok" if ok else f"fail: {note}"
 
