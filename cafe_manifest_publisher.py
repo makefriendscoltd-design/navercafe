@@ -275,6 +275,10 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "source_label_exact": tail.get("source_label") == EXPECTED_SOURCE_LABEL,
         "quote_count_exact": manifest.get("expected_quotes") == 5 and len(manifest.get("expected_quote_texts", [])) == 5,
         "image_count_exact": manifest.get("expected_images") == 5 and len(manifest.get("images", [])) == 5,
+        "image_files_present": len(manifest.get("images", [])) == 5 and all(
+            isinstance(relative, str) and (manifest_path.parent / relative).is_file()
+            for relative in manifest.get("images", [])
+        ),
         "cafe_local_validation_pass": cafe_local.get("status") == "pass" and cafe_local.get("source_key") == source_key,
         "notebooklm_answer_present": notebooklm["answer_present"],
         "notebooklm_provider_evidence_exact": notebooklm["provider_evidence_exact"],

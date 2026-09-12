@@ -43,6 +43,9 @@ def make_bundle(tmp_path: Path, monkeypatch) -> Path:
         },
     }
     write_json(manifest_path, manifest)
+    (cafe / "images").mkdir()
+    for relative in manifest["images"]:
+        (cafe / relative).write_bytes(b"fixture image")
     (cafe / "notebooklm").mkdir(parents=True)
     (cafe / "notebooklm/notebooklm-answer.md").write_text("검증된 NotebookLM 카페 원고", encoding="utf-8")
     write_json(
@@ -118,6 +121,18 @@ def test_validate_only_has_no_provider_or_crm_side_effect(tmp_path, monkeypatch,
     assert result["status"] == "pass"
     assert not (manifest_path.parent / "provider/13_provider_evidence.json").exists()
     assert not (manifest_path.parent / "provider/14_crm_evidence.json").exists()
+
+
+def test_validate_only_rejects_missing_image_before_provider_action(tmp_path, monkeypatch, capsys):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    (manifest_path.parent / "images/3.jpg").unlink()
+    monkeypatch.setattr("sys.argv", ["cafe_manifest_publisher.py", "--manifest", str(manifest_path), "--validate-only"])
+    with pytest.raises(SystemExit) as stopped:
+        publisher.main()
+    result = json.loads(capsys.readouterr().out)
+    assert stopped.value.code != 0
+    assert "image_files_present" in result["failures"]
+    assert not (manifest_path.parent / "provider/13_provider_evidence.json").exists()
 
 
 def test_missing_notebooklm_answer_and_provider_evidence_fail_closed(tmp_path, monkeypatch):
