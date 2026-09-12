@@ -1344,6 +1344,10 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             return false;
           };
           if(payload.ctaLinkUrl){
+            // Image insertion and the final text component can move the live
+            // caret even though the body still exists. Re-anchor it at the
+            // editor end before issuing the native clipboard paste.
+            await focusEnd();
             await p.keyboard.press('Shift+Enter');
             await p.keyboard.press('Shift+Enter');
             await sleep(120);
