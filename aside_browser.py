@@ -1427,6 +1427,20 @@ if (await pageLooksLoggedOut(p, 'naver')) {
               if(component)break;
             }
             if(!component){
+              // A prior conversion pass may already have produced this quote
+              // while the original text paragraph was removed. Reuse it when
+              // its rendered text is an exact match instead of aborting.
+              const existingQuote=await bodyFound.ctx.locator(
+                '.se-components-wrap > .se-component.se-quotation'
+              );
+              for(let quoteIndex=0;quoteIndex<await existingQuote.count();quoteIndex++){
+                const candidate=existingQuote.nth(quoteIndex);
+                const rendered=await candidate.evaluate(el=>(el.innerText||el.textContent||'')
+                  .replace(/출처 입력/g,'').replace(/\u200b/g,'').trim());
+                if(norm(rendered)===norm(heading)){component=candidate;break;}
+              }
+            }
+            if(!component){
               const paragraphDebug=await bodyFound.ctx.evaluate(()=>
                 [...document.querySelectorAll('.se-components-wrap > .se-component.se-text .se-text-paragraph')]
                   .map(el=>[...el.querySelectorAll('.__se-node')]
@@ -1435,7 +1449,12 @@ if (await pageLooksLoggedOut(p, 'naver')) {
               workflowError=`네이버 인용구로 바꿀 소제목을 찾지 못했습니다: ${heading} (문단=${JSON.stringify(paragraphDebug)})`;
               break;
             }
-            if(!paragraph){workflowError=`네이버 인용구 소제목 문단이 없습니다: ${heading}`;break;}
+            if(!paragraph){
+              if(component && await component.evaluate(el=>el.classList.contains('se-quotation'))){
+                continue;
+              }
+              workflowError=`네이버 인용구 소제목 문단이 없습니다: ${heading}`;break;
+            }
             if(!(await focusBodyParagraph(paragraph))){
               workflowError=`네이버 인용구 소제목에 포커스하지 못했습니다: ${heading}`;
               break;
