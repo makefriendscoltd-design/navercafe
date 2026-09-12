@@ -566,8 +566,13 @@ if (payload.boardName && !payload.visibleTabId) {
         }, payload.boardName);
       } catch (_) {}
     }
+    // Naver occasionally renders the landing menu links only after the page
+    // settles. If the supplied canonical Cafe URL already names a menu, use
+    // that route as a bounded fallback; the editor's exact board check below
+    // remains the final gate.
     const match = boardHref.match(/\/cafes\/(\d+)\/menus\/(\d+)/) ||
-      boardHref.match(/clubid=(\d+).*menuid=(\d+)/i);
+      boardHref.match(/clubid=(\d+).*menuid=(\d+)/i) ||
+      payload.cafeUrl.match(/\/cafes\/(\d+)\/menus\/(\d+)/);
     if (!match) workflowError = `카페 게시판 '${payload.boardName}'을 찾지 못했습니다.`;
     else writeUrl = `https://cafe.naver.com/ca-fe/cafes/${match[1]}/menus/${match[2]}/articles/write?boardType=L`;
   }
