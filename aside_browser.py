@@ -639,13 +639,21 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       await editor.loc.fill(payload.title);
     }
     let selectedBoard = '';
-    try {
-      selectedBoard = await editor.ctx.evaluate(() => {
-        const boxes=document.querySelectorAll('.FormSelectButton');
-        const button=boxes[0]?.querySelector('button');
-        return (button?.textContent||'').trim();
-      });
-    } catch (_) {}
+    // The SmartEditor board selector can hydrate after the title editor is
+    // available. Give it a short bounded window to settle before treating the
+    // placeholder as a wrong board; never proceed while it is still unknown.
+    const boardDeadline = Date.now() + 10000;
+    while (payload.boardName && Date.now() < boardDeadline) {
+      try {
+        selectedBoard = await editor.ctx.evaluate(() => {
+          const boxes=document.querySelectorAll('.FormSelectButton');
+          const button=boxes[0]?.querySelector('button');
+          return (button?.textContent||'').trim();
+        });
+      } catch (_) {}
+      if (norm(selectedBoard) === norm(payload.boardName)) break;
+      await sleep(400);
+    }
     if (payload.boardName && norm(selectedBoard) !== norm(payload.boardName)) {
       workflowError = `게시판 확인 실패: 기대 '${payload.boardName}', 현재 '${selectedBoard || '확인 불가'}'`;
     }
