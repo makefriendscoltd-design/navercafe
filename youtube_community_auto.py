@@ -77,8 +77,15 @@ def _schedule_inventory(*, channel_id: str, expected_channel: str,
 async function scan(p,scheduled){
   await sleep(2600);
   if(scheduled){
-    const found=await p.evaluate(()=>{const e=[...document.querySelectorAll('tp-yt-paper-tab,[role=tab]')]
-      .find(x=>/^(예약됨|Scheduled)$/.test((x.innerText||'').trim()));if(!e)return false;
+    // The 게시됨/예약됨/보관처리됨 strip lives in ytd-post-stream-filter-renderer's
+    // shadow root, so a light-DOM query never finds it and every scheduled read
+    // came back as a view mismatch.
+    const found=await p.evaluate(()=>{const all=[];
+      const walk=root=>{for(const el of root.querySelectorAll('tp-yt-paper-tab,[role=tab],*')){
+        if(el.tagName==='TP-YT-PAPER-TAB'||el.getAttribute('role')==='tab')all.push(el);
+        if(el.shadowRoot)walk(el.shadowRoot);}};
+      walk(document);
+      const e=all.find(x=>/^(예약됨|Scheduled)$/.test((x.innerText||'').trim()));if(!e)return false;
       if(e.getAttribute('aria-selected')!=='true'&&!e.classList.contains('iron-selected'))e.click();return true;});
     if(!found)return {status:'view_mismatch',rows:[],exhausted:false};
     await sleep(1800);
