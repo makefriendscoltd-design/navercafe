@@ -1479,8 +1479,25 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             const converted=await added.evaluate(el=>(el.innerText||el.textContent||'')
               .replace(/출처 입력/g,'').replace(/\u200b/g,'').trim());
             if(norm(converted)!==norm(heading)){
-              workflowError=`네이버 인용구 내용이 달라졌습니다: ${heading}`;
-              break;
+              // SmartEditor can retain the selected source paragraph on the
+              // first conversion. Re-select only the new quotation paragraph
+              // once and replace its contents before failing closed.
+              try {
+                const quoteParagraph=added.locator('.se-text-paragraph').first();
+                if(await quoteParagraph.count()){
+                  await quoteParagraph.click({force:true});
+                  await p.keyboard.press('End');
+                  await p.keyboard.press('Alt+Shift+ArrowUp');
+                  await p.keyboard.insertText(heading);
+                  await sleep(250);
+                }
+              } catch (_) {}
+              const corrected=await added.evaluate(el=>(el.innerText||el.textContent||'')
+                .replace(/출처 입력/g,'').replace(/\u200b/g,'').trim());
+              if(norm(corrected)!==norm(heading)){
+                workflowError=`네이버 인용구 내용이 달라졌습니다: ${heading}`;
+                break;
+              }
             }
             // On restored SmartEditor components the quotation button inserts
             // the new provider block at the selected paragraph boundary but
