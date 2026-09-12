@@ -1431,7 +1431,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
               // while the original text paragraph was removed. Reuse it when
               // its rendered text is an exact match instead of aborting.
               const existingQuote=await bodyFound.ctx.locator(
-                '.se-components-wrap > .se-component.se-quotation'
+                '.se-components-wrap > .se-component.se-quotation,.se-components-wrap > .se-section-quotation'
               );
               for(let quoteIndex=0;quoteIndex<await existingQuote.count();quoteIndex++){
                 const candidate=existingQuote.nth(quoteIndex);
@@ -1450,7 +1450,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
               break;
             }
             if(!paragraph){
-              if(component && await component.evaluate(el=>el.classList.contains('se-quotation'))){
+              if(component && await component.evaluate(el=>el.classList.contains('se-quotation')||el.classList.contains('se-section-quotation'))){
                 continue;
               }
               workflowError=`네이버 인용구 소제목 문단이 없습니다: ${heading}`;break;
@@ -1474,7 +1474,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             // converted provider component below is the authoritative check.
             await p.evaluate(async value=>await navigator.clipboard.writeText(value),heading);
             const beforeIds=await bodyFound.ctx.evaluate(() =>
-              [...document.querySelectorAll('.se-components-wrap > .se-component.se-quotation')]
+              [...document.querySelectorAll('.se-components-wrap > .se-component.se-quotation,.se-components-wrap > .se-section-quotation')]
                 .map(el=>el.id));
             let quoteButton=await findContext(p,'.se-quote-toolbar-button');
             if(!quoteButton)quoteButton=await findContext(p,'.se-insert-quotation-default-toolbar-button');
@@ -1486,7 +1486,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             const conversionEnd=Date.now()+3500;
             while(Date.now()<conversionEnd&&!added){
               await sleep(120);
-              const quotes=bodyFound.ctx.locator('.se-components-wrap > .se-component.se-quotation');
+              const quotes=bodyFound.ctx.locator('.se-components-wrap > .se-component.se-quotation,.se-components-wrap > .se-section-quotation');
               for(let quoteIndex=0;quoteIndex<await quotes.count();quoteIndex++){
                 const candidate=quotes.nth(quoteIndex);
                 const id=await candidate.getAttribute('id');
@@ -1758,12 +1758,12 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             .replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').trim();
           const visibleText=authored.replace(/\s/g,'');
           const pastedUrl=authored===ctaLinkUrl||authored===sourceUrl;
-          if(el.classList.contains('se-quotation'))return {kind:'quote',text:clean};
+          if(el.classList.contains('se-quotation')||el.classList.contains('se-section-quotation'))return {kind:'quote',text:clean};
           if(el.classList.contains('se-image'))return {kind:'image',text:''};
           if(el.classList.contains('se-text')&&visibleText&&!pastedUrl)return {kind:'text',text:authored};
           return null;
         }).filter(Boolean);
-        return {quotes:components.filter(el=>el.classList.contains('se-quotation')).length,
+        return {quotes:components.filter(el=>el.classList.contains('se-quotation')||el.classList.contains('se-section-quotation')).length,
           images:components.filter(el=>el.classList.contains('se-image')).length,
           bold:(html.match(/se-style-bold|font-weight\s*:\s*(?:bold|[6-9]00)|<(?:b|strong)\b/gi)||[]).length,
           highlight:(html.match(/background(?:-color)?\s*:/gi)||[]).length,
