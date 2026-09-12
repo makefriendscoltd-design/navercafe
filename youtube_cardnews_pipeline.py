@@ -325,7 +325,26 @@ def _gemini_text(prompt):
     return resp.text or ""
 
 
-def make_youtube_post(manuscript):
+def canonical_source_url(source_key):
+    """Return the one provider-supported source URL written into Community copy."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", source_key or ""):
+        raise ValueError("Community source identity is invalid")
+    return f"https://youtu.be/{source_key}"
+
+
+def _bind_community_source(post, source_key):
+    """Insert source provenance immediately before the owner's fixed CTA."""
+    source_url = canonical_source_url(source_key)
+    text = (post or "").strip()
+    if text.count(source_url):
+        raise RuntimeError("Community 생성 원고에 원본 URL이 이미 있어 중복 결속을 중단했습니다.")
+    if not text.endswith(YOUTUBE_FINAL_LINE):
+        raise RuntimeError("Community 원고의 고정 CTA가 없어 원본 URL을 결속할 수 없습니다.")
+    body = text[:-len(YOUTUBE_FINAL_LINE)].rstrip()
+    return f"{body}\n\n원본 영상: {source_url}\n\n{YOUTUBE_FINAL_LINE}"
+
+
+def make_youtube_post(manuscript, source_key):
     """Write the community post in the owner's fixed structure.
 
     The structure is not a suggestion: bracketed hook, four to seven intro
@@ -343,12 +362,12 @@ def make_youtube_post(manuscript):
         raise RuntimeError("Community 원고 생성 실패; 다른 원고로 자동 대체하지 않습니다.") from e
     if not text:
         raise RuntimeError("Community 원고 생성 결과가 비어 있습니다.")
-    post = sanitize_youtube_post(text)
-    validate_youtube_post(post)
+    post = _bind_community_source(sanitize_youtube_post(text), source_key)
+    validate_youtube_post(post, source_key=source_key)
     return post
 
 
-def validate_youtube_post(post):
+def validate_youtube_post(post, *, source_key=None):
     """Refuse a post that does not have the structure the owner specified."""
     text = (post or "").strip()
     problems = []
@@ -370,6 +389,13 @@ def validate_youtube_post(post):
         problems.append("결론 없음")
     if not text.rstrip().endswith(YOUTUBE_FINAL_LINE):
         problems.append("고정 마지막 문장 없음")
+    if source_key is not None:
+        source_urls = (
+            canonical_source_url(source_key),
+            f"https://www.youtube.com/watch?v={source_key}",
+        )
+        if sum(text.count(url) for url in source_urls) != 1:
+            problems.append("정확한 원본 URL 1개 없음")
     if re.search(r"\*\*|^\s*[-*]\s+|^#{1,6}\s", text, re.M):
         problems.append("마크다운 서식 잔존")
     if problems:
@@ -1067,7 +1093,7 @@ def main(argv=None):
     youtube_post = ""
     youtube_factcheck = {"status": "not_run"}
     if not args.skip_youtube_text:
-        youtube_post = make_youtube_post(manuscript)
+        youtube_post = make_youtube_post(manuscript, video_id)
         youtube_post, youtube_factcheck = factcheck_manuscript(
             youtube_post, auto.GEMINI_API_KEY
         )
@@ -1246,7 +1272,7 @@ def main(argv=None):
     )
     if args.youtube_open or youtube_publish:
         if not youtube_post:
-            youtube_post = make_youtube_post(manuscript)
+            youtube_post = make_youtube_post(manuscript, video_id)
             write_text(out_dir / "05_youtube_community_post.txt", youtube_post)
         if not card_paths:
             raise RuntimeError("YouTube 이미지 업로드를 하려면 카드뉴스 PNG가 필요합니다. --skip-cardnews를 빼고 실행하세요.")

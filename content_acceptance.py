@@ -98,7 +98,7 @@ def check_cardnews(root: Path) -> list[str]:
         problems.append("05_youtube_community_post.txt 없음")
     else:
         try:
-            validate_youtube_post(post_path.read_text(encoding="utf-8"))
+            validate_youtube_post(post_path.read_text(encoding="utf-8"), source_key=root.name.rsplit('-', 1)[0])
         except Exception as exc:
             problems.append(f"커뮤니티 본문 구조: {str(exc)[:120]}")
     return problems

@@ -137,7 +137,7 @@ def main(argv=None) -> int:
             (args.candidate / '04_cardnews_deck.json').write_text(json.dumps(deck, ensure_ascii=False, indent=2))
             # The cards are only half of the post; the community body carries the
             # owner's fixed structure and was never written on this path.
-            post = make_youtube_post(manuscript)
+            post = make_youtube_post(manuscript, manifest['source_key'])
             (args.candidate / '05_youtube_community_post.txt').write_text(post, encoding='utf-8')
             result = {'status': 'candidate_requires_semantic_and_visual_review', 'path': str(args.candidate),
                       'community_post_chars': len(post), 'provider_mutation': False}

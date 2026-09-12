@@ -117,6 +117,31 @@ def test_a_community_post_must_follow_the_owner_structure():
             pipeline.validate_youtube_post(broken)
 
 
+def test_community_generator_binds_exactly_one_canonical_source_url(monkeypatch):
+    import youtube_cardnews_pipeline as pipeline
+
+    generated = (
+        "[원본을 확인하세요] 핵심 내용 4가지를 정리했습니다.\n\n"
+        "첫 문장입니다. 둘째 문장입니다. 셋째 문장입니다.\n\n"
+        "----\n\n1. 첫 단계입니다\n\n설명입니다.\n\n"
+        "----\n\n2. 둘째 단계입니다\n\n설명입니다.\n\n"
+        "----\n\n3. 셋째 단계입니다\n\n설명입니다.\n\n"
+        "----\n\n4. 넷째 단계입니다\n\n설명입니다.\n\n"
+        "----\n\n결론\n\n지금 확인해보세요.\n\n"
+        + pipeline.YOUTUBE_FINAL_LINE
+    )
+    monkeypatch.setattr(pipeline, "_codex_text", lambda prompt: generated)
+    monkeypatch.setenv("COMMUNITY_POST_BACKEND", "codex")
+
+    post = pipeline.make_youtube_post("원문", "abcdefghijk")
+
+    assert post.count("https://youtu.be/abcdefghijk") == 1
+    assert post.index("원본 영상: https://youtu.be/abcdefghijk") < post.index(pipeline.YOUTUBE_FINAL_LINE)
+    assert pipeline.validate_youtube_post(post, source_key="abcdefghijk")["status"] == "pass"
+    with pytest.raises(RuntimeError, match="정확한 원본 URL 1개 없음"):
+        pipeline.validate_youtube_post(generated, source_key="abcdefghijk")
+
+
 def test_a_forever_locked_queue_is_not_reported_as_merely_idle():
     """`no_due_entry` hid a queue where nothing could ever be selected again."""
     from datetime import datetime
@@ -336,7 +361,7 @@ def test_acceptance_names_what_is_wrong_per_channel(tmp_path, monkeypatch):
     monkeypatch.setattr("content_lineage.validate_cardnews_origin",
                         lambda deck: {"ok": True})
     monkeypatch.setattr("youtube_cardnews_pipeline.validate_youtube_post",
-                        lambda post: {"sections": 5})
+                        lambda post, **kwargs: {"sections": 5})
 
     verdict = content_acceptance.audit(root)
     assert verdict["status"] == "fail"
