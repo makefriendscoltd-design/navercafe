@@ -55,9 +55,14 @@ def aside_available() -> bool:
 def _payload_expression(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     encoded = base64.b64encode(raw).decode("ascii")
+    chunks = ",".join(
+        "'" + encoded[at:at + 65536] + "'" for at in range(0, len(encoded), 65536)
+    )
     return (
-        "JSON.parse(new TextDecoder().decode(Uint8Array.from("
-        f"atob('{encoded}'), c => c.charCodeAt(0))))"
+        "(()=>{let s='';for(const part of [" + chunks + "])s+=atob(part);"
+        "const a=new Uint8Array(s.length);"
+        "for(let i=0;i<s.length;i++)a[i]=s.charCodeAt(i);"
+        "return JSON.parse(new TextDecoder().decode(a));})()"
     )
 
 

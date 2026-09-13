@@ -9,6 +9,18 @@ from unittest import mock
 import aside_browser
 
 
+def _payload_from(code: str) -> dict:
+    """Rebuild the payload a script carries.
+
+    It is base64 split into chunks: atob refuses to build a string longer than
+    the engine's 65534-argument limit, and one card image is already past it.
+    """
+    marker = "for(const part of ["
+    start = code.index(marker) + len(marker)
+    chunks = re.findall(r"'([A-Za-z0-9+/=]*)'", code[start:code.index("])s+=atob(part)", start)])
+    return json.loads(base64.b64decode("".join(chunks)))
+
+
 class AsideBrowserUnitTests(unittest.TestCase):
     def test_parse_result_uses_last_marker(self):
         output = (
@@ -70,8 +82,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             )
 
         code = run_repl.call_args.args[0]
-        encoded = re.search(r"atob\('([^']+)'\)", code).group(1)
-        payload = json.loads(base64.b64decode(encoded))
+        payload = _payload_from(code)
         self.assertNotIn("https://", payload["body"])
         self.assertEqual(payload["ctaLinkUrl"], "https://cafe.naver.com/westudyssat/4188")
         self.assertEqual(payload["sourceUrl"], "https://youtu.be/example")
@@ -95,8 +106,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             )
 
         code = run_repl.call_args.args[0]
-        encoded = re.search(r"atob\('([^']+)'\)", code).group(1)
-        payload = json.loads(base64.b64decode(encoded))
+        payload = _payload_from(code)
         self.assertNotIn("https://", payload["body"])
         self.assertEqual(payload["sourceUrl"], "https://youtu.be/example")
         self.assertEqual(payload["sourceLongUrl"], "https://www.youtube.com/watch?v=example")
@@ -115,8 +125,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
         )
 
         code = run_repl.call_args.args[0]
-        encoded = re.search(r"atob\('([^']+)'\)", code).group(1)
-        payload = json.loads(base64.b64decode(encoded))
+        payload = _payload_from(code)
         self.assertTrue(payload["saveDraft"])
         self.assertFalse(payload["publish"])
         self.assertIn(".btn_temp_save", code)
@@ -207,8 +216,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
 
         self.assertEqual(result["video_id"], "abcdefghijk")
         code = run_repl.call_args.args[0]
-        encoded = re.search(r"atob\('([^']+)'\)", code).group(1)
-        payload = json.loads(base64.b64decode(encoded))
+        payload = _payload_from(code)
         self.assertEqual(payload["expected"], "나민수 AI")
         self.assertEqual(payload["title"], "제목")
         self.assertEqual(base64.b64decode(payload["video"]["base64"]), b"nonzero-mp4")
