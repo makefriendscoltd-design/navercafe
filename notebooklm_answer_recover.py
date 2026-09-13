@@ -32,6 +32,8 @@ from content_production_policy import (
 NOTEBOOKS = {"shorts": SHORTS_NOTEBOOK, "cafe": CAFE_NOTEBOOK}
 
 
+PROJECT = Path(__file__).resolve().parent
+
 RECOVER_JS = r'''
 const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&answer_recover=${Date.now()}`);
 await sleep(6000);
@@ -94,6 +96,83 @@ def _anchors(stored_answer: str, *, count: int = 6, width: int = 60) -> list[str
     if len(set(picked)) != count:
         picked = [line[:width] for line in lines[-count:]]
     return picked
+
+
+def newest_attempt(project: Path, kind: str = "shorts") -> tuple[str, str]:
+    """Which source made the most recent attempt in the pinned notebook."""
+    newest = ("", "")
+    for ledger in project.glob(f"outputs/*/{kind}/notebooklm-attempt-ledger.json"):
+        try:
+            payload = json.loads(ledger.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for attempt in payload.get("attempts") or []:
+            at = str(attempt.get("updated_at") or "")
+            if at > newest[0]:
+                newest = (at, str(payload.get("sourceKey") or ""))
+    return newest
+
+
+def adopt_latest_answer(
+    source_key: str,
+    *,
+    out_dir: str | Path,
+    kind: str = "shorts",
+    project: Path | None = None,
+    account: str = ASIDE_ACCOUNT,
+    timeout: int = 240,
+) -> dict:
+    """Adopt the notebook's newest answer for an attempt that died before saving.
+
+    An attempt can die after the provider answered but before the answer was
+    written, leaving it reachable only in the DOM: recovery cannot anchor on a
+    stored copy and the absence probe correctly refuses to call it absent, so the
+    source can never be produced. Adoption is safe exactly when no other source
+    could own that answer -- when this source made the most recent attempt in the
+    notebook. It re-reads what is already there and calls no provider.
+    """
+    project = Path(project or PROJECT).resolve()
+    at, owner = newest_attempt(project, kind)
+    if owner != source_key or not at:
+        raise RuntimeError(
+            f"최신 시도가 이 원본의 것이 아니어서 노트북 최신 답변을 채택할 수 없습니다({owner or '없음'}).")
+    out = Path(out_dir).expanduser().resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    notebook = NOTEBOOKS[kind]
+    payload = {"notebookId": notebook["id"], "anchors": [],
+               "screenshotName": f"notebooklm-{source_key}-adopted-answer.png"}
+    result = run_repl(JS_COMMON + f"\nconst payload={_payload_expression(payload)};\n" + RECOVER_JS,
+                      timeout=timeout, account=account)
+    candidates = [dict(item) for item in (result.get("candidates") or [])]
+    if not candidates:
+        raise RuntimeError("공급자 DOM에서 원응답 본문을 읽지 못했습니다.")
+    selected = max(candidates, key=lambda item: int(item.get("pairIndex") or 0))
+    answer = str(selected["answer"]).strip()
+    if not answer:
+        raise RuntimeError("노트북 최신 답변이 비어 있습니다.")
+    answer_path = out / "notebooklm-answer-recovered.md"
+    answer_path.write_text(answer + "\n", encoding="utf-8")
+    evidence = {
+        "schema": "notebooklm-answer-recovery/v1",
+        "source_key": source_key, "notebook_id": notebook["id"],
+        "notebook_title": notebook["title"], "account": account,
+        "backend": "Aside CLI headless REPL",
+        "mode": "paragraph_blocks_without_citations",
+        "provenance": "adopted_latest_after_interrupted_attempt",
+        "provider_call_made": False, "source_added": False, "prompt_submitted": False,
+        "newest_attempt_at": at, "newest_attempt_source": owner,
+        "url": result.get("url"), "pair_index": selected.get("pairIndex"),
+        "pair_count": result.get("pairCount"),
+        "block_count": selected.get("blockCount"),
+        "citation_count": selected.get("citationCount"),
+        "indexed_span_count": selected.get("indexedSpanCount"),
+        "screenshot_path": result.get("screenshotPath"),
+        "recovered_answer_path": str(answer_path),
+        "recovered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    evidence_path = out / "notebooklm-answer-recovery-evidence.json"
+    evidence_path.write_text(json.dumps(evidence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return {"answer_path": str(answer_path), "evidence_path": str(evidence_path), **evidence}
 
 
 def recover_answer(
@@ -182,12 +261,23 @@ def recover_answer(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_key")
-    parser.add_argument("--stored-answer", required=True)
+    parser.add_argument("--stored-answer",
+                        help="대조할 기존 저장 원응답. --adopt-latest 를 쓰면 생략한다")
+    parser.add_argument("--adopt-latest", action="store_true",
+                        help="저장본 없이 죽은 시도의 답변을 채택한다(최신 시도가 이 원본일 때만)")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--kind", choices=sorted(NOTEBOOKS), default="shorts")
     parser.add_argument("--expect-sha256",
                         help="공급자 증거의 answer_sha256. 같은 소스 응답이 여러 개일 때 특정한다")
     args = parser.parse_args(argv)
+    if args.adopt_latest:
+        result = adopt_latest_answer(args.source_key, out_dir=args.out_dir, kind=args.kind)
+        print(f"최신 답변 채택: {result['answer_path']}")
+        print(f"증거: {result['evidence_path']}")
+        return 0
+    if not args.stored_answer:
+        parser.error("--stored-answer 또는 --adopt-latest 중 하나가 필요합니다")
+
     result = recover_answer(args.source_key, args.stored_answer,
                             out_dir=args.out_dir, kind=args.kind,
                             expect_sha256=args.expect_sha256)

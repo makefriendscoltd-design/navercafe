@@ -424,3 +424,26 @@ def test_a_refused_render_reports_why_not_a_missing_file(tmp_path, monkeypatch):
 
     problems = content_acceptance.audit(root)["channels"]["shorts"]["problems"]
     assert problems == ["원본이 거의 정지해 렌더 거부: 5/8 시점 동일"]
+
+
+def test_adopting_the_notebook_answer_needs_the_newest_attempt(tmp_path):
+    """An attempt that died after the answer arrived left it reachable only in
+    the DOM: recovery had no stored copy to anchor on and the absence probe
+    correctly refused to call it absent, so the source could never be produced.
+    Adoption is only sound when no other source could own that answer."""
+    import pytest
+
+    import notebooklm_answer_recover as recover
+
+    def ledger(source_key, at):
+        path = tmp_path / "outputs" / f"{source_key}-20260913" / "shorts"
+        path.mkdir(parents=True)
+        (path / "notebooklm-attempt-ledger.json").write_text(json.dumps(
+            {"sourceKey": source_key, "attempts": [{"updated_at": at}]}), encoding="utf-8")
+
+    ledger("F8hJUVh0jME", "2026-09-13T07:51:32+00:00")
+    ledger("ItwnA9Y0UFA", "2026-09-10T04:44:08+00:00")
+    assert recover.newest_attempt(tmp_path)[1] == "F8hJUVh0jME"
+
+    with pytest.raises(RuntimeError, match="최신 시도가 이 원본의 것이 아니어서"):
+        recover.adopt_latest_answer("ItwnA9Y0UFA", out_dir=tmp_path / "out", project=tmp_path)
