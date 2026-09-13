@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import json
+import shutil
 import subprocess
 import sys
 import traceback
@@ -158,6 +159,8 @@ def publish(root: Path, verdict: dict) -> dict:
         elif len(list(cards.glob("png/*.png"))) == 10:
             ok, note = True, "이미 렌더됨"
         else:
+            if cards.exists():
+                shutil.rmtree(cards)
             ok, note = _run(["-c", (
                 "import sys, json, pathlib; sys.path.insert(0, '.');"
                 "from youtube_cardnews_pipeline import render_cardnews_pngs;"
