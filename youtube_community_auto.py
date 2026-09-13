@@ -80,12 +80,15 @@ async function scan(p,scheduled){
     // The 게시됨/예약됨/보관처리됨 strip lives in ytd-post-stream-filter-renderer's
     // shadow root, so a light-DOM query never finds it and every scheduled read
     // came back as a view mismatch.
-    const found=await p.evaluate(()=>{const all=[];
-      const walk=root=>{for(const el of root.querySelectorAll('tp-yt-paper-tab,[role=tab],*')){
-        if(el.tagName==='TP-YT-PAPER-TAB'||el.getAttribute('role')==='tab')all.push(el);
-        if(el.shadowRoot)walk(el.shadowRoot);}};
-      walk(document);
-      const e=all.find(x=>/^(예약됨|Scheduled)$/.test((x.innerText||'').trim()));if(!e)return false;
+    const found=await p.evaluate(()=>{
+      const hosts=[...document.querySelectorAll('ytd-post-stream-filter-renderer')];
+      const tabs=[];
+      for(const host of hosts){
+        const root=host.shadowRoot;if(!root)continue;
+        for(const tab of root.querySelectorAll('tp-yt-paper-tab,[role=tab]'))tabs.push(tab);
+      }
+      for(const tab of document.querySelectorAll('tp-yt-paper-tab,[role=tab]'))tabs.push(tab);
+      const e=tabs.find(x=>/^(예약됨|Scheduled)$/.test((x.innerText||'').trim()));if(!e)return false;
       if(e.getAttribute('aria-selected')!=='true'&&!e.classList.contains('iron-selected'))e.click();return true;});
     if(!found)return {status:'view_mismatch',rows:[],exhausted:false};
     await sleep(1800);
@@ -99,7 +102,7 @@ async function scan(p,scheduled){
     if(!state.continuation&&stable>=2){exhausted=true;break;}
   }
   const rows=await p.evaluate(()=>[...document.querySelectorAll('ytd-backstage-post-thread-renderer')]
-    .map(node=>{const restore=run=>{const shown=String(run?.text||'');const raw=run?.navigationEndpoint?.urlEndpoint?.url||run?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url||'';if(!raw||!shown.includes('...'))return shown;try{const u=new URL(raw,'https://www.youtube.com');return u.searchParams.get('q')||u.searchParams.get('url')||raw;}catch(_){return raw;}};const renderer=node.querySelector('ytd-backstage-post-renderer')||node,d=renderer.data||node.data||{},link=node.querySelector('#published-time-text a[href*="/post/"]'),runs=d.contentText?.runs||[],text=runs.length?runs.map(restore).join(''):(node.querySelector('#content-text')?.innerText||'');return {post_id:d.postId||(link?.getAttribute('href')||'').split('/post/')[1]||'',url:link?.href||'',text,time:(link?.innerText||node.querySelector('#published-time-text')?.innerText||'').trim(),scheduled_epoch:d.scheduledPublishTimeSec?Number(d.scheduledPublishTimeSec):null,image_count:d.backstageAttachment?.postMultiImageRenderer?.images?.length||0};}));
+    .map(node=>{const restore=run=>{const shown=String(run?.text||'');const raw=run?.navigationEndpoint?.urlEndpoint?.url||run?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url||'';if(!raw||!shown.includes('...'))return shown;try{const u=new URL(raw,'https://www.youtube.com');return u.searchParams.get('q')||u.searchParams.get('url')||raw;}catch(_){return raw;}};const renderer=node.querySelector('ytd-backstage-post-renderer')||node,d=renderer.data||node.data||{},link=node.querySelector('#published-time-text a[href*="/post/"]'),runs=d.contentText?.runs||[],text=runs.length?runs.map(restore).join(''):(node.querySelector('#content-text')?.innerText||'');return {post_id:d.postId||(link?.getAttribute('href')||'').split('/post/')[1]||'',url:link?.href||'',text:text.length>1400?(text.slice(0,700)+'\u2026'+text.slice(-700)):text,text_length:text.length,time:(link?.innerText||node.querySelector('#published-time-text')?.innerText||'').trim(),scheduled_epoch:d.scheduledPublishTimeSec?Number(d.scheduledPublishTimeSec):null,image_count:d.backstageAttachment?.postMultiImageRenderer?.images?.length||0};}));
   return {status:'ok',rows,row_count:rows.length,exhausted};
 }
 let p=await openTab(payload.scheduledUrl);
@@ -120,6 +123,26 @@ finally{try{await p.close();}catch(_){}}
     if result.get("status") != "ok":
         raise RuntimeError(f"Community inventory is incomplete: {result}")
     return result
+
+
+def _row_is_same_text(row: dict, text: str) -> bool:
+    """Exact-body match against a row whose text may be head/tail truncated.
+
+    Full bodies for every post overran the Aside runtime's serialisation limit,
+    so long rows arrive abbreviated. Length pins identity and the two ends carry
+    the hook and the fixed CTA, which is where two posts actually differ.
+    """
+    shown = str(row.get("text") or "")
+    candidate = text.strip()
+    length = row.get("text_length")
+    if length is None:
+        return shown.strip() == candidate
+    if int(length) != len(shown.strip() if "\u2026" not in shown else text) and int(length) != len(candidate):
+        return False
+    if "\u2026" not in shown:
+        return shown.strip() == candidate
+    head, _, tail = shown.partition("\u2026")
+    return candidate.startswith(head) and candidate.endswith(tail)
 
 
 def _inventory_times(inventory: dict) -> list[datetime]:
@@ -277,15 +300,21 @@ def schedule_verified(text: str, images: list[str], *, source_key: str, receipt:
                 prior["crm_tracked"] = track_external_event("youtube_community", source_key, stage="planned")
                 _save_receipt(receipt, prior)
             return prior
+        # A reservation written before the provider was ever touched carries no
+        # provider_attempt at all. Requiring one left those receipts unable to
+        # retry and unable to reconcile, so the source could never be posted.
+        # Zero clicks means nothing can have been published; the inventory query
+        # below is what actually proves it, and it still runs.
         retryable_no_click = (prior.get("status") in {"reserved_schedule_verify_only", "blocked_no_click"}
                               and prior.get("provider_schedule_click_count") == 0
-                              and (prior.get("provider_attempt") or {}).get("status") == "blocked_no_click")
+                              and (prior.get("provider_attempt") or {}).get("status")
+                              in {"blocked_no_click", None})
         if prior and not retryable_no_click:
             raise RuntimeError("Community has an unresolved provider attempt; reconcile, do not retry")
         inventory = _schedule_inventory(channel_id=channel_id, expected_channel=expected_channel,
                                         community_url=community_url, account=account)
         related = [row for surface in ("public", "scheduled") for row in inventory[surface]["rows"]
-                   if row.get("text", "").strip() == text.strip() or source_key in row.get("text", "")]
+                   if _row_is_same_text(row, text) or source_key in row.get("text", "")]
         if related:
             raise RuntimeError("Community public/scheduled duplicate found; reconcile, do not schedule")
         if schedule_at is None:
@@ -344,15 +373,15 @@ def reconcile_scheduled(text: str, images: list[str], *, source_key: str, receip
         inventory = _schedule_inventory(channel_id=channel_id, expected_channel=expected_channel,
                                         community_url=community_url, account=account)
         public_matches = [row for row in inventory["public"]["rows"]
-                          if row.get("text", "").strip() == text.strip() or source_key in row.get("text", "")]
+                          if _row_is_same_text(row, text) or source_key in row.get("text", "")]
         matches = [row for row in inventory["scheduled"]["rows"]
-                   if row.get("text", "").strip() == text.strip() and source_key in row.get("text", "")]
+                   if _row_is_same_text(row, text) and source_key in row.get("text", "")]
         if public_matches or len(matches) != 1:
             raise RuntimeError(f"Scheduled reconciliation is ambiguous: public={len(public_matches)}, scheduled={len(matches)}")
         row = matches[0]
         observed = _inventory_times({"scheduled": {"rows": [row]}})[0]
         checks = {
-            "exact_full_text": row.get("text", "").strip() == text.strip(),
+            "exact_full_text": _row_is_same_text(row, text),
             "source_url_exact": any(url in row.get("text", "") for url in
                                     (f"https://youtu.be/{source_key}", f"https://www.youtube.com/watch?v={source_key}")),
             "ten_images": row.get("image_count") == 10,

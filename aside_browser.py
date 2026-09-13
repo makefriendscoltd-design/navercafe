@@ -2368,8 +2368,11 @@ if (await pageLooksLoggedOut(p,'youtube')) {
     if(href){p=await openTab(href);await sleep(2200);}
   }
   if(payload.expected){
-    const visibleText=await p.evaluate(()=>[document.title,document.body?.innerText||'',
-      ...[...document.querySelectorAll('[aria-label],[title]')].map(e=>(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||''))].join('\n'));
+    const visibleText=await p.evaluate(()=>{
+      const parts=[document.title,document.body?.innerText||''];
+      for(const e of document.querySelectorAll('[aria-label],[title]'))
+        parts.push((e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||''));
+      return parts.join('\n');});
     if(!visibleText.includes(payload.expected)) workflowError='활성 YouTube 채널을 확인하지 못했습니다.';
   }
   let box=workflowError ? null : await waitForContext(
