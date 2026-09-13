@@ -108,19 +108,28 @@ def test_seen_timestamps_sort_by_instant_not_offset_text():
     assert sel._date_key("2026-09-09T10:00:00+09:00") < sel._date_key("2026-09-09T02:00:00+00:00")
 
 
-def test_daily_two_reserves_one_old_retry_and_one_new_source():
+def test_new_sources_come_before_revisits():
+    """A revisit's Cafe post is already queued, so it adds nothing to the
+    schedule until that slot comes round; new sources fill the empty ones."""
     rows = [candidate(id="retryOld01", has_output=True, last_attempt="2026-09-08T10:00:00+09:00"),
             candidate(id="retryNew02", has_output=True, last_attempt="2026-09-09T10:00:00+09:00"),
             candidate(id="freshNew003", first_seen="2026-09-10", has_output=False),
             candidate(id="freshOld004", first_seen="2026-09-09", has_output=False)]
     keep, _ = sel.select(rows, limit=2)
-    assert [row["id"] for row in keep] == ["retryOld01", "freshNew003"]
+    assert [row["id"] for row in keep] == ["freshNew003", "freshOld004"]
+    # Revisits stay reachable, oldest attempt first, once the new ones run out.
+    assert [row["id"] for row in sel.select(rows)[0]][-2:] == ["retryOld01", "retryNew02"]
 
 
-def test_limit_one_prioritizes_oldest_retry():
+def test_limit_one_takes_the_newest_unproduced_source():
     rows = [candidate(id="retryOld01", has_output=True, last_attempt="2026-09-08"),
             candidate(id="freshNew003", has_output=False)]
-    assert sel.select(rows, limit=1)[0][0]["id"] == "retryOld01"
+    assert sel.select(rows, limit=1)[0][0]["id"] == "freshNew003"
+
+
+def test_revisits_are_still_selected_when_nothing_is_new():
+    rows = [candidate(id="retryOld01", has_output=True, last_attempt="2026-09-08")]
+    assert [row["id"] for row in sel.select(rows, limit=2)[0]] == ["retryOld01"]
 
 
 def test_all_four_failed_outputs_remain_retry_candidates():

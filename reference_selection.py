@@ -160,15 +160,8 @@ def select(candidates: list[dict], *, limit: int | None = None) -> tuple[list[di
                                 _date_key(c.get("first_seen"))))
     fresh.sort(key=lambda c: (_date_key(c.get("first_seen")),
                               _date_key(c.get("upload_date"))), reverse=True)
-    if limit is None:
-        selected = retries + fresh
-    elif limit == 1:
-        selected = (retries or fresh)[:1]
-    else:
-        selected = retries[:1] + fresh[:1]
-        chosen = {c["id"] for c in selected}
-        selected += [c for c in retries + fresh if c["id"] not in chosen][:limit-len(selected)]
-    return selected, drop
+    ordered = fresh + retries
+    return (ordered[:limit] if limit else ordered), drop
 
 
 def main(argv=None) -> int:
