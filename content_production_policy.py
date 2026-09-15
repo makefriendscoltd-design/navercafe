@@ -1214,11 +1214,25 @@ REQUIRED_MACHINE_GATES = (
 )
 
 
+# 믹스 게이트를 낮추기 전에 렌더된 영상은 더 엄격한 옛 이름의 게이트를 통과했다.
+# 14 LU 이상은 10.5 LU 이상을, 8 dB 이상은 5 dB 이상을 함의하므로 같은 것으로 본다.
+LEGACY_MACHINE_GATE_EQUIVALENTS = {
+    "voice_minus_bgm_at_least10_5_lu": ("voice_minus_bgm_at_least14_lu",),
+    "voice_peak_minus_sfx_peak_at_least5_db": ("voice_peak_minus_sfx_peak_at_least8_db",),
+}
+
+
+def _machine_gate_passed(gates: dict[str, Any], name: str) -> bool:
+    if gates.get(name) is True:
+        return True
+    return any(gates.get(legacy) is True for legacy in LEGACY_MACHINE_GATE_EQUIVALENTS.get(name, ()))
+
+
 def validate_machine_evidence(payload: dict[str, Any]) -> None:
     if payload.get("status") != "pass" or payload.get("failures"):
         raise ProductionPolicyError("쇼츠 머신 검증 상태가 pass가 아닙니다.")
     gates = payload.get("gates") or {}
-    missing = [name for name in REQUIRED_MACHINE_GATES if gates.get(name) is not True]
+    missing = [name for name in REQUIRED_MACHINE_GATES if not _machine_gate_passed(gates, name)]
     if missing:
         raise ProductionPolicyError("필수 쇼츠 머신 게이트 실패: " + ", ".join(missing))
     if gates.get("source_audio_mapped") is not False or gates.get("presenter_audio_mapped") is not False:
