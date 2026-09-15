@@ -68,7 +68,7 @@ def produce(source_key: str, today: str) -> dict:
                 and (root / "shorts/production_manifest.json").is_file())):
         ok, note = True, "기존 원고 재사용"
     else:
-        ok, note = _run(["shorts_new_prepare.py", source_key])
+        ok, note = _run(["shorts_new_prepare.py", "--", source_key])  # "-"로 시작하는 video ID 보호
     steps["shorts_prepare"] = "ok" if ok else f"fail: {note}"
     if ok and not (root / "shorts/final.mp4").is_file():
         ok, note = _run(["shorts_v7_builder.py", "--root", str(root / "shorts"), "--render"])
@@ -88,7 +88,7 @@ def produce(source_key: str, today: str) -> dict:
     if (root / "cafe/06_cafe_manifest.json").is_file():
         steps["cafe_candidate"] = "ok"
     elif ok:
-        ok, note = _run(["cafe_new_prepare.py", source_key])
+        ok, note = _run(["cafe_new_prepare.py", "--", source_key])
         steps["cafe_candidate"] = "ok" if ok else f"fail: {note}"
     if (root / "cardnews/04_cardnews_deck.json").is_file():
         steps["cardnews"] = "ok"
