@@ -33,7 +33,7 @@ from shorts_video import normalize_shorts_title, validate_minsoo_voice_artifact,
 
 SHORTS_ENDING_RE = re.compile(
     r"\d+분 짜리 영상 내용을 모두 정리했습니다\.\s*"
-    r"이 자료 궁금하신 분들은 채널을 구독후 프로필 링크를 확인하세요\.$"
+    r"이 자료 궁금하신 분들은 댓글에 [가-힣]{2} 남겨주세요\.$"
 )
 
 

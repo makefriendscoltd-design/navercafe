@@ -83,6 +83,30 @@ HEAD_COPY_STOP_WORDS = {
     "이거", "그냥", "진짜", "오늘", "지금", "방법", "하는법", "전략", "충분",
 }
 
+DEFAULT_COMMENT_KEYWORD = "자료"
+COMMENT_KEYWORD_RE = re.compile(r"^[가-힣]{2}$")
+COMMENT_KEYWORD_PARTICLE_RE = re.compile(
+    r"(?:으로|에서|에게|부터|까지|처럼|보다|이랑|하고|은|는|이|가|을|를|도|로|의|와|과|만|요)$"
+)
+# 2글자여도 명사가 아니라 조사·어미·부사·대명사·CTA 상투어인 것들.
+COMMENT_KEYWORD_STOP_WORDS = HEAD_COPY_STOP_WORDS | {
+    "이것", "저것", "그것", "이런", "저런", "그런", "어떤", "무슨", "여기", "거기", "저기",
+    "우리", "여러", "모두", "모든", "전부", "정말", "바로", "아주", "매우", "너무", "완전",
+    "이제", "이미", "아직", "항상", "계속", "결국", "물론", "먼저", "이후", "이전", "다음",
+    "다시", "만약", "그래", "그럼", "근데", "그냥", "역시", "제일", "가장", "거의", "조금",
+    "하나", "둘째", "셋째", "넷째", "다섯", "여섯", "일곱", "첫째", "마지막", "번째",
+    "때문", "경우", "정도", "이유", "통해", "위해", "대해", "관해", "사실", "대신",
+    "남자", "여자", "사람", "분들", "여러분", "대표", "민수", "구독", "채널", "댓글",
+    "영상", "내용", "정리", "자료", "링크", "무료", "가이드", "프로", "미쳤", "대박",
+    "천재", "고수", "한번", "한다", "된다", "있다", "없다", "합니", "입니", "됩니",
+    "습니", "니다", "하면", "되면", "해서", "하고", "하는", "되는", "이고", "이며",
+    "오늘", "내일", "어제", "올해", "작년", "시간", "분량", "부분", "전체", "기본",
+    "가능", "필요", "사용", "이용", "확인", "생각", "느낌", "얘기", "이야기", "말씀",
+    # 어미 없이 2글자로 남는 동사 어간.
+    "만들", "바꾸", "보여", "넣어", "쓰는", "쓰면", "해봐", "해요", "하자", "되게",
+}
+COMMENT_KEYWORD_VERB_ENDINGS = tuple("면는게서고다까죠요니데나든야네며지어아워줘봐꿔려")
+
 ATTEMPT_LEDGER_SCHEMA = "shorts-notebook-attempt-ledger/v1"
 
 
@@ -496,10 +520,63 @@ def duration_minutes(seconds: float) -> int:
     return max(1, int(math.floor(float(seconds) / 60 + 0.5)))
 
 
-def fixed_cta(minutes: int) -> str:
+def validate_comment_keyword(value: str) -> str:
+    """Comment keyword must be exactly two Hangul characters."""
+    keyword = (value or "").strip()
+    if not COMMENT_KEYWORD_RE.match(keyword):
+        raise RuntimeError("댓글 유도 키워드는 한글 2글자여야 합니다.")
+    return keyword
+
+
+def _comment_keyword_candidates(text: str) -> list[str]:
+    candidates = []
+    for token in re.findall(r"[가-힣]+", text or ""):
+        if len(token) < 2:
+            continue
+        stripped = COMMENT_KEYWORD_PARTICLE_RE.sub("", token) if len(token) > 2 else token
+        if len(stripped) != 2:
+            continue
+        if stripped in COMMENT_KEYWORD_STOP_WORDS:
+            continue
+        if stripped.endswith(COMMENT_KEYWORD_VERB_ENDINGS):
+            continue
+        candidates.append(stripped)
+    return candidates
+
+
+def derive_comment_keyword(
+    script: str,
+    headline: str = "",
+    *,
+    override: str | None = None,
+) -> str:
+    """Pick the video's own two-character keyword for the comment CTA.
+
+    Headline tokens count triple because the headline is the video's promise.
+    Ties go to the token that appears first in the script. Falls back to
+    DEFAULT_COMMENT_KEYWORD when nothing usable is found. Deterministic: the
+    same body and headline always yield the same keyword.
+    """
+    if override:
+        return validate_comment_keyword(override)
+    scores: dict[str, float] = {}
+    first_seen: dict[str, int] = {}
+    for index, token in enumerate(_comment_keyword_candidates(script)):
+        scores[token] = scores.get(token, 0) + 1
+        first_seen.setdefault(token, index)
+    for token in _comment_keyword_candidates(headline):
+        scores[token] = scores.get(token, 0) + 3
+        first_seen.setdefault(token, 10_000)
+    if not scores:
+        return DEFAULT_COMMENT_KEYWORD
+    return min(scores, key=lambda token: (-scores[token], first_seen[token]))
+
+
+def fixed_cta(minutes: int, keyword: str = DEFAULT_COMMENT_KEYWORD) -> str:
+    keyword = validate_comment_keyword(keyword)
     return (
         f"{minutes}분 짜리 영상 내용을 모두 정리했습니다.\n\n"
-        "이 자료 궁금하신 분들은 채널을 구독후 프로필 링크를 확인하세요."
+        f"이 자료 궁금하신 분들은 댓글에 {keyword} 남겨주세요."
     )
 
 
@@ -520,8 +597,8 @@ def validate_intro_promise(script: str) -> None:
         raise RuntimeError("도입은 150자 이내의 강한 훅과 5가지 방법 예고로 끝나야 합니다.")
 
 
-def finalize_script(script: str, minutes: int) -> str:
-    return f"{keep_through_fifth(script)}\n\n{fixed_cta(minutes)}"
+def finalize_script(script: str, minutes: int, keyword: str = DEFAULT_COMMENT_KEYWORD) -> str:
+    return f"{keep_through_fifth(script)}\n\n{fixed_cta(minutes, keyword)}"
 
 
 def cta_only_transform_report(
@@ -529,12 +606,13 @@ def cta_only_transform_report(
     final: str,
     minutes: int,
     *,
+    keyword: str = DEFAULT_COMMENT_KEYWORD,
     provider_answer: str | None = None,
     citation_stripped_answer: str | None = None,
 ) -> dict:
     """Prove that the NotebookLM body was preserved and only its CTA changed."""
     expected_body = keep_through_fifth(script)
-    expected_final = f"{expected_body}\n\n{fixed_cta(minutes)}"
+    expected_final = f"{expected_body}\n\n{fixed_cta(minutes, keyword)}"
     if final != expected_final:
         raise RuntimeError("NotebookLM 원고 본문이 CTA 교체 외에 변경되었습니다.")
     provider = str(provider_answer if provider_answer is not None else script)
@@ -559,6 +637,8 @@ def cta_only_transform_report(
         "content_rewrite_applied": False,
         "removed_notebooklm_cta": True,
         "fixed_cta_applied": True,
+        "cta_style": "comment_keyword",
+        "comment_keyword": keyword,
         "body_sha256_before": body_hash,
         "body_sha256_after": body_hash,
         "provider_answer_sha256": _text_sha256(provider),
@@ -650,6 +730,7 @@ def fetch(
     evidence_dir: str | Path | None = None,
     attempt_ledger_path: str | Path | None = None,
     preserve_authorized_wording: bool = False,
+    comment_keyword: str | None = None,
 ) -> tuple[str, str, int, str, dict, list[str]]:
     source_key = _video_id(url)
     cfg, _unused_api_key = load_shorts_config()
@@ -701,11 +782,13 @@ def fetch(
             fact_verifications=load_fact_verifications(evidence_dir),
         )
         minutes = duration_minutes(get_video_duration(url))
-        final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
+        keyword = derive_comment_keyword(adopted_body, head_copies[0], override=comment_keyword)
+        final = f"{adopted_body}\n\n{fixed_cta(minutes, keyword)}"
         transform = cta_only_transform_report(
             script,
             final,
             minutes,
+            keyword=keyword,
             provider_answer=provider_answer,
             citation_stripped_answer=citation_stripped_answer,
         )
@@ -738,6 +821,7 @@ def recover(
     evidence_dir: str | Path | None = None,
     attempt_ledger_path: str | Path | None = None,
     preserve_authorized_wording: bool = False,
+    comment_keyword: str | None = None,
 ) -> tuple[str, str, int, str, dict, list[str], dict]:
     """Reuse an answer the provider already returned, without a new provider call.
 
@@ -774,11 +858,13 @@ def recover(
         fact_verifications=load_fact_verifications(evidence_dir),
     )
     minutes = duration_minutes(get_video_duration(url))
-    final = f"{adopted_body}\n\n{fixed_cta(minutes)}"
+    keyword = derive_comment_keyword(adopted_body, head_copies[0], override=comment_keyword)
+    final = f"{adopted_body}\n\n{fixed_cta(minutes, keyword)}"
     transform = cta_only_transform_report(
         script,
         final,
         minutes,
+        keyword=keyword,
         provider_answer=provider_answer,
         citation_stripped_answer=citation_stripped_answer,
     )
@@ -801,12 +887,16 @@ def recover(
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="NotebookLM 쇼츠 대본 5번까지 + 고정 CTA")
+    parser = argparse.ArgumentParser(description="NotebookLM 쇼츠 대본 5번까지 + 댓글 유도 CTA")
     parser.add_argument("--url", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--raw-out")
     parser.add_argument("--headline-out")
     parser.add_argument("--evidence-dir")
+    parser.add_argument(
+        "--comment-keyword",
+        help="댓글 유도 키워드(한글 2글자). 생략하면 대본과 헤드카피에서 자동 추출",
+    )
     parser.add_argument(
         "--preserve-authorized-wording",
         action="store_true",
@@ -846,12 +936,14 @@ def main(argv=None) -> int:
             json.loads(Path(args.recovery_evidence).expanduser().resolve().read_text(encoding="utf-8")),
             evidence_dir=args.evidence_dir,
             preserve_authorized_wording=args.preserve_authorized_wording,
+            comment_keyword=args.comment_keyword,
         )
     else:
         script, chosen, minutes, raw, transform, head_copies = fetch(
             args.url,
             evidence_dir=args.evidence_dir,
             preserve_authorized_wording=args.preserve_authorized_wording,
+            comment_keyword=args.comment_keyword,
         )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -879,7 +971,10 @@ def main(argv=None) -> int:
     print(f"노트북 포맷: {chosen or '표기 없음'}")
     print("최종 헤드카피: " + " / ".join(head_copy_lines(head_copies[0])))
     print(f"원고 변환: {transform.get('status', '확인 필요')}")
-    print(f"원본 영상 길이: {minutes}분 / 5번째 항목까지 사용 / 고정 CTA 적용")
+    print(
+        f"원본 영상 길이: {minutes}분 / 5번째 항목까지 사용 / "
+        f"댓글 유도 CTA 적용 (키워드: {transform.get('comment_keyword')})"
+    )
     print(f"쇼츠 나레이션 저장: {out_path}")
     return 0
 

@@ -1128,6 +1128,7 @@ def main(argv=None):
                     "source_minutes": shorts_minutes,
                     "headline": shorts_headline,
                     "headline_candidates": shorts_head_copies,
+                    "comment_keyword": shorts_factcheck.get("comment_keyword"),
                     "factcheck": shorts_factcheck,
                 },
                 ensure_ascii=False,

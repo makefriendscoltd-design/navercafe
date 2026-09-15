@@ -319,12 +319,12 @@ def test_keeps_through_fifth_and_replaces_sixth_and_old_cta():
 
 이 영상을 정리했습니다.
 자료가 궁금하신 분들은 구독하세요."""
-    result = shorts.finalize_script(original, 23)
+    result = shorts.finalize_script(original, 23, "노션")
     assert "다섯째, 다섯" in result
     assert "여섯째" not in result
     assert result.endswith(
         "23분 짜리 영상 내용을 모두 정리했습니다.\n\n"
-        "이 자료 궁금하신 분들은 채널을 구독후 프로필 링크를 확인하세요."
+        "이 자료 궁금하신 분들은 댓글에 노션 남겨주세요."
     )
 
 
@@ -1136,7 +1136,9 @@ def test_fetch_preserves_v16_notebooklm_body_and_appends_fixed_cta(monkeypatch, 
     assert raw == answer
     assert minutes == 12
     assert final.startswith("이 프로그램 대박입니다. 클로드가 반복 업무를 처리하는 흐름입니다.")
-    assert final.endswith(shorts.fixed_cta(12))
+    assert "프로필 링크" not in final
+    assert final.endswith(shorts.fixed_cta(12, transform["comment_keyword"]))
+    assert shorts.COMMENT_KEYWORD_RE.match(transform["comment_keyword"])
     assert transform["status"] == "cta_only"
     assert transform["body_sha256_before"] == transform["body_sha256_after"]
     assert transform["parser_normalized_body_sha256"]
@@ -1167,14 +1169,57 @@ def test_fifth_item_paragraphs_are_preserved_until_an_explicit_cta():
 추가 설명도 본문입니다.
 
 댓글에 자료 남겨주세요. 무료 가이드를 보내드립니다."""
-    result = shorts.finalize_script(original, 17)
+    result = shorts.finalize_script(original, 17, "코드")
     assert "두 번째 설명입니다." in result
     assert "추가 설명도 본문입니다." in result
     assert "무료 가이드" not in result
     assert result.endswith(
         "17분 짜리 영상 내용을 모두 정리했습니다.\n\n"
-        "이 자료 궁금하신 분들은 채널을 구독후 프로필 링크를 확인하세요."
+        "이 자료 궁금하신 분들은 댓글에 코드 남겨주세요."
     )
+
+
+def test_comment_keyword_must_be_two_hangul_characters():
+    for bad in ("", "자", "자료실", "AI", "자 료", "GPT"):
+        with pytest.raises(RuntimeError):
+            shorts.fixed_cta(10, bad)
+    assert shorts.fixed_cta(10, "노션").endswith("댓글에 노션 남겨주세요.")
+
+
+def test_comment_keyword_is_derived_from_the_video_itself():
+    script = (
+        "이 프로그램 대박입니다.\n"
+        "노션을 자동으로 정리하는 흐름입니다.\n"
+        "첫째, 노션에 회의록을 넣습니다.\n"
+        "둘째, 클로드가 노션을 읽고 정리합니다.\n"
+        "셋째, 결과를 카페에 올립니다."
+    )
+    assert shorts.derive_comment_keyword(script) == "노션"
+    # 헤드카피 단어는 3배 가중 — 본문에 한 번만 나와도 헤드카피에 있으면 이긴다.
+    assert shorts.derive_comment_keyword(script, "카페 글쓰기/이제 자동입니다") == "카페"
+    # 수동 지정은 그대로 쓰되 2글자 규칙은 지킨다.
+    assert shorts.derive_comment_keyword(script, override="수익") == "수익"
+    with pytest.raises(RuntimeError):
+        shorts.derive_comment_keyword(script, override="수익화")
+
+
+def test_comment_keyword_skips_particles_verbs_and_cta_words():
+    script = "이 남자 미쳤습니다. 정말 그냥 하면 됩니다. 영상 내용 정리 자료 구독 댓글 채널. 만들고 바꿔요."
+    assert shorts.derive_comment_keyword(script) == shorts.DEFAULT_COMMENT_KEYWORD
+    assert shorts.derive_comment_keyword("도구를 도구로 도구는") == "도구"
+
+
+def test_cta_report_records_comment_keyword():
+    original = (
+        "이 남자 미쳤습니다.\n\n첫째, 하나\n\n둘째, 둘\n\n셋째, 셋\n\n"
+        "넷째, 넷\n\n다섯째, 다섯"
+    )
+    final = shorts.finalize_script(original, 9, "도구")
+    report = shorts.cta_only_transform_report(original, final, 9, keyword="도구")
+    assert report["cta_style"] == "comment_keyword"
+    assert report["comment_keyword"] == "도구"
+    with pytest.raises(RuntimeError):
+        shorts.cta_only_transform_report(original, final, 9, keyword="노션")
 
 
 @pytest.mark.parametrize(
@@ -1360,8 +1405,9 @@ def test_promotional_asset_input_is_still_a_cta_instruction():
 
 def test_fixed_shorts_cta_never_trips_its_own_boundary_gate():
     """The appended fixed CTA must not be read as a source CTA demonstration."""
-    cta = shorts.fixed_cta(12)
-    assert "구독" in cta and "프로필" in cta
+    cta = shorts.fixed_cta(12, "노션")
+    assert "댓글에 노션 남겨주세요" in cta
+    assert "구독" not in cta and "프로필" not in cta
     for sentence in cta.splitlines():
         if sentence.strip():
             assert not policy._is_cta_or_action_instruction_sentence(sentence)

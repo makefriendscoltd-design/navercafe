@@ -66,7 +66,7 @@ NotebookLM과 카드뉴스 통합 경로는 `.venv312`를 사용한다. 로컬 `
 | 포스팅 | `post_to_naver_cafe()` | 기본 Aside CLI, 선택적 Selenium fallback |
 | YouTube 커뮤니티 | `youtube_community_auto.py` | Aside로 본문/이미지 입력, `--publish`일 때만 게시 |
 | 첫 발행 승인 | `telegram_publish_approval.py` | 댓글봇 보고방과 분리된 `@ccida_bot` 개인 채팅에서 검수 후 카페·YouTube 발행 |
-| 쇼츠 대본 | `notebooklm_shorts.py` | 전용 노트북 대본의 5번째 항목까지 + 영상 분 수 CTA |
+| 쇼츠 대본 | `notebooklm_shorts.py` | 전용 노트북 대본의 5번째 항목까지 + 영상 분 수·댓글 유도 CTA(`댓글에 OO 남겨주세요`, OO는 대본에서 뽑은 한글 2글자) |
 | 쇼츠 영상 | `shorts_video.py` | 원본 프레임·한국어 내레이션·자막으로 1080x1920 MP4 생성/검증 |
 | 쇼츠 업로드 | `aside_browser.upload_youtube_short()` | Aside headless로 Studio 업로드 후 video ID/Shorts URL 확인 |
 
