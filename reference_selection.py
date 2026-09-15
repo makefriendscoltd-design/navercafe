@@ -44,10 +44,35 @@ ROUNDUP_TITLE = re.compile(
 # ordered method in it to turn into five steps.
 PODCAST_TITLE = re.compile(r"\bEp(?:isode)?\.?\s*\d+\b|\bPodcast\b", re.I)
 KOREAN = re.compile(r"[가-힣]")
+# 스페인어·포르투갈어·독일어 등 라틴 악센트, 일본어·중국어, 키릴·태국·아랍 문자.
+# 이 채널은 영어 원본을 한국어로 옮기므로 그 밖의 언어는 다루지 않는다.
+NON_ENGLISH_TITLE = re.compile(
+    r"[¿¡áéíóúñüàèìòùâêîôûãõçäöß]|[\u3040-\u30ff\u4e00-\u9fff\u0400-\u04ff\u0e00-\u0e7f\u0600-\u06ff]",
+    re.I,
+)
 # Long enough to carry five distinct steps, short enough that five of them are
 # the substance rather than a thin skim of a course.
 MIN_MINUTES = 8
 MAX_MINUTES = 120
+
+
+# 악센트 없는 스페인어·포르투갈어·프랑스어·독일어·이탈리아어 제목용. 강한 단어 하나
+# 또는 기능어 두 개면 영어 제목이 아니라고 본다("LA", "con" 같은 영어 충돌은 한 개로는 안 걸린다).
+NON_ENGLISH_STRONG = re.compile(
+    r"\b(?:curso|gratis|gratuit|kostenlos|grátis|aplicaciones|herramientas|ferramentas|"
+    r"strumenti|outils|dinero|ganar|ganhar|guadagnare|tutorial\s+completo|inteligencia\s+artificial|"
+    r"intelligence\s+artificielle|künstliche\s+intelligenz)\b", re.I)
+NON_ENGLISH_WEAK = re.compile(
+    r"\b(?:de|del|el|los|las|para|que|una|und|mit|für|avec|pour|como|wie|"
+    r"nuevo|nueva|novo|nova|nouveau|nouvelle|neue|neuer)\b", re.I)
+
+
+def _non_english_title(title: str) -> bool:
+    if NON_ENGLISH_TITLE.search(title):
+        return True
+    if NON_ENGLISH_STRONG.search(title):
+        return True
+    return len(NON_ENGLISH_WEAK.findall(title)) >= 2
 
 
 def rejection_reason(candidate: dict) -> str | None:
@@ -66,6 +91,8 @@ def rejection_reason(candidate: dict) -> str | None:
         return "팟캐스트 회차"
     if KOREAN.search(title) or KOREAN.search(channel):
         return "이미 한국어 원본"
+    if _non_english_title(title):
+        return "비영어권 원본"
     if seconds is None and (minutes is None or int(minutes) <= 0):
         return "영상 길이 미확인"
     seconds = int(seconds) if seconds is not None else int(minutes) * 60

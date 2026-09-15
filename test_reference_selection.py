@@ -23,12 +23,26 @@ def test_a_practitioner_walkthrough_is_what_this_channel_republishes():
     ({"title": "The 26 Best AI Tools of 2026 — Ranked"}, "툴 랭킹"),
     ({"title": "Exciting AI Updates Weekly - August 21, 2026"}, "툴 랭킹"),
     ({"title": "2026 클로드 올인원 무료 강의"}, "한국어"),
+    ({"title": "Curso de IA Gratis: El Nuevo ChatGPT - Aplicaciones"}, "비영어권"),
+    ({"title": "Cómo ganar dinero con ChatGPT"}, "비영어권"),
+    ({"title": "ChatGPTで業務自動化する方法"}, "비영어권"),
+    ({"title": "Как заработать с AI"}, "비영어권"),
     ({"minutes": 600}, "코스 덤프"),
     ({"minutes": 3}, "짧음"),
 ])
 def test_sources_that_do_not_fit_are_dropped_with_a_reason(overrides, reason):
     got = sel.rejection_reason(candidate(**overrides))
     assert got and reason in got
+
+
+@pytest.mark.parametrize("title", [
+    "Claude Code Just Got Its Biggest Design Upgrade Of The Year",
+    "I Let Claude Replace My Marketing Team. Here's What Happened",
+    "Set Up a Personal Hermes in 14 Mins (no VPS or mac mini)",
+    "The LA Startup Using AI to Con Nobody",
+])
+def test_english_titles_are_not_mistaken_for_foreign_ones(title):
+    assert sel.rejection_reason(candidate(title=title)) is None
 
 
 def test_a_long_but_workable_source_is_kept():

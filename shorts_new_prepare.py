@@ -139,7 +139,19 @@ def prepare(source_key: str) -> dict:
 
     import shorts_v7_builder as builder
 
+    # The comment CTA keyword is decided once, by notebooklm_shorts, and recorded
+    # in cta-transform.json; the builder and the lineage gate both read it from
+    # that bound file rather than re-deriving it.
+    transform_path = root / "notebooklm/cta-transform.json"
+    if not transform_path.is_file():
+        raise RuntimeError("댓글 CTA 변환 증거(cta-transform.json)가 없습니다.")
+    transform = json.loads(transform_path.read_text(encoding="utf-8"))
+    if transform.get("status") != "cta_only" or transform.get("cta_style") != "comment_keyword":
+        raise RuntimeError("댓글 CTA 변환 증거가 comment_keyword 계약과 다릅니다.")
     builder.SOURCE_MINUTES = int(match[1])
+    builder.COMMENT_KEYWORD = scripts.validate_comment_keyword(
+        str(transform.get("comment_keyword") or "")
+    )
     sections = builder.split_seven_sections(script)
 
     answer_path = root / "notebooklm/notebooklm-answer-recovered.md"
@@ -164,6 +176,7 @@ def prepare(source_key: str) -> dict:
                 "stored_answer": binding(root / "notebooklm/notebooklm-answer.md")}
                if recovery_path.exists() else {}),
             "script": binding(script_path), "source_minutes": int(match[1]),
+            "cta_transform": binding(transform_path),
             **({"fact_verifications": binding(fact_path)} if fact_path.exists() else {}),
             "wording_authorization": {
                 "scope": "preserve_original_absolute_wording", "source_key": source_key,
