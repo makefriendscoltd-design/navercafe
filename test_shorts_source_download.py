@@ -39,7 +39,14 @@ def test_download_prefers_18_but_allows_mp4_fallback(monkeypatch, tmp_path):
 
     assert captured["format"].startswith("18/")
     assert captured["merge_output_format"] == "mp4"
-    assert "extractor_args" not in captured
+    # web_embedded leads because it survives the bot-check rate limit, but
+    # yt-dlp's own selection must stay as the fallback and mweb must never be
+    # pinned: alone it drops the adaptive formats and leaves nothing to fetch.
+    clients = captured["extractor_args"]["youtube"]["player_client"]
+    assert clients[0] == "web_embedded" and "default" in clients
+    assert "mweb" not in clients
+    # A burst of requests is what earns the rate limit, so the sleeps stay.
+    assert captured["sleep_interval_requests"] >= 1 and captured["max_sleep_interval"] >= 1
     assert video.read_bytes() == b"downloaded-video"
     evidence = json.loads((tmp_path / "source_download_evidence.json").read_text())
     assert evidence["selected_format_id"] == "137+140"
