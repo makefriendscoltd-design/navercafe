@@ -11,7 +11,6 @@ Studio, reads the CRM ledger, or invokes the tracker.
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
@@ -118,7 +117,13 @@ def _default_aside_runner() -> AsideRunner:
     """Resolve the approved runner lazily so dry validation has zero access."""
 
     try:
-        from aside_browser import JS_COMMON, _payload_expression, resolve_aside_cli, run_repl
+        from aside_browser import (
+            JS_COMMON,
+            _payload_expression,
+            resolve_aside_cli,
+            run_repl,
+            run_repl_with_staged_upload,
+        )
     except Exception as exc:  # pragma: no cover - exercised through injected failure
         raise LiveDependencyError("Aside CLI integration module is unavailable") from exc
     binary = resolve_aside_cli()
@@ -128,6 +133,46 @@ def _default_aside_runner() -> AsideRunner:
         )
 
     def run(body: str, payload: Mapping[str, Any], *, cwd: Path, timeout: int) -> Mapping[str, Any]:
+        transfer = payload.get("file_transfer")
+        if isinstance(transfer, Mapping):
+            if transfer.get("transport") != "aside-session-path/v1":
+                raise LiveDependencyError("unknown Aside file transfer contract")
+            source_path = transfer.get("source_path")
+            size = transfer.get("size")
+            digest = transfer.get("sha256")
+            if (
+                not isinstance(source_path, str)
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or size < 1
+                or not isinstance(digest, str)
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise LiveDependencyError("Aside file transfer binding is invalid")
+            provider_payload = dict(payload)
+            provider_payload.pop("file_transfer", None)
+
+            def build(relative_path: str) -> str:
+                final_payload = dict(provider_payload)
+                final_payload["file"] = {
+                    "name": "final.mp4",
+                    "path": relative_path,
+                    "size": size,
+                    "sha256": digest,
+                }
+                return _compose_provider_javascript(
+                    JS_COMMON, _payload_expression(final_payload), body
+                )
+
+            return run_repl_with_staged_upload(
+                build,
+                source_path,
+                expected_size=size,
+                expected_sha256=digest,
+                cwd=cwd,
+                timeout=timeout,
+                account=ACCOUNT,
+            )
         code = _compose_provider_javascript(
             JS_COMMON,
             _payload_expression(dict(payload)),
@@ -242,10 +287,10 @@ INVENTORY_JS = INVENTORY_SEED_JS
 
 
 ATTACH_JS = r"""
-let p=null,attachActions=0,success=false;const compact=s=>(s||'').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').replace(/\u00A0/g,' ').replace(/\r\n?/g,'\n').replace(/\s+/g,'');
+let p=null,attachActions=0,success=false,attachmentStage='before_open';const compact=s=>(s||'').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').replace(/\u00A0/g,' ').replace(/\r\n?/g,'\n').replace(/\s+/g,'');
 const waitContext=async()=>{const end=Date.now()+30000;let state={};while(Date.now()<end){state=await p.evaluate(({channel,channelId})=>{const vis=e=>{if(!e)return false;const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';},host=location.hostname,path=location.pathname+location.search,signinRedirect=host==='accounts.google.com'||(host==='studio.youtube.com'&&/(?:^|\/)(?:signin|login)(?:\/|$)/i.test(path)),lines=(document.body?.innerText||'').split('\n').map(x=>x.trim()),channelHrefIds=[...new Set([...document.querySelectorAll('a[href*="/channel/"]')].map(a=>((a.getAttribute('href')||'').match(/\/channel\/(UC[A-Za-z0-9_-]{22})/)||[])[1]).filter(Boolean))],channelIdExact=channelHrefIds.length===1&&channelHrefIds[0]===channelId,channelVerified=lines.includes(channel)||channelIdExact,avatars=[...document.querySelectorAll('#avatar-btn,button[aria-label*="계정"],button[aria-label*="Account"]')].filter(vis);return{host,path,signinRedirect,channelExact:lines.includes(channel),channelIdExact,channelHrefIds,avatarCount:avatars.length,ready:host==='studio.youtube.com'&&!signinRedirect&&channelVerified&&avatars.length===1};},{channel:payload.channel,channelId:payload.channel_id});if(state.ready||state.signinRedirect)break;await sleep(300);}if(state.signinRedirect)throw new Error('login-required');if(!state.ready)throw new Error(`studio-context-unverified:${JSON.stringify(state)}`);};
 const exact=async(root,selector,label,{mustBeVisible=true}={})=>{const loc=root.locator(selector),count=await loc.count();if(count!==1)throw new Error(`${label}-cardinality:${count}`);if(mustBeVisible&&!await loc.isVisible())throw new Error(`${label}-not-visible`);return loc;};
-try{p=await openTab(`https://studio.youtube.com/?shorts_upload_session=${payload.session_marker}`);await waitContext();const clickUpload=()=>p.evaluate(()=>{const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};const found=[...document.querySelectorAll('button,[role="button"],ytcp-button,ytcp-icon-button,tp-yt-paper-item')].filter(e=>vis(e)&&(e.id==='upload-icon'||/동영상 업로드|Upload videos/i.test((e.getAttribute('aria-label')||'')+' '+(e.innerText||''))));if(found.length!==1)return false;found[0].click();return true;});let opened=await clickUpload();if(!opened){const createSet=p.getByText(/^(만들기|Create)$/),createCount=await createSet.count();if(createCount!==1||!await createSet.isVisible())throw new Error(`create-control-cardinality:${createCount}`);await createSet.click();await sleep(400);opened=await clickUpload();}if(!opened)throw new Error('upload-control-missing');await sleep(700);const input=await exact(p,'input[type="file"][name="Filedata"],input[type="file"]','file-input',{mustBeVisible:false});if(payload.file.name!=='final.mp4'||!payload.file.base64)throw new Error('candidate-payload-invalid');attachActions++;await input.setInputFiles([{name:payload.file.name,mimeType:'video/mp4',buffer:Buffer.from(payload.file.base64,'base64')}]);const dialogEnd=Date.now()+120000;let dialogSet=p.locator('ytcp-uploads-dialog');while(Date.now()<dialogEnd&&(await dialogSet.count()!==1||await dialogSet.locator('#title-textarea #textbox').count()!==1||!await dialogSet.locator('#title-textarea #textbox').isVisible()))await sleep(500);const dialog=await exact(p,'ytcp-uploads-dialog','upload-dialog',{mustBeVisible:false}),title=await exact(dialog,'#title-textarea #textbox','upload-title');await title.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await title.pressSequentially(payload.sentinel,{delay:1});if(compact(await title.innerText())!==compact(payload.sentinel))throw new Error('sentinel-fill-mismatch');let body='',providerId='',observed=false;const observedEnd=Date.now()+180000;while(Date.now()<observedEnd&&!observed){body=await dialog.innerText();const values=await dialog.locator('a[href],input').evaluateAll(nodes=>nodes.map(x=>x.href||x.value||'')),badges=dialog.locator('#step-badge-3');providerId=([...values,body].join('\n').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/video\/)([A-Za-z0-9_-]{11})/)||[])[1]||'';observed=body.includes('final.mp4')&&!!providerId&&await badges.count()===1;if(!observed)await sleep(700);}if(!observed||attachActions!==1)throw new Error('provider-attachment-or-visibility-flow-receipt-missing');success=true;emit({status:'attached',account:'u0',headless:true,channel:payload.channel,provider_observed_attachment_click_count:attachActions,attachment_name:'final.mp4',attachment_sha256:payload.sha256,draft_sentinel:payload.sentinel,provider_id:providerId,displayed_filename:true,upload_flow_preserved:true,session_marker:payload.session_marker});}catch(error){let diagnostic={};try{diagnostic=await p.evaluate(()=>({url:location.origin+location.pathname,dialog_count:document.querySelectorAll('ytcp-uploads-dialog').length,title_count:document.querySelectorAll('ytcp-uploads-dialog #title-textarea #textbox').length,upload_text:(document.querySelector('ytcp-uploads-dialog')?.innerText||'').slice(0,6000),files:[...document.querySelectorAll('input[type=file]')].flatMap(x=>[...x.files].map(f=>({name:f.name,size:f.size,type:f.type})))}));}catch(_){}emit({status:'blocked',account:'u0',headless:true,channel:payload.channel,provider_observed_attachment_click_count:attachActions,diagnostic,error:String(error?.message||error)});}finally{try{if(p&&attachActions===0)await p.close();}catch(_){}}
+try{p=await openTab(`https://studio.youtube.com/?shorts_upload_session=${payload.session_marker}`);await waitContext();attachmentStage='context_ready';const clickUpload=()=>p.evaluate(()=>{const vis=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.display!=='none'&&s.visibility!=='hidden';};let found=[...document.querySelectorAll('button,[role="button"],ytcp-button,ytcp-icon-button,tp-yt-paper-item')].filter(e=>vis(e)&&(e.id==='upload-icon'||/동영상 업로드|Upload videos/i.test((e.getAttribute('aria-label')||'')+' '+(e.innerText||''))));if(found.length>1){for(const id of ['upload-icon','upload-button']){const byId=found.filter(e=>e.id===id);if(byId.length===1){found=byId;break;}}if(found.length>1)found=found.filter(e=>!found.some(o=>o!==e&&o.contains(e)));}if(found.length!==1)return false;found[0].click();return true;});let opened=await clickUpload();if(!opened){const createSet=p.getByText(/^(만들기|Create)$/),createCount=await createSet.count();if(createCount!==1||!await createSet.isVisible())throw new Error(`create-control-cardinality:${createCount}`);await createSet.click();await sleep(400);opened=await clickUpload();}if(!opened)throw new Error('upload-control-missing');attachmentStage='upload_control_opened';const fileReadyEnd=Date.now()+15000;while(Date.now()<fileReadyEnd){const n=await p.locator('input[type="file"][name="Filedata"],input[type="file"]').count();if(n!==0)break;await sleep(250);}const input=await exact(p,'input[type="file"][name="Filedata"],input[type="file"]','file-input',{mustBeVisible:false});if(payload.file.name!=='final.mp4'||typeof payload.file.path!=='string'||!/^provider-stage-[0-9a-f]{32}\/final\.mp4$/.test(payload.file.path)||!Number.isInteger(payload.file.size)||payload.file.size<1||!/^[0-9a-f]{64}$/.test(payload.file.sha256))throw new Error('candidate-payload-invalid');attachmentStage='file_input_ready';attachActions++;attachmentStage='set_input_files_invoked';await input.setInputFiles(payload.file.path);const dialogEnd=Date.now()+120000;let dialogSet=p.locator('ytcp-uploads-dialog');while(Date.now()<dialogEnd&&(await dialogSet.count()!==1||await dialogSet.locator('#title-textarea #textbox').count()!==1||!await dialogSet.locator('#title-textarea #textbox').isVisible()))await sleep(500);const dialog=await exact(p,'ytcp-uploads-dialog','upload-dialog',{mustBeVisible:false}),title=await exact(dialog,'#title-textarea #textbox','upload-title');await title.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await title.pressSequentially(payload.sentinel,{delay:1});if(compact(await title.innerText())!==compact(payload.sentinel))throw new Error('sentinel-fill-mismatch');let body='',providerId='',observed=false;const observedEnd=Date.now()+180000;while(Date.now()<observedEnd&&!observed){body=await dialog.innerText();const values=await dialog.locator('a[href],input').evaluateAll(nodes=>nodes.map(x=>x.href||x.value||'')),badges=dialog.locator('#step-badge-3');providerId=([...values,body].join('\n').match(/(?:youtu\.be\/|[?&]v=|\/shorts\/|\/video\/)([A-Za-z0-9_-]{11})/)||[])[1]||'';observed=body.includes('final.mp4')&&!!providerId&&await badges.count()===1;if(!observed)await sleep(700);}if(!observed||attachActions!==1)throw new Error('provider-attachment-or-visibility-flow-receipt-missing');success=true;emit({status:'attached',account:'u0',headless:true,channel:payload.channel,provider_observed_attachment_click_count:attachActions,attachment_name:'final.mp4',attachment_sha256:payload.sha256,draft_sentinel:payload.sentinel,provider_id:providerId,displayed_filename:true,upload_flow_preserved:true,session_marker:payload.session_marker});}catch(error){let diagnostic={};try{diagnostic=await p.evaluate(()=>({url:location.origin+location.pathname,dialog_count:document.querySelectorAll('ytcp-uploads-dialog').length,title_count:document.querySelectorAll('ytcp-uploads-dialog #title-textarea #textbox').length,upload_text:(document.querySelector('ytcp-uploads-dialog')?.innerText||'').slice(0,6000),files:[...document.querySelectorAll('input[type=file]')].flatMap(x=>[...x.files].map(f=>({name:f.name,size:f.size,type:f.type})))}));}catch(_){}emit({status:'blocked',account:'u0',headless:true,channel:payload.channel,provider_observed_attachment_click_count:attachActions,attachment_sha256:payload.sha256,draft_sentinel:payload.sentinel,session_marker:payload.session_marker,attachment_stage:attachmentStage,diagnostic,error:String(error?.message||error)});}finally{try{if(p&&attachActions===0)await p.close();}catch(_){}}
 """
 
 
@@ -253,7 +298,7 @@ SAVE_ATTACHED_METADATA_JS = r"""
 let p=null,saveClicks=0;
 const read=async()=>({title:((await p.locator('#title-textarea #textbox').innerText())||'').trim(),description:((await p.locator('#description-textarea #textbox').innerText())||'').trim()});
 const openExact=async()=>{p=await openTab('https://studio.youtube.com/video/'+payload.id+'/edit');const end=Date.now()+30000;let ready=false;while(Date.now()<end&&!ready){const body=await p.locator('body').innerText();ready=p.url().includes('/video/'+payload.id+'/edit')&&body.includes(payload.channel)&&body.includes('final.mp4')&&await p.locator('#title-textarea #textbox').count()===1&&await p.locator('#description-textarea #textbox').count()===1;if(!ready)await sleep(250);}if(!ready)throw Error('exact-attached-video-binding-failed');};
-try{await openExact();const before=await read();if(!['final',payload.sentinel,payload.title].includes(before.title)||!['',payload.description.trim()].includes(before.description))throw Error('unexpected-attached-metadata');if(before.title!==payload.title||before.description!==payload.description.trim()){for(const [selector,value] of [['#title-textarea #textbox',payload.title],['#description-textarea #textbox',payload.description]]){const loc=p.locator(selector);if(await loc.count()!==1)throw Error('metadata-cardinality');await loc.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await loc.pressSequentially(value,{delay:1});await p.keyboard.press('Tab');if((await loc.innerText()).trim()!==value.trim())throw Error('metadata-entry-mismatch');}const save=p.locator('ytcp-button#save');if(await save.count()!==1||!await save.isEnabled())throw Error('metadata-save-unavailable');saveClicks++;await save.click();const end=Date.now()+30000;while(Date.now()<end&&await save.isEnabled())await sleep(250);if(await save.isEnabled())throw Error('metadata-save-unconfirmed');const toast=p.getByText('변경사항이 저장됨',{exact:true}),savedEnd=Date.now()+30000;while(Date.now()<savedEnd&&(await toast.count()!==1||!await toast.isVisible()))await sleep(200);if(await toast.count()!==1||!await toast.isVisible())throw Error('metadata-saved-notification-missing');}await p.close();p=null;await openExact();const after=await read();if(after.title!==payload.title||after.description!==payload.description.trim())throw Error('persisted-metadata-mismatch');emit({status:'pass',provider_id:payload.id,save_clicks:saveClicks,title:after.title,description:after.description,fresh_read_verified:true});}catch(error){emit({status:'blocked',provider_id:payload.id,save_clicks:saveClicks,error:String(error?.message||error)});}finally{try{if(p)await p.close();}catch(_){}}
+try{await openExact();const before=await read();if(!['final',payload.sentinel,payload.title].includes(before.title)||!['',payload.description.trim()].includes(before.description))throw Error('unexpected-attached-metadata');if(before.title!==payload.title||before.description!==payload.description.trim()){for(const [selector,value] of [['#title-textarea #textbox',payload.title],['#description-textarea #textbox',payload.description]]){const loc=p.locator(selector);if(await loc.count()!==1)throw Error('metadata-cardinality');await loc.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await loc.pressSequentially(value,{delay:1});await p.keyboard.press('Tab');if((await loc.innerText()).trim()!==value.trim())throw Error('metadata-entry-mismatch');}const save=p.locator('ytcp-button#save');if(await save.count()!==1||!await save.isEnabled())throw Error('metadata-save-unavailable');saveClicks++;await save.click();const end=Date.now()+30000;while(Date.now()<end&&await save.isEnabled())await sleep(250);if(await save.isEnabled())throw Error('metadata-save-unconfirmed');}await p.close();p=null;await openExact();const after=await read();if(after.title!==payload.title||after.description!==payload.description.trim())throw Error('persisted-metadata-mismatch');emit({status:'pass',provider_id:payload.id,save_clicks:saveClicks,title:after.title,description:after.description,fresh_read_verified:true});}catch(error){emit({status:'blocked',provider_id:payload.id,save_clicks:saveClicks,error:String(error?.message||error)});}finally{try{if(p)await p.close();}catch(_){}}
 """
 
 
@@ -743,23 +788,53 @@ class AsideHeadlessU0Provider:
     def attach_once(
         self, manifest: publisher.PublishManifest, *, draft_sentinel: str
     ) -> Mapping[str, Any]:
+        return self._attach_attempt(manifest, draft_sentinel=draft_sentinel, attempt="original")
+
+    def attach_retry_once(
+        self, manifest: publisher.PublishManifest, *, draft_sentinel: str
+    ) -> Mapping[str, Any]:
+        return self._attach_attempt(manifest, draft_sentinel=draft_sentinel, attempt="retry1")
+
+    def attach_retry2_once(
+        self, manifest: publisher.PublishManifest, *, draft_sentinel: str
+    ) -> Mapping[str, Any]:
+        return self._attach_attempt(manifest, draft_sentinel=draft_sentinel, attempt="retry2")
+
+    def _attach_attempt(
+        self,
+        manifest: publisher.PublishManifest,
+        *,
+        draft_sentinel: str,
+        attempt: str,
+    ) -> Mapping[str, Any]:
         _require_exact_channel(manifest)
+        if attempt not in {"original", "retry1", "retry2"}:
+            raise publisher.ManifestError("attachment attempt is outside the sealed contract")
         if manifest.video.name != "final.mp4":
             raise publisher.ManifestError("adapter accepts only exact final.mp4")
-        encoded = base64.b64encode(manifest.video.read_bytes()).decode("ascii")
         session_marker = uuid.uuid4().hex
         receipt_dir = manifest.video.parent / "provider"
         receipt_dir.mkdir(parents=True, exist_ok=True)
-        (receipt_dir / "attachment_invocation.json").write_text(json.dumps({
+        suffix = "" if attempt == "original" else f"_{attempt}"
+        invocation_path = receipt_dir / f"attachment_invocation{suffix}.json"
+        receipt_path = receipt_dir / f"attachment_receipt{suffix}.json"
+        if attempt != "original" and (invocation_path.exists() or receipt_path.exists()):
+            raise publisher.AmbiguousProviderState(f"{attempt} evidence already exists; never reattach")
+        invocation_path.write_text(json.dumps({
             "session_marker": session_marker, "video_sha256": manifest.video_sha256,
-            "draft_sentinel": draft_sentinel, "status": "started",
+            "draft_sentinel": draft_sentinel, "status": "started", "attempt": attempt,
         }, ensure_ascii=False, indent=2))
         raw = self._run(
             ATTACH_JS,
             {
                 "channel": manifest.expected_channel,
                 "channel_id": CHANNEL_ID,
-                "file": {"name": "final.mp4", "base64": encoded},
+                "file_transfer": {
+                    "transport": "aside-session-path/v1",
+                    "source_path": str(manifest.video),
+                    "size": manifest.video.stat().st_size,
+                    "sha256": manifest.video_sha256,
+                },
                 "sha256": manifest.video_sha256,
                 "sentinel": draft_sentinel,
                 "session_marker": session_marker,
@@ -767,8 +842,9 @@ class AsideHeadlessU0Provider:
             cwd=manifest.video.parent,
             timeout=600,
         )
-        (receipt_dir / "attachment_receipt.json").write_text(json.dumps(dict(raw), ensure_ascii=False, indent=2))
-        count = int(raw.get("provider_observed_attachment_click_count") or 0)
+        receipt_path.write_text(json.dumps(dict(raw), ensure_ascii=False, indent=2))
+        count_raw = raw.get("provider_observed_attachment_click_count")
+        count = count_raw if type(count_raw) is int else -1
         checks = (
             raw.get("status") == "attached",
             raw.get("account") == ACCOUNT,
@@ -784,6 +860,14 @@ class AsideHeadlessU0Provider:
             bool(VIDEO_ID_RE.fullmatch(str(raw.get("provider_id") or ""))),
         )
         if not all(checks):
+            if (
+                raw.get("status") == "blocked"
+                and count == 0
+                and raw.get("account") == ACCOUNT
+                and raw.get("headless") is True
+                and raw.get("channel") == manifest.expected_channel
+            ):
+                raise publisher.ZeroAttachmentAction(raw)
             raise publisher.AmbiguousProviderState(
                 "Aside did not return one exact provider-observed final.mp4 attachment receipt"
             )
