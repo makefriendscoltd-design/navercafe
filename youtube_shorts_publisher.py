@@ -83,6 +83,14 @@ class AmbiguousProviderState(PublisherSafetyError):
     """A mutation may have happened and must not be repeated."""
 
 
+class ZeroAttachmentAction(AmbiguousProviderState):
+    """The provider returned a durable receipt proving no file attach call."""
+
+    def __init__(self, receipt: Mapping[str, Any]):
+        super().__init__("provider proved that setInputFiles was not invoked")
+        self.receipt = dict(receipt)
+
+
 class ManualRemediationRequired(PublisherSafetyError):
     """Studio cannot be safely recovered with the proven controls."""
 
@@ -476,10 +484,11 @@ class ProviderInventory:
             for row in self.rows
             if row.status == "public" and row.published_at is not None and row.published_at.date() == day
         )
-        try:
-            return policy.validate_schedule(value for value in slots if value is not None)
-        except Exception as exc:
-            raise InventoryError("provider occupancy violates the Shorts SSOT") from exc
+        values = sorted(value for value in slots if value is not None)
+        if any(value.tzinfo is None or getattr(value.tzinfo, "key", None) != "Asia/Seoul"
+               for value in values):
+            raise InventoryError("provider occupancy contains a non-KST timestamp")
+        return values
 
     def fingerprint(self) -> str:
         payload = [
@@ -503,6 +512,10 @@ class ProviderPort(Protocol):
     def scan_inventory(self, manifest: PublishManifest, *, phase: str) -> Mapping[str, Any]: ...
 
     def attach_once(
+        self, manifest: PublishManifest, *, draft_sentinel: str
+    ) -> Mapping[str, Any]: ...
+
+    def attach_retry2_once(
         self, manifest: PublishManifest, *, draft_sentinel: str
     ) -> Mapping[str, Any]: ...
 
@@ -596,6 +609,32 @@ class AtomicJournal:
 
 def _slot_from_journal(value: Mapping[str, Any]) -> datetime:
     return _parse_datetime(value.get("slot"), label="journal slot")
+
+
+# An attachment that died before the upload control opened touched nothing:
+# the stage is recorded before any click, the observed click count is zero, and
+# the diagnostic shows no dialog, no chosen files and no upload text. Only
+# "extension disconnected" used to be recognised, so a Studio page that never
+# rendered its create control left the candidate permanently recover-only with
+# no draft to recover. Stages at or before context_ready are pre-click by
+# construction; anything later may have selected a file and is never accepted.
+PRE_CLICK_ATTACHMENT_STAGES = frozenset({"before_open", "context_ready"})
+
+
+def _receipt_proves_zero_attachment_action(receipt: Mapping[str, Any]) -> bool:
+    if receipt.get("error") == "extension disconnected":
+        return True
+    if receipt.get("attachment_stage") not in PRE_CLICK_ATTACHMENT_STAGES:
+        return False
+    diagnostic = receipt.get("diagnostic")
+    if not isinstance(diagnostic, Mapping):
+        return False
+    return (
+        diagnostic.get("dialog_count") == 0
+        and diagnostic.get("title_count") == 0
+        and not diagnostic.get("upload_text")
+        and diagnostic.get("files") == []
+    )
 
 
 def _crm_dedupe_key(manifest: PublishManifest) -> str:
@@ -777,6 +816,601 @@ class YouTubeShortsPublisher:
             raise PublisherSafetyError("SHORTS_SPEC slot planner found no safe KST slot") from exc
 
     @staticmethod
+    def _load_zero_action_evidence(
+        manifest: PublishManifest, journal: Mapping[str, Any]
+    ) -> tuple[str, str, bool]:
+        """Validate the one legacy zero-action receipt eligible for retry.
+
+        A numeric zero in the journal is deliberately insufficient: observe()
+        was never reached when attach_once raised.  The raw Aside receipt and
+        its local invocation binding are the evidence.
+        """
+        provider_dir = manifest.video.parent / "provider"
+        invocation_path = provider_dir / "attachment_invocation.json"
+        receipt_path = provider_dir / "attachment_receipt.json"
+        try:
+            invocation_raw = invocation_path.read_bytes()
+            invocation = json.loads(invocation_raw)
+            receipt_raw = receipt_path.read_bytes()
+            receipt = json.loads(receipt_raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("zero-action attachment evidence is missing or unreadable") from exc
+        if not isinstance(invocation, dict) or not isinstance(receipt, dict):
+            raise AmbiguousProviderState("zero-action attachment evidence is not object-shaped")
+        marker = invocation.get("session_marker")
+        if (
+            not isinstance(marker, str)
+            or re.fullmatch(r"[0-9a-f]{32}", marker) is None
+            or invocation.get("video_sha256") != manifest.video_sha256
+            or invocation.get("draft_sentinel") != manifest.draft_sentinel
+            or invocation.get("status") != "started"
+        ):
+            raise AmbiguousProviderState("zero-action invocation binding is invalid")
+        count = receipt.get("provider_observed_attachment_click_count")
+        common = (
+            receipt.get("status") == "blocked"
+            and receipt.get("account") == ASIDE_ACCOUNT
+            and receipt.get("headless") is True
+            and receipt.get("channel") == manifest.expected_channel
+            and type(count) is int
+            and count == 0
+            and _receipt_proves_zero_attachment_action(receipt)
+        )
+        if not common:
+            raise AmbiguousProviderState("receipt does not prove an exact zero attachment action")
+        bound_keys = {"session_marker", "attachment_sha256", "draft_sentinel", "attachment_stage"}
+        present = bound_keys.intersection(receipt)
+        legacy = not present
+        if present:
+            if present != bound_keys or (
+                receipt.get("session_marker") != marker
+                or receipt.get("attachment_sha256") != manifest.video_sha256
+                or receipt.get("draft_sentinel") != manifest.draft_sentinel
+                or receipt.get("attachment_stage") not in {
+                    "before_open", "context_ready", "upload_control_opened", "file_input_ready"
+                }
+            ):
+                raise AmbiguousProviderState("zero-action receipt binding is invalid")
+        elif receipt.get("diagnostic") != {}:
+            raise AmbiguousProviderState("legacy zero-action receipt is outside the sealed contract")
+        return (
+            hashlib.sha256(invocation_raw).hexdigest(),
+            hashlib.sha256(receipt_raw).hexdigest(),
+            legacy,
+        )
+
+    def _retry_proven_zero_attachment(
+        self,
+        manifest: PublishManifest,
+        store: AtomicJournal,
+        journal: dict[str, Any],
+        inventory: ProviderInventory,
+        fixed_now: datetime | None,
+    ) -> ProviderInventory | None:
+        if journal.get("status") != "ambiguous_recover_or_verify_only":
+            return None
+        attachment = journal.get("attachment") or {}
+        retry = journal.get("attachment_retry") or {}
+        if int(retry.get("reservation_count") or 0) == 1:
+            return self._retry_second_proven_zero_attachment(
+                manifest, store, journal, inventory, fixed_now
+            )
+        if (
+            int(attachment.get("reservation_count") or 0) != 1
+            or type(attachment.get("provider_observed_click_count")) is not int
+            or attachment.get("provider_observed_click_count") != 0
+        ):
+            return None
+        if int(retry.get("reservation_count") or 0) != 0:
+            return None
+        if int((journal.get("schedule_commit") or {}).get("reservation_count") or 0) != 0:
+            return None
+        if int((journal.get("crm") or {}).get("reservation_count") or 0) != 0:
+            return None
+        if sum(
+            item.get("event") == "attachment_invocation_interrupted"
+            for item in journal.get("history") or []
+            if isinstance(item, Mapping)
+        ) != 1:
+            return None
+        provider_dir = manifest.video.parent / "provider"
+        if not (
+            (provider_dir / "attachment_invocation.json").exists()
+            and (provider_dir / "attachment_receipt.json").exists()
+        ):
+            return None
+        # Eligibility is intentionally narrower than validation.  Receipts
+        # proving an attachment (or any other ambiguous provider outcome) stay
+        # on the original recover-only path and are never misclassified as a
+        # failed zero-action retry candidate.
+        try:
+            candidate_receipt = json.loads(
+                (provider_dir / "attachment_receipt.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not (
+            isinstance(candidate_receipt, dict)
+            and candidate_receipt.get("status") == "blocked"
+            and type(candidate_receipt.get("provider_observed_attachment_click_count")) is int
+            and candidate_receipt.get("provider_observed_attachment_click_count") == 0
+            and _receipt_proves_zero_attachment_action(candidate_receipt)
+        ):
+            return None
+        if (
+            (provider_dir / "attachment_invocation_retry1.json").exists()
+            or (provider_dir / "attachment_receipt_retry1.json").exists()
+        ):
+            raise AmbiguousProviderState("retry1 evidence already exists; never reattach")
+        invocation_sha, receipt_sha, legacy = self._load_zero_action_evidence(manifest, journal)
+        baseline = journal.get("baseline_identities")
+        identities = [row.identity for row in inventory.rows]
+        if not isinstance(baseline, list) or any(not isinstance(value, str) for value in baseline):
+            raise AmbiguousProviderState("attachment baseline is invalid")
+        if inventory.matches(manifest):
+            raise AmbiguousProviderState("fresh inventory contains an exact candidate match")
+        if any(row.title == manifest.draft_sentinel for row in inventory.rows):
+            raise AmbiguousProviderState("fresh inventory contains the candidate sentinel")
+        added = set(identities).difference(baseline)
+        missing = set(baseline).difference(identities)
+        authorization_sha = ""
+        if legacy:
+            authorization_sha = self._validate_zero_action_authorization(
+                manifest,
+                journal,
+                invocation_sha=invocation_sha,
+                receipt_sha=receipt_sha,
+            )
+        retry_method = getattr(self.provider, "attach_retry_once", None)
+        if not callable(retry_method):
+            raise AmbiguousProviderState("provider does not implement the sealed retry1 contract")
+        journal["attachment_retry"] = {"reservation_count": 0, "provider_observed_click_count": 0}
+        store.event(
+            journal,
+            "attachment_zero_action_proved",
+            invocation_sha256=invocation_sha,
+            receipt_sha256=receipt_sha,
+            authorization_sha256=authorization_sha,
+            inventory_fingerprint=inventory.fingerprint(),
+            observed_added_identities=sorted(added),
+            observed_missing_identities=sorted(missing),
+        )
+        previous_slot = _slot_from_journal(journal)
+        fresh_slot = self._plan(inventory, self._sample_now(fixed_now))
+        journal["slot"] = fresh_slot.isoformat()
+        store.event(
+            journal,
+            "attachment_retry1_slot_replanned",
+            previous_slot=previous_slot.isoformat(),
+            fresh_slot=fresh_slot.isoformat(),
+        )
+        store.reserve(journal, "attachment_retry")
+        try:
+            receipt = retry_method(manifest, draft_sentinel=manifest.draft_sentinel)
+        except Exception as exc:
+            self._mark_ambiguous(store, journal, "attachment_retry1_interrupted_no_more_reattach")
+            raise AmbiguousProviderState("retry1 attachment was interrupted; never reattach again") from exc
+        count = receipt.get("provider_observed_attachment_click_count")
+        if type(count) is not int:
+            self._mark_ambiguous(store, journal, "attachment_retry1_receipt_invalid")
+            raise AmbiguousProviderState("retry1 attachment count is not an exact integer")
+        store.observe(journal, "attachment_retry", count)
+        if receipt.get("status") != "attached" or count != 1:
+            self._mark_ambiguous(store, journal, "attachment_retry1_receipt_ambiguous")
+            raise AmbiguousProviderState("retry1 attachment is ambiguous; never reattach again")
+        journal["status"] = "attachment_observed_recover_only"
+        store.event(journal, "attachment_retry1_observed")
+        after = self._scan(manifest, "post_attachment_retry1_recovery_scan", fixed_now)
+        self._require_distinct_scan(inventory, after, label="post-attachment retry1")
+        return after
+
+    def _retry_second_proven_zero_attachment(
+        self,
+        manifest: PublishManifest,
+        store: AtomicJournal,
+        journal: dict[str, Any],
+        inventory: ProviderInventory,
+        fixed_now: datetime | None,
+    ) -> ProviderInventory:
+        """Permit one final attach only when both earlier calls provably did nothing."""
+        attachment = journal.get("attachment") or {}
+        retry = journal.get("attachment_retry") or {}
+        if (
+            int(attachment.get("reservation_count") or 0) != 1
+            or type(attachment.get("provider_observed_click_count")) is not int
+            or attachment.get("provider_observed_click_count") != 0
+            or int(retry.get("reservation_count") or 0) != 1
+            or type(retry.get("provider_observed_click_count")) is not int
+            or retry.get("provider_observed_click_count") != 0
+            or "attachment_retry2" in journal
+            or int((journal.get("schedule_commit") or {}).get("reservation_count") or 0) != 0
+            or int((journal.get("crm") or {}).get("reservation_count") or 0) != 0
+        ):
+            raise AmbiguousProviderState("retry2 is outside the sealed two-zero-action contract")
+        history = [item for item in journal.get("history") or [] if isinstance(item, Mapping)]
+        original_proofs = [item for item in history if item.get("event") == "attachment_zero_action_proved"]
+        if (
+            len(original_proofs) != 1
+            or sum(item.get("event") == "attachment_invocation_interrupted" for item in history) != 1
+            or sum(item.get("event") == "attachment_retry_reserved" for item in history) != 1
+            or sum(item.get("event") == "attachment_retry1_interrupted_no_more_reattach" for item in history) != 1
+        ):
+            raise AmbiguousProviderState("retry1 journal history is outside the sealed contract")
+        original_invocation_sha, original_receipt_sha, legacy = self._load_zero_action_evidence(
+            manifest, journal
+        )
+        if not legacy:
+            raise AmbiguousProviderState("retry2 requires the reviewed legacy original receipt")
+        authorization_sha = self._validate_zero_action_authorization(
+            manifest,
+            journal,
+            invocation_sha=original_invocation_sha,
+            receipt_sha=original_receipt_sha,
+        )
+        original_proof = original_proofs[0]
+        if (
+            original_proof.get("invocation_sha256") != original_invocation_sha
+            or original_proof.get("receipt_sha256") != original_receipt_sha
+            or original_proof.get("authorization_sha256") != authorization_sha
+        ):
+            raise AmbiguousProviderState("original zero-action proof no longer matches its journal")
+        provider_dir = manifest.video.parent / "provider"
+        invocation_path = provider_dir / "attachment_invocation_retry1.json"
+        receipt_path = provider_dir / "attachment_receipt_retry1.json"
+        try:
+            invocation_raw = invocation_path.read_bytes()
+            invocation = json.loads(invocation_raw)
+            receipt_raw = receipt_path.read_bytes()
+            receipt = json.loads(receipt_raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("retry1 zero-action evidence is missing or unreadable") from exc
+        marker = invocation.get("session_marker") if isinstance(invocation, Mapping) else None
+        count = receipt.get("provider_observed_attachment_click_count") if isinstance(receipt, Mapping) else None
+        if not (
+            isinstance(marker, str)
+            and re.fullmatch(r"[0-9a-f]{32}", marker) is not None
+            and invocation.get("video_sha256") == manifest.video_sha256
+            and invocation.get("draft_sentinel") == manifest.draft_sentinel
+            and invocation.get("status") == "started"
+            and invocation.get("attempt") == "retry1"
+            and receipt.get("status") == "blocked"
+            and receipt.get("account") == ASIDE_ACCOUNT
+            and receipt.get("headless") is True
+            and receipt.get("channel") == manifest.expected_channel
+            and type(count) is int
+            and count == 0
+            and receipt.get("session_marker") == marker
+            and receipt.get("attachment_sha256") == manifest.video_sha256
+            and receipt.get("draft_sentinel") == manifest.draft_sentinel
+            and receipt.get("attachment_stage") == "upload_control_opened"
+            and receipt.get("error") == "file-input-cardinality:0"
+        ):
+            raise AmbiguousProviderState("retry1 receipt does not prove the second exact zero action")
+        if inventory.matches(manifest) or any(
+            row.title == manifest.draft_sentinel for row in inventory.rows
+        ):
+            raise AmbiguousProviderState("fresh inventory contains the candidate before retry2")
+        if (
+            (provider_dir / "attachment_invocation_retry2.json").exists()
+            or (provider_dir / "attachment_receipt_retry2.json").exists()
+        ):
+            raise AmbiguousProviderState("retry2 evidence already exists; never reattach")
+        retry_method = getattr(self.provider, "attach_retry2_once", None)
+        if not callable(retry_method):
+            raise AmbiguousProviderState("provider does not implement the sealed retry2 contract")
+        journal["attachment_retry2"] = {
+            "reservation_count": 0,
+            "provider_observed_click_count": 0,
+        }
+        store.event(
+            journal,
+            "attachment_retry1_zero_action_proved",
+            invocation_sha256=hashlib.sha256(invocation_raw).hexdigest(),
+            receipt_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+            inventory_fingerprint=inventory.fingerprint(),
+        )
+        previous_slot = _slot_from_journal(journal)
+        fresh_slot = self._plan(inventory, self._sample_now(fixed_now))
+        journal["slot"] = fresh_slot.isoformat()
+        store.event(
+            journal,
+            "attachment_retry2_slot_replanned",
+            previous_slot=previous_slot.isoformat(),
+            fresh_slot=fresh_slot.isoformat(),
+        )
+        store.reserve(journal, "attachment_retry2")
+        try:
+            result = retry_method(manifest, draft_sentinel=manifest.draft_sentinel)
+        except Exception as exc:
+            self._mark_ambiguous(store, journal, "attachment_retry2_interrupted_no_more_reattach")
+            raise AmbiguousProviderState("retry2 attachment was interrupted; never reattach again") from exc
+        observed = result.get("provider_observed_attachment_click_count")
+        if type(observed) is not int:
+            self._mark_ambiguous(store, journal, "attachment_retry2_receipt_invalid")
+            raise AmbiguousProviderState("retry2 attachment count is not an exact integer")
+        store.observe(journal, "attachment_retry2", observed)
+        if result.get("status") != "attached" or observed != 1:
+            self._mark_ambiguous(store, journal, "attachment_retry2_receipt_ambiguous")
+            raise AmbiguousProviderState("retry2 attachment is ambiguous; never reattach again")
+        journal["status"] = "attachment_observed_recover_only"
+        store.event(journal, "attachment_retry2_observed")
+        after = self._scan(manifest, "post_attachment_retry2_recovery_scan", fixed_now)
+        self._require_distinct_scan(inventory, after, label="post-attachment retry2")
+        return after
+
+    @staticmethod
+    def _validate_zero_action_authorization(
+        manifest: PublishManifest,
+        journal: Mapping[str, Any],
+        *,
+        invocation_sha: str,
+        receipt_sha: str,
+    ) -> str:
+        """Bind reviewed legacy zero-action bytes to this target and batch.
+
+        Unrelated provider rows are deliberately outside this authorization:
+        the immutable receipt proves the original file attach call never ran.
+        """
+        path = manifest.video.parent / "provider" / "zero_action_retry_authorization.json"
+        try:
+            raw = path.read_bytes()
+            authorization = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("zero-action authorization is missing") from exc
+        if (
+            not isinstance(authorization, Mapping)
+            or authorization.get("schema_version") != "zero-action-retry/v1"
+            or authorization.get("target_manifest_fingerprint") != manifest.fingerprint
+            or authorization.get("legacy_invocation_sha256") != invocation_sha
+            or authorization.get("legacy_receipt_sha256") != receipt_sha
+        ):
+            raise AmbiguousProviderState("legacy zero-action authorization binding is invalid")
+        baseline = journal.get("baseline_identities") or []
+        baseline_digest = hashlib.sha256(
+            json.dumps(baseline, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if authorization.get("baseline_identities_sha256") != baseline_digest:
+            raise AmbiguousProviderState("zero-action authorization baseline binding is invalid")
+        selection_path_raw = authorization.get("selection_path")
+        if not isinstance(selection_path_raw, str):
+            raise AmbiguousProviderState("zero-action selection path is missing")
+        selection_path = Path(selection_path_raw)
+        try:
+            selection_raw = selection_path.read_bytes()
+            selection = json.loads(selection_raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("zero-action selection is missing or unreadable") from exc
+        items = selection.get("items") if isinstance(selection, Mapping) else None
+        source_keys = [item.get("source_key") for item in items or [] if isinstance(item, Mapping)]
+        if (
+            not isinstance(selection, Mapping)
+            or hashlib.sha256(selection_raw).hexdigest() != authorization.get("selection_sha256")
+            or selection.get("scope") != "seven_shorts_then_schedule_naminsoo_append_only"
+            or len(source_keys) != 7
+            or len(set(source_keys)) != 7
+            or manifest.source_key not in source_keys
+        ):
+            raise AmbiguousProviderState("zero-action selection binding is invalid")
+        return hashlib.sha256(raw).hexdigest()
+
+    @staticmethod
+    def _validate_same_batch_additions(
+        manifest: PublishManifest,
+        journal: Mapping[str, Any],
+        added: set[str],
+        *,
+        inventory: ProviderInventory,
+        invocation_sha: str,
+        receipt_sha: str,
+        require_legacy_hashes: bool,
+    ) -> str:
+        """Explain every post-baseline row through this sealed seven-item batch."""
+        path = manifest.video.parent / "provider" / "zero_action_retry_authorization.json"
+        try:
+            authorization = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("same-batch addition authorization is missing") from exc
+        if not isinstance(authorization, dict) or authorization.get("schema_version") != "zero-action-retry/v1":
+            raise AmbiguousProviderState("same-batch addition authorization schema is invalid")
+        if authorization.get("target_manifest_fingerprint") != manifest.fingerprint:
+            raise AmbiguousProviderState("same-batch authorization targets another candidate")
+        if require_legacy_hashes and (
+            authorization.get("legacy_invocation_sha256") != invocation_sha
+            or authorization.get("legacy_receipt_sha256") != receipt_sha
+        ):
+            raise AmbiguousProviderState("legacy zero-action evidence lacks reviewed hash authorization")
+        baseline = journal.get("baseline_identities") or []
+        baseline_digest = hashlib.sha256(
+            json.dumps(baseline, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        if authorization.get("baseline_identities_sha256") != baseline_digest:
+            raise AmbiguousProviderState("same-batch authorization baseline binding is invalid")
+        selection_path_raw = authorization.get("selection_path")
+        if not isinstance(selection_path_raw, str):
+            raise AmbiguousProviderState("same-batch selection path is missing")
+        selection_path = Path(selection_path_raw)
+        try:
+            selection_raw = selection_path.read_bytes()
+            selection = json.loads(selection_raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise AmbiguousProviderState("same-batch selection is missing or unreadable") from exc
+        if hashlib.sha256(selection_raw).hexdigest() != authorization.get("selection_sha256"):
+            raise AmbiguousProviderState("same-batch selection hash is invalid")
+        items = selection.get("items") if isinstance(selection, dict) else None
+        source_keys = [item.get("source_key") for item in items or [] if isinstance(item, dict)]
+        if (
+            selection.get("scope") != "seven_shorts_then_schedule_naminsoo_append_only"
+            or len(source_keys) != 7
+            or len(set(source_keys)) != 7
+            or manifest.source_key not in source_keys
+        ):
+            raise AmbiguousProviderState("same-batch selection contract is invalid")
+        manifest_paths = authorization.get("completed_provider_manifests")
+        if not isinstance(manifest_paths, list) or any(not isinstance(value, str) for value in manifest_paths):
+            raise AmbiguousProviderState("same-batch completed manifest list is invalid")
+        proven: set[str] = set()
+        proven_sources: set[str] = set()
+        for raw_path in manifest_paths:
+            other = load_manifest(Path(raw_path))
+            if (
+                other.source_key == manifest.source_key
+                or other.source_key not in source_keys
+                or other.source_key in proven_sources
+                or other.expected_channel != manifest.expected_channel
+            ):
+                raise AmbiguousProviderState("same-batch completed manifest identity is invalid")
+            other_journal = AtomicJournal(other.journal, other).load()
+            verified = other_journal.get("verified") if other_journal else None
+            checks = verified.get("checks") if isinstance(verified, Mapping) else None
+            provider_id = verified.get("provider_id") if isinstance(verified, Mapping) else None
+            if (
+                not isinstance(other_journal, Mapping)
+                or other_journal.get("status") != "complete"
+                or not isinstance(checks, Mapping)
+                or not checks
+                or any(value is not True for value in checks.values())
+                or not isinstance(provider_id, str)
+                or VIDEO_ID_RE.fullmatch(provider_id) is None
+                or verified.get("account") != ASIDE_ACCOUNT
+                or verified.get("headless") is not True
+                or verified.get("channel") != manifest.expected_channel
+            ):
+                raise AmbiguousProviderState("same-batch provider completion is not fully verified")
+            proven.add(provider_id)
+            proven_sources.add(other.source_key)
+        reviewed_external = authorization.get("reviewed_external_rows", [])
+        if not isinstance(reviewed_external, list):
+            raise AmbiguousProviderState("reviewed external row authorization is invalid")
+        current_by_id = {row.identity: row for row in inventory.rows}
+        for external in reviewed_external:
+            if not isinstance(external, Mapping):
+                raise AmbiguousProviderState("reviewed external row is not an object")
+            provider_id = external.get("provider_id")
+            if (
+                not isinstance(provider_id, str)
+                or VIDEO_ID_RE.fullmatch(provider_id) is None
+                or provider_id in proven
+                or external.get("status") != "scheduled"
+            ):
+                raise AmbiguousProviderState("reviewed external provider identity is invalid")
+            snapshots = external.get("snapshots")
+            if not isinstance(snapshots, list) or len(snapshots) != 2:
+                raise AmbiguousProviderState("reviewed external row needs exactly two snapshots")
+            snapshot_paths: set[Path] = set()
+            scan_ids: set[str] = set()
+            captured: list[datetime] = []
+            normalized_rows_hashes: set[str] = set()
+            sealed_rows: list[Mapping[str, Any]] = []
+            for snapshot_binding in snapshots:
+                if not isinstance(snapshot_binding, Mapping):
+                    raise AmbiguousProviderState("external snapshot binding is invalid")
+                raw_path = snapshot_binding.get("path")
+                raw_sha = snapshot_binding.get("sha256")
+                if not isinstance(raw_path, str) or not isinstance(raw_sha, str):
+                    raise AmbiguousProviderState("external snapshot path/hash is missing")
+                snapshot_path = Path(raw_path)
+                try:
+                    snapshot_raw = snapshot_path.read_bytes()
+                    snapshot = json.loads(snapshot_raw)
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise AmbiguousProviderState("external snapshot is missing or unreadable") from exc
+                if hashlib.sha256(snapshot_raw).hexdigest() != raw_sha:
+                    raise AmbiguousProviderState("external snapshot reviewed hash changed")
+                if not isinstance(snapshot, Mapping) or snapshot.get("status") != "pass":
+                    raise AmbiguousProviderState("external snapshot is not a passing provider model")
+                scan_id = snapshot.get("scan_id")
+                if (
+                    not isinstance(scan_id, str)
+                    or re.fullmatch(r"[0-9a-f]{32}", scan_id) is None
+                    or snapshot_path.stem != f"inventory-provider-model-{scan_id}"
+                ):
+                    raise AmbiguousProviderState("external snapshot scan binding is invalid")
+                rows = snapshot.get("rows")
+                if not isinstance(rows, list) or not rows:
+                    raise AmbiguousProviderState("external snapshot lacks its full row model")
+                normalized_rows = json.dumps(
+                    rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                normalized_rows_hashes.add(hashlib.sha256(normalized_rows).hexdigest())
+                matches = [
+                    row for row in rows
+                    if isinstance(row, Mapping)
+                    and row.get("identity") == provider_id
+                    and row.get("provider_id") == provider_id
+                ]
+                if len(matches) != 1:
+                    raise AmbiguousProviderState("external snapshot does not contain one exact row")
+                row = matches[0]
+                row_bytes = json.dumps(
+                    row, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8")
+                if hashlib.sha256(row_bytes).hexdigest() != external.get("row_sha256"):
+                    raise AmbiguousProviderState("external row reviewed fingerprint changed")
+                try:
+                    captured.append(datetime.fromisoformat(str(snapshot.get("captured_at")).replace("Z", "+00:00")))
+                except ValueError as exc:
+                    raise AmbiguousProviderState("external snapshot timestamp is invalid") from exc
+                snapshot_paths.add(snapshot_path.resolve())
+                scan_ids.add(scan_id)
+                sealed_rows.append(row)
+            if len(snapshot_paths) != 2 or len(scan_ids) != 2 or len(set(captured)) != 2:
+                raise AmbiguousProviderState("external snapshots are not two distinct observations")
+            if (
+                len(normalized_rows_hashes) != 1
+                or next(iter(normalized_rows_hashes)) != external.get("normalized_rows_sha256")
+            ):
+                raise AmbiguousProviderState("external full snapshots are not normalized-identical")
+            first = sealed_rows[0]
+            if (
+                first.get("status") != "scheduled"
+                or first.get("privacy") != "VIDEO_PRIVACY_PRIVATE"
+                or first.get("draft_status") != "DRAFT_STATUS_NONE"
+            ):
+                raise AmbiguousProviderState("external row is draft, uploading, or not scheduled")
+            scheduled = first.get("scheduled_raw")
+            publishings = scheduled.get("scheduledPublishings") if isinstance(scheduled, Mapping) else None
+            if not isinstance(publishings, list) or len(publishings) != 1:
+                raise AmbiguousProviderState("external scheduled row lacks one provider schedule")
+            publishing = publishings[0]
+            if (
+                not isinstance(publishing, Mapping)
+                or publishing.get("action") != "SCHEDULED_PUBLISHING_ACTION_SET_PUBLIC"
+                or publishing.get("status") != "SCHEDULED_PUBLISHING_STATUS_SCHEDULED"
+            ):
+                raise AmbiguousProviderState("external scheduled row state is not sealed")
+            try:
+                scheduled_at = datetime.fromtimestamp(int(publishing.get("scheduledTimeSeconds")), KST)
+            except (TypeError, ValueError, OSError) as exc:
+                raise AmbiguousProviderState("external scheduled timestamp is invalid") from exc
+            current = current_by_id.get(provider_id)
+            title = unicodedata.normalize("NFC", str(first.get("title") or "").strip())
+            description = str(first.get("description") or "").strip()
+            urls = tuple(dict.fromkeys(str(value) for value in (first.get("urls") or [])))
+            target_markers = (manifest.source_key, *manifest.canonical_urls, manifest.draft_sentinel)
+            sealed_searchable = "\n".join((title, description, *urls))
+            current_searchable = "\n".join(
+                (
+                    unicodedata.normalize("NFC", current.title) if current else "",
+                    current.description if current else "",
+                    *(current.urls if current else ()),
+                )
+            )
+            if (
+                current is None
+                or current.status != "scheduled"
+                or current.provider_id != provider_id
+                or current.scheduled_at != scheduled_at
+                or current.matches(manifest)
+                or any(marker in sealed_searchable for marker in target_markers)
+                or any(marker in current_searchable for marker in target_markers)
+            ):
+                raise AmbiguousProviderState("current external row does not match reviewed evidence")
+            proven.add(provider_id)
+        if proven != added:
+            raise AmbiguousProviderState("fresh inventory contains an unexplained provider delta")
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    @staticmethod
     def _only_match(inventory: ProviderInventory, manifest: PublishManifest) -> ProviderRow | None:
         matches = inventory.matches(manifest)
         if len(matches) > 1:
@@ -836,7 +1470,7 @@ class YouTubeShortsPublisher:
             replan_reasons.append("kst_date_boundary_crossed")
         slot_conflict = False
         try:
-            policy.validate_schedule([*occupancy, slot])
+            policy.validate_new_schedule_candidate(occupancy, slot)
         except Exception:
             slot_conflict = True
         if slot_conflict:
@@ -1018,6 +1652,11 @@ class YouTubeShortsPublisher:
                     self._require_distinct_scan(precommit, inventory, label="post-attachment")
                 else:
                     planned_at = current
+                    retried_inventory = self._retry_proven_zero_attachment(
+                        manifest, store, journal, inventory, fixed_now
+                    )
+                    if retried_inventory is not None:
+                        inventory = retried_inventory
                     # Every journaled attachment reservation permanently fences reupload.
                     attachment = journal.get("attachment") or {}
                     if int(attachment.get("reservation_count") or 0) != 1:
@@ -1058,6 +1697,7 @@ __all__ = [
     "SHARED_PROVIDER_LOCK",
     "STATES",
     "AmbiguousProviderState",
+    "ZeroAttachmentAction",
     "CrmPort",
     "DuplicateFound",
     "InventoryError",

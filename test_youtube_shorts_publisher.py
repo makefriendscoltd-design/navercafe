@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import threading
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -117,6 +118,17 @@ def parse_inventory(
     )
 
 
+def test_occupancy_retains_existing_duplicate_slots_for_append_only_planning(tmp_path):
+    manifest_path,_=make_manifest(tmp_path); manifest=publisher.load_manifest(manifest_path)
+    rows=[row('slot-one',status='scheduled',provider_id='slotVID0001',scheduled_at='2026-09-16T20:00:00+09:00'),
+          row('slot-two',status='scheduled',provider_id='slotVID0002',scheduled_at='2026-09-16T20:00:00+09:00')]
+    raw=inventory(rows,captured_at='2026-09-15T12:10:00+09:00')
+    parsed=parse_inventory(raw,manifest,now=datetime(2026,9,15,12,10,tzinfo=KST))
+    occupancy=parsed.occupancy_slots(datetime(2026,9,15,12,10,tzinfo=KST))
+    assert [x.isoformat() for x in occupancy]==['2026-09-16T20:00:00+09:00']*2
+    assert publisher.policy.plan_shorts_schedule(occupancy,datetime(2026,9,15,12,10,tzinfo=KST)).isoformat()=='2026-09-17T11:00:00+09:00'
+
+
 class FakeProvider:
     account = "u0"
     headless = True
@@ -127,6 +139,8 @@ class FakeProvider:
         self.log: list[str] = []
         self.scan_count = 0
         self.attach_calls = 0
+        self.retry_attach_calls = 0
+        self.retry2_attach_calls = 0
         self.schedule_calls = 0
         self.raise_after_attach = False
         self.raise_after_schedule = False
@@ -165,6 +179,22 @@ class FakeProvider:
         )
         if self.raise_after_attach:
             raise ConnectionError("response lost")
+        return {"status": "attached", "provider_observed_attachment_click_count": 1}
+
+    def attach_retry_once(self, manifest: publisher.PublishManifest, *, draft_sentinel: str) -> dict[str, Any]:
+        self.log.append("attach_retry1")
+        self.retry_attach_calls += 1
+        self.rows.append(
+            row("draft-new", status="draft", provider_id="", title=draft_sentinel, visibility=self.visibility)
+        )
+        return {"status": "attached", "provider_observed_attachment_click_count": 1}
+
+    def attach_retry2_once(self, manifest: publisher.PublishManifest, *, draft_sentinel: str) -> dict[str, Any]:
+        self.log.append("attach_retry2")
+        self.retry2_attach_calls += 1
+        self.rows.append(
+            row("draft-new", status="draft", provider_id="", title=draft_sentinel, visibility=self.visibility)
+        )
         return {"status": "attached", "provider_observed_attachment_click_count": 1}
 
     def schedule_once(
@@ -1238,3 +1268,480 @@ def test_a_missing_list_title_is_not_treated_as_verified(tmp_path: Path) -> None
     with pytest.raises(publisher.AmbiguousProviderState, match="list_row_title"):
         publisher.validate_direct_evidence(
             evidence, manifest, "newVID00001", slot, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+
+ZERO_RECEIPT_FIXTURE = Path(__file__).with_name("fixtures") / "v1-zero-action-receipt.json"
+
+
+def seed_zero_action_journal(manifest_path: Path, receipt: dict[str, Any]) -> publisher.PublishManifest:
+    manifest = publisher.load_manifest(manifest_path)
+    now = datetime(2026, 9, 5, 9, tzinfo=KST)
+    baseline = publisher.ProviderInventory.from_mapping(
+        inventory([], scan_id="baseline", phase="attachment_precommit_requery", captured_at=now.isoformat()),
+        manifest=manifest,
+        now=now,
+        phase="attachment_precommit_requery",
+    )
+    store = publisher.AtomicJournal(manifest.journal, manifest)
+    journal = store.create(baseline, datetime(2026, 9, 6, 11, tzinfo=KST))
+    store.reserve(journal, "attachment")
+    journal["status"] = "ambiguous_recover_or_verify_only"
+    store.event(journal, "attachment_invocation_interrupted")
+    provider_dir = manifest.video.parent / "provider"
+    provider_dir.mkdir(exist_ok=True)
+    (provider_dir / "attachment_invocation.json").write_text(json.dumps({
+        "session_marker": "a" * 32,
+        "video_sha256": manifest.video_sha256,
+        "draft_sentinel": manifest.draft_sentinel,
+        "status": "started",
+    }), encoding="utf-8")
+    (provider_dir / "attachment_receipt.json").write_text(json.dumps(receipt), encoding="utf-8")
+    return manifest
+
+
+def actual_zero_receipt() -> dict[str, Any]:
+    return json.loads(ZERO_RECEIPT_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_proven_legacy_zero_action_allows_exactly_one_audited_retry(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorize_same_batch_addition(manifest, tmp_path, include_completed=False)
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    result = runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert result["status"] == "complete"
+    assert provider_port.attach_calls == 0
+    assert provider_port.retry_attach_calls == 1
+    journal = json.loads(manifest.journal.read_text(encoding="utf-8"))
+    assert journal["attachment"]["reservation_count"] == 1
+    assert journal["attachment_retry"] == {"reservation_count": 1, "provider_observed_click_count": 1}
+    assert sum(x["event"] == "attachment_zero_action_proved" for x in journal["history"]) == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "one", "string_zero", "wrong_hash"])
+def test_zero_action_retry_rejects_unsealed_evidence(tmp_path: Path, mutation: str) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    receipt = actual_zero_receipt()
+    if mutation == "missing":
+        receipt.pop("provider_observed_attachment_click_count")
+    elif mutation == "one":
+        receipt["provider_observed_attachment_click_count"] = 1
+    elif mutation == "string_zero":
+        receipt["provider_observed_attachment_click_count"] = "0"
+    manifest = seed_zero_action_journal(manifest_path, receipt)
+    if mutation == "wrong_hash":
+        path = manifest.video.parent / "provider" / "attachment_invocation.json"
+        invocation = json.loads(path.read_text())
+        invocation["video_sha256"] = "0" * 64
+        path.write_text(json.dumps(invocation))
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+def test_zero_action_retry_rejects_inventory_drift(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    provider_port = FakeProvider([row("otherVID001")])
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState, match="authorization is missing"):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+def test_zero_action_retry_reservation_permanently_fences_repeat(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    journal = json.loads(manifest.journal.read_text())
+    journal["attachment_retry"] = {"reservation_count": 1, "provider_observed_click_count": 0}
+    manifest.journal.write_text(json.dumps(journal))
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+def authorize_same_batch_addition(
+    target: publisher.PublishManifest,
+    root: Path,
+    *,
+    provider_id: str = "otherVID001",
+    include_completed: bool = True,
+) -> Path:
+    other_path, _ = make_manifest(root, source_key=SOURCE_B)
+    other = publisher.load_manifest(other_path)
+    other.journal.parent.mkdir(parents=True, exist_ok=True)
+    other.journal.write_text(json.dumps({
+        "schema_version": "youtube-shorts-publisher/v1",
+        "source_key": other.source_key,
+        "manifest_fingerprint": other.fingerprint,
+        "final_mp4_sha256": other.video_sha256,
+        "status": "complete",
+        "verified": {
+            "provider_id": provider_id,
+            "account": "u0",
+            "headless": True,
+            "channel": "나민수 AI",
+            "checks": {"provider_id": True, "channel": True, "fresh": True},
+        },
+    }), encoding="utf-8")
+    keys = [SOURCE_A, SOURCE_B, "thirdSRC001", "fourthSR001", "fifthSRC001", "sixthSRC001", "sevenSRC001"]
+    selection = root / "selection.json"
+    selection.write_text(json.dumps({
+        "scope": "seven_shorts_then_schedule_naminsoo_append_only",
+        "items": [{"source_key": value} for value in keys],
+    }), encoding="utf-8")
+    journal = json.loads(target.journal.read_text())
+    baseline_digest = hashlib.sha256(
+        json.dumps(journal["baseline_identities"], separators=(",", ":")).encode()
+    ).hexdigest()
+    authorization = target.video.parent / "provider" / "zero_action_retry_authorization.json"
+    authorization.write_text(json.dumps({
+        "schema_version": "zero-action-retry/v1",
+        "target_manifest_fingerprint": target.fingerprint,
+        "baseline_identities_sha256": baseline_digest,
+        "selection_path": str(selection),
+        "selection_sha256": hashlib.sha256(selection.read_bytes()).hexdigest(),
+        "legacy_invocation_sha256": hashlib.sha256(
+            (target.video.parent / "provider" / "attachment_invocation.json").read_bytes()
+        ).hexdigest(),
+        "legacy_receipt_sha256": hashlib.sha256(
+            (target.video.parent / "provider" / "attachment_receipt.json").read_bytes()
+        ).hexdigest(),
+        "completed_provider_manifests": [str(other_path)] if include_completed else [],
+    }), encoding="utf-8")
+    return authorization
+
+
+def seed_two_proven_zero_actions(
+    manifest_path: Path,
+    *,
+    retry1_count: object = 0,
+    retry1_hash: str | None = None,
+) -> publisher.PublishManifest:
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorization = authorize_same_batch_addition(manifest, manifest_path.parent, include_completed=False)
+    provider_dir = manifest.video.parent / "provider"
+    original_invocation = provider_dir / "attachment_invocation.json"
+    original_receipt = provider_dir / "attachment_receipt.json"
+    marker = "4edad9c9a47b4196b609620de9e0d15b"
+    retry1_invocation = provider_dir / "attachment_invocation_retry1.json"
+    retry1_receipt = provider_dir / "attachment_receipt_retry1.json"
+    retry1_invocation.write_text(json.dumps({
+        "session_marker": marker,
+        "video_sha256": manifest.video_sha256,
+        "draft_sentinel": manifest.draft_sentinel,
+        "status": "started",
+        "attempt": "retry1",
+    }))
+    retry1_receipt.write_text(json.dumps({
+        "status": "blocked",
+        "account": "u0",
+        "headless": True,
+        "channel": manifest.expected_channel,
+        "provider_observed_attachment_click_count": retry1_count,
+        "attachment_sha256": retry1_hash or manifest.video_sha256,
+        "draft_sentinel": manifest.draft_sentinel,
+        "session_marker": marker,
+        "attachment_stage": "upload_control_opened",
+        "diagnostic": {"dialog_count": 0, "title_count": 0, "files": []},
+        "error": "file-input-cardinality:0",
+    }))
+    journal = json.loads(manifest.journal.read_text())
+    journal["attachment_retry"] = {"reservation_count": 1, "provider_observed_click_count": 0}
+    journal["status"] = "ambiguous_recover_or_verify_only"
+    journal["history"].extend([
+        {
+            "event": "attachment_zero_action_proved",
+            "invocation_sha256": hashlib.sha256(original_invocation.read_bytes()).hexdigest(),
+            "receipt_sha256": hashlib.sha256(original_receipt.read_bytes()).hexdigest(),
+            "authorization_sha256": hashlib.sha256(authorization.read_bytes()).hexdigest(),
+        },
+        {"event": "attachment_retry_reserved"},
+        {"event": "attachment_retry1_interrupted_no_more_reattach"},
+    ])
+    manifest.journal.write_text(json.dumps(journal))
+    return manifest
+
+
+def test_two_exact_zero_actions_allow_one_final_retry(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_two_proven_zero_actions(manifest_path)
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    assert runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))["status"] == "complete"
+    assert provider_port.retry_attach_calls == 0
+    assert provider_port.retry2_attach_calls == 1
+    journal = json.loads(manifest.journal.read_text())
+    assert journal["attachment_retry2"] == {
+        "reservation_count": 1,
+        "provider_observed_click_count": 1,
+    }
+    assert sum(x["event"] == "attachment_retry1_zero_action_proved" for x in journal["history"]) == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "one", "string_zero", "wrong_hash", "target_row"])
+def test_retry2_rejects_unsealed_second_zero_action(tmp_path: Path, mutation: str) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    count: object = 0
+    if mutation == "missing":
+        count = None
+    elif mutation == "one":
+        count = 1
+    elif mutation == "string_zero":
+        count = "0"
+    manifest = seed_two_proven_zero_actions(
+        manifest_path,
+        retry1_count=count,
+        retry1_hash="0" * 64 if mutation == "wrong_hash" else None,
+    )
+    if mutation == "missing":
+        receipt = manifest.video.parent / "provider" / "attachment_receipt_retry1.json"
+        value = json.loads(receipt.read_text())
+        value.pop("provider_observed_attachment_click_count")
+        receipt.write_text(json.dumps(value))
+    provider_port = FakeProvider(
+        [row("target-row", status="draft", title=manifest.draft_sentinel)]
+        if mutation == "target_row" else []
+    )
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry2_attach_calls == 0
+
+
+def test_retry2_is_permanently_fenced_after_any_prior_reservation(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_two_proven_zero_actions(manifest_path)
+    journal = json.loads(manifest.journal.read_text())
+    journal["attachment_retry2"] = {"reservation_count": 1, "provider_observed_click_count": 0}
+    manifest.journal.write_text(json.dumps(journal))
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry2_attach_calls == 0
+
+
+def test_zero_action_retry_accepts_only_proven_same_batch_delta_and_replans_slot(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorize_same_batch_addition(manifest, tmp_path)
+    provider_port = FakeProvider([row(
+        "otherVID001",
+        status="scheduled",
+        provider_id="otherVID001",
+        scheduled_at="2026-09-06T11:00:00+09:00",
+    )])
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    result = runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert result["status"] == "complete"
+    assert provider_port.retry_attach_calls == 1
+    journal = json.loads(manifest.journal.read_text())
+    replans = [x for x in journal["history"] if x["event"] == "attachment_retry1_slot_replanned"]
+    assert replans == [{
+        "event": "attachment_retry1_slot_replanned",
+        "at": replans[0]["at"],
+        "previous_slot": "2026-09-06T11:00:00+09:00",
+        "fresh_slot": "2026-09-06T20:00:00+09:00",
+    }]
+
+
+def test_zero_action_retry_allows_unrelated_draft_and_audits_inventory_delta(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorization = authorize_same_batch_addition(manifest, tmp_path, include_completed=False)
+    authorization_before = authorization.read_bytes()
+    provider_port = FakeProvider([row(
+        "K5u-HM2d90U",
+        status="draft",
+        provider_id="K5u-HM2d90U",
+        title="shorts-qQluNEfSVHk-ee84767f66d7",
+        description="https://youtu.be/qQluNEfSVHk",
+        urls=["https://www.youtube.com/watch?v=qQluNEfSVHk"],
+    )])
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    assert runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))["status"] == "complete"
+    assert provider_port.retry_attach_calls == 1
+    assert authorization.read_bytes() == authorization_before
+    journal = json.loads(manifest.journal.read_text())
+    proof = next(x for x in journal["history"] if x["event"] == "attachment_zero_action_proved")
+    assert proof["observed_added_identities"] == ["K5u-HM2d90U"]
+    assert proof["observed_missing_identities"] == []
+
+
+def test_attached_wy_receipt_stays_on_original_recovery_and_never_retries(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    receipt = json.loads((Path(__file__).with_name("fixtures") / "wy-attached-receipt.json").read_text())
+    seed_zero_action_journal(manifest_path, receipt)
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+def test_legacy_zero_action_without_authorization_is_denied_even_when_inventory_unchanged(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState, match="authorization is missing"):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+@pytest.mark.parametrize("evidence_name", ["attachment_invocation.json", "attachment_receipt.json"])
+def test_legacy_authorization_rejects_same_shape_bytes_changed_after_review(
+    tmp_path: Path, evidence_name: str
+) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorize_same_batch_addition(manifest, tmp_path, include_completed=False)
+    evidence = manifest.video.parent / "provider" / evidence_name
+    value = json.loads(evidence.read_text())
+    evidence.write_text(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=4) + "\n")
+    provider_port = FakeProvider()
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState, match="authorization binding is invalid"):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+
+def authorize_reviewed_external(
+    target: publisher.PublishManifest,
+    root: Path,
+    *,
+    provider_id: str = "externVID01",
+    title: str = "AI학교 외부 예약",
+    status: str = "scheduled",
+    mismatch_second_snapshot: bool = False,
+) -> None:
+    authorization_path = authorize_same_batch_addition(target, root, include_completed=False)
+    urls = [
+        f"https://studio.youtube.com/video/{provider_id}/edit",
+        f"https://studio.youtube.com/video/{provider_id}/comments",
+    ]
+    row_value = {
+        "identity": provider_id,
+        "provider_id": provider_id,
+        "status": status,
+        "title": unicodedata.normalize("NFD", title),
+        "description": "",
+        "urls": urls,
+        "page": 1,
+        "privacy": "VIDEO_PRIVACY_PRIVATE",
+        "draft_status": "DRAFT_STATUS_NONE",
+        "scheduled_raw": {"scheduledPublishings": [{
+            "scheduledTimeSeconds": "1788692400",
+            "action": "SCHEDULED_PUBLISHING_ACTION_SET_PUBLIC",
+            "status": "SCHEDULED_PUBLISHING_STATUS_SCHEDULED",
+        }]},
+    }
+    row_bytes = json.dumps(row_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    bindings = []
+    rows_hash = ""
+    for index, scan_id in enumerate(("1" * 32, "2" * 32)):
+        rows = [row_value]
+        if mismatch_second_snapshot and index == 1:
+            rows = [row_value, {"identity": "unrelated", "status": "public"}]
+        rows_bytes = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        if index == 0:
+            rows_hash = hashlib.sha256(rows_bytes).hexdigest()
+        snapshot = root / f"inventory-provider-model-{scan_id}.json"
+        snapshot.write_text(json.dumps({
+            "status": "pass",
+            "scan_id": scan_id,
+            "captured_at": f"2026-09-15T06:4{index}:00.000Z",
+            "rows": rows,
+        }, ensure_ascii=False))
+        bindings.append({"path": str(snapshot), "sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest()})
+    authorization = json.loads(authorization_path.read_text())
+    authorization["reviewed_external_rows"] = [{
+        "provider_id": provider_id,
+        "status": "scheduled",
+        "snapshots": bindings,
+        "normalized_rows_sha256": rows_hash,
+        "row_sha256": hashlib.sha256(row_bytes).hexdigest(),
+    }]
+    authorization_path.write_text(json.dumps(authorization))
+
+
+def test_zero_action_retry_accepts_reviewed_external_scheduled_row(tmp_path: Path) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    authorize_reviewed_external(manifest, tmp_path)
+    provider_port = FakeProvider([row(
+        "externVID01",
+        status="scheduled",
+        provider_id="externVID01",
+        title="AI에 미친자가 저지른 일 | 4일차",
+        description="외부 작업 CTA https://aixschool.kr/admission/",
+        urls=[
+            "https://studio.youtube.com/video/externVID01/edit",
+            "https://studio.youtube.com/video/externVID01/comments",
+            "https://aixschool.kr/admission/",
+        ],
+        page=3,
+        scheduled_at="2026-09-06T20:00:00+09:00",
+    )])
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    assert runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))["status"] == "complete"
+    assert provider_port.retry_attach_calls == 1
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["target_marker", "target_title", "target_url", "sentinel"],
+)
+def test_reviewed_external_row_fail_closed(tmp_path: Path, case: str) -> None:
+    manifest_path, digest = make_manifest(tmp_path)
+    manifest = seed_zero_action_journal(manifest_path, actual_zero_receipt())
+    title = {
+        "target_marker": manifest.source_key,
+        "target_title": manifest.title,
+        "sentinel": manifest.draft_sentinel,
+    }.get(case, "현재 외부 메타데이터")
+    authorize_reviewed_external(
+        manifest,
+        tmp_path,
+        title="AI학교 외부 예약",
+        status="draft" if case == "draft" else "scheduled",
+        mismatch_second_snapshot=case == "snapshot_drift",
+    )
+    provider_port = FakeProvider([row(
+        "externVID01",
+        status="scheduled",
+        provider_id="externVID01",
+        title=title,
+        urls=([
+            "https://studio.youtube.com/video/externVID01/edit",
+            "https://studio.youtube.com/video/externVID01/comments",
+        ] + ([manifest.canonical_urls[0]] if case == "target_url" else [])),
+        scheduled_at="2026-09-07T20:00:00+09:00" if case == "date_drift" else "2026-09-06T20:00:00+09:00",
+    )])
+    runner = make_runner(provider_port, FakeCrm(), tmp_path, digest)
+    with pytest.raises(publisher.AmbiguousProviderState):
+        runner.run(manifest_path, now=datetime(2026, 9, 5, 9, tzinfo=KST))
+    assert provider_port.retry_attach_calls == 0
+
+def test_zero_action_proof_accepts_a_pre_click_failure_and_refuses_a_later_one():
+    """A create control that never rendered touched nothing; a chosen file might have."""
+    proves = publisher._receipt_proves_zero_attachment_action
+    empty = {"dialog_count": 0, "title_count": 0, "upload_text": "", "files": []}
+    assert proves({"error": "extension disconnected"})
+    assert proves({"attachment_stage": "context_ready",
+                   "error": "create-control-cardinality:0", "diagnostic": empty})
+    assert proves({"attachment_stage": "before_open", "error": "boom", "diagnostic": empty})
+    # Past the upload control a file may already have been selected.
+    for stage in ("upload_control_opened", "file_input_ready", "set_input_files_invoked"):
+        assert not proves({"attachment_stage": stage, "error": "boom", "diagnostic": empty})
+    # A diagnostic that shows any upload state is not proof of zero action.
+    for dirty in ({**empty, "dialog_count": 1}, {**empty, "title_count": 1},
+                  {**empty, "upload_text": "업로드 중"}, {**empty, "files": ["final.mp4"]}):
+        assert not proves({"attachment_stage": "context_ready", "error": "boom", "diagnostic": dirty})
+    # No diagnostic at all proves nothing.
+    assert not proves({"attachment_stage": "context_ready", "error": "boom"})
