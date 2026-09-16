@@ -1745,3 +1745,23 @@ def test_zero_action_proof_accepts_a_pre_click_failure_and_refuses_a_later_one()
         assert not proves({"attachment_stage": "context_ready", "error": "boom", "diagnostic": dirty})
     # No diagnostic at all proves nothing.
     assert not proves({"attachment_stage": "context_ready", "error": "boom"})
+
+def test_slot_reserved_on_an_earlier_day_is_replannable_but_a_same_day_one_is_not():
+    """Yesterday's uncommitted reservation may move; today's still stops for a human."""
+    reserved_at = publisher._slot_reserved_at
+    yesterday = {"history": [
+        {"event": "attachment_reserved", "at": "2026-09-15T16:25:05+09:00"},
+        {"event": "manual_remediation_required", "at": "2026-09-16T12:13:54+09:00"},
+    ]}
+    assert reserved_at(yesterday).date().isoformat() == "2026-09-15"
+    # The most recent slot-setting event wins, not the first one.
+    replanned = {"history": [
+        {"event": "attachment_reserved", "at": "2026-09-15T16:25:05+09:00"},
+        {"event": "slot_replanned_before_schedule", "at": "2026-09-16T09:00:00+09:00"},
+    ]}
+    assert reserved_at(replanned).date().isoformat() == "2026-09-16"
+    # Nothing to go on means no extra replan reason, so the guard still holds.
+    assert reserved_at({}) is None
+    assert reserved_at({"history": [{"event": "attachment_invocation_interrupted",
+                                     "at": "2026-09-16T09:00:00+09:00"}]}) is None
+    assert reserved_at({"history": [{"event": "attachment_reserved", "at": "not-a-time"}]}) is None

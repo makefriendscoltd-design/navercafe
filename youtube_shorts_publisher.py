@@ -637,6 +637,30 @@ def _receipt_proves_zero_attachment_action(receipt: Mapping[str, Any]) -> bool:
     )
 
 
+SLOT_SETTING_EVENTS = (
+    "attachment_reserved",
+    "attachment_retry1_slot_replanned",
+    "attachment_retry2_slot_replanned",
+    "slot_replanned_before_schedule",
+    "replanned_slot_elapsed",
+)
+
+
+def _slot_reserved_at(journal: Mapping[str, Any]) -> datetime | None:
+    """When the journalled slot was last chosen, in KST."""
+    history = journal.get("history")
+    if not isinstance(history, list):
+        return None
+    for item in reversed(history):
+        if not isinstance(item, Mapping) or item.get("event") not in SLOT_SETTING_EVENTS:
+            continue
+        try:
+            return datetime.fromisoformat(str(item.get("at"))).astimezone(KST)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _crm_dedupe_key(manifest: PublishManifest) -> str:
     value = f"youtube_shorts:youtube-content-repurpose:sent:{manifest.source_key}"
     return "external-" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:20]
@@ -1468,6 +1492,14 @@ class YouTubeShortsPublisher:
             replan_reasons.append("reserved_slot_elapsed")
         if schedule_now.date() != planned_at.date():
             replan_reasons.append("kst_date_boundary_crossed")
+        # A reservation held over from an earlier KST day was never committed to
+        # the provider, and the append-only planner has since handed that slot to
+        # another candidate. Replanning is the same remedy as crossing the date
+        # boundary mid-run; a same-day conflict still stops for a human, because
+        # there an earlier attempt of this very candidate could own the slot.
+        reserved_at = _slot_reserved_at(journal)
+        if reserved_at is not None and reserved_at.date() != schedule_now.date():
+            replan_reasons.append("reserved_on_earlier_kst_date")
         slot_conflict = False
         try:
             policy.validate_new_schedule_candidate(occupancy, slot)
