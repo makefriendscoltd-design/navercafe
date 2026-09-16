@@ -330,6 +330,21 @@ def test_provider_js_checks_raw_selector_cardinality_before_element_selection() 
     assert "exact(root,'#title-textarea #textbox','metadata-title')" in adapter.SCHEDULE_JS
 
 
+def test_attached_metadata_receipt_uses_fresh_persisted_read_not_ephemeral_toast() -> None:
+    script = adapter.SAVE_ATTACHED_METADATA_JS
+    assert script.count("saveClicks++;await save.click()") == 1
+    assert "while(Date.now()<end&&await save.isEnabled())" in script
+    assert "if(await save.isEnabled())throw Error('metadata-save-unconfirmed')" in script
+    assert "metadata-saved-notification-missing" not in script
+    assert "변경사항이 저장됨" not in script
+    close = script.index("await p.close();p=null")
+    reopen = script.index("await openExact()", close)
+    fresh_read = script.index("const after=await read()", reopen)
+    persisted_gate = script.index("throw Error('persisted-metadata-mismatch')", fresh_read)
+    receipt = script.index("fresh_read_verified:true", persisted_gate)
+    assert close < reopen < fresh_read < persisted_gate < receipt
+
+
 @pytest.mark.parametrize(
     "name,body",
     [
@@ -801,11 +816,15 @@ def test_attach_sends_exact_final_mp4_once_with_sentinel_and_observed_receipt(
     assert result["provider_observed_attachment_click_count"] == 1
     assert len(aside.calls) == 1
     payload = aside.calls[0]["payload"]
-    assert payload["file"]["name"] == "final.mp4"
+    transfer = payload["file_transfer"]
+    assert transfer["transport"] == "aside-session-path/v1"
+    assert transfer["source_path"] == str(manifest.video)
+    assert transfer["size"] == manifest.video.stat().st_size
+    assert transfer["sha256"] == manifest.video_sha256
     assert payload["sha256"] == manifest.video_sha256
     assert payload["sentinel"] == manifest.draft_sentinel
     assert payload["session_marker"]
-    assert payload["file"]["base64"]
+    assert "base64" not in json.dumps(payload)
     assert "attachActions++" in aside.calls[0]["body"]
     assert "displayed_filename" in aside.calls[0]["body"]
 
@@ -824,6 +843,46 @@ def test_attach_rejects_missing_provider_observation(tmp_path: Path) -> None:
     port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
     with pytest.raises(publisher.AmbiguousProviderState, match="attachment receipt"):
         port.attach_once(manifest, draft_sentinel=manifest.draft_sentinel)
+    assert len(aside.calls) == 1
+
+
+def test_retry2_writes_only_distinct_retry2_evidence_and_never_overwrites(tmp_path: Path) -> None:
+    _path, manifest = make_manifest(tmp_path)
+
+    def receipt(payload: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "status": "attached",
+            "account": "u0",
+            "headless": True,
+            "channel": adapter.CHANNEL_NAME,
+            "provider_observed_attachment_click_count": 1,
+            "attachment_name": "final.mp4",
+            "attachment_sha256": manifest.video_sha256,
+            "draft_sentinel": manifest.draft_sentinel,
+            "provider_id": PROVIDER_ID,
+            "displayed_filename": True,
+            "upload_flow_preserved": True,
+            "session_marker": payload["session_marker"],
+        }
+
+    aside = CapturingAsideRunner(receipt)
+    port = adapter.AsideHeadlessU0Provider(runner=aside, clock=lambda: NOW)
+    provider_dir = manifest.video.parent / "provider"
+    provider_dir.mkdir(parents=True, exist_ok=True)
+    original = provider_dir / "attachment_receipt.json"
+    retry1 = provider_dir / "attachment_receipt_retry1.json"
+    original.write_bytes(b"immutable-original")
+    retry1.write_bytes(b"immutable-retry1")
+
+    assert port.attach_retry2_once(
+        manifest, draft_sentinel=manifest.draft_sentinel
+    )["status"] == "attached"
+    assert original.read_bytes() == b"immutable-original"
+    assert retry1.read_bytes() == b"immutable-retry1"
+    assert (provider_dir / "attachment_invocation_retry2.json").exists()
+    assert (provider_dir / "attachment_receipt_retry2.json").exists()
+    with pytest.raises(publisher.AmbiguousProviderState, match="retry2 evidence already exists"):
+        port.attach_retry2_once(manifest, draft_sentinel=manifest.draft_sentinel)
     assert len(aside.calls) == 1
 
 
@@ -1155,3 +1214,51 @@ def test_concrete_ports_bind_to_final_publisher_interface(tmp_path: Path) -> Non
     assert runner.provider is provider_port
     assert runner.crm is crm
     assert runner.lock_path == publisher.SHARED_PROVIDER_LOCK == adapter.PROVIDER_LOCK
+
+
+def test_default_runner_routes_only_explicit_file_transfer_to_persistent_repl(tmp_path: Path) -> None:
+    source = tmp_path / "final.mp4"
+    source.write_bytes(b"approved-video")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    returned = {"status": "blocked", "provider_observed_attachment_click_count": 0}
+    with (
+        mock.patch("aside_browser.resolve_aside_cli", return_value="/bin/echo"),
+        mock.patch("aside_browser.run_repl_with_staged_upload", return_value=returned) as staged,
+        mock.patch("aside_browser.run_repl") as ordinary,
+    ):
+        runner = adapter._default_aside_runner()
+        result = runner(
+            adapter.ATTACH_JS,
+            {
+                "session_marker": "a" * 32,
+                "file_transfer": {
+                    "transport": "aside-session-path/v1",
+                    "source_path": str(source),
+                    "size": source.stat().st_size,
+                    "sha256": digest,
+                },
+            },
+            cwd=tmp_path,
+            timeout=123,
+        )
+    assert result is returned
+    ordinary.assert_not_called()
+    code_factory = staged.call_args.args[0]
+    code = code_factory("provider-stage-" + "b" * 32 + "/final.mp4")
+    assert str(source) not in code
+    assert "approved-video" not in code
+    assert '"base64"' not in code
+    assert "provider-stage-" in code
+    assert staged.call_args.kwargs == {
+        "expected_size": source.stat().st_size,
+        "expected_sha256": digest,
+        "cwd": tmp_path,
+        "timeout": 123,
+        "account": "u0",
+    }
+
+def test_attachment_enters_studio_through_the_target_channel_url():
+    """Studio's root resolves to whichever identity is default, which is not always ours."""
+    script = adapter.ATTACH_JS
+    assert "studio.youtube.com/channel/${payload.channel_id}?shorts_upload_session=" in script
+    assert "studio.youtube.com/?shorts_upload_session=" not in script
