@@ -1492,20 +1492,23 @@ class YouTubeShortsPublisher:
             replan_reasons.append("reserved_slot_elapsed")
         if schedule_now.date() != planned_at.date():
             replan_reasons.append("kst_date_boundary_crossed")
-        # A reservation held over from an earlier KST day was never committed to
-        # the provider, and the append-only planner has since handed that slot to
-        # another candidate. Replanning is the same remedy as crossing the date
-        # boundary mid-run; a same-day conflict still stops for a human, because
-        # there an earlier attempt of this very candidate could own the slot.
-        reserved_at = _slot_reserved_at(journal)
-        if reserved_at is not None and reserved_at.date() != schedule_now.date():
-            replan_reasons.append("reserved_on_earlier_kst_date")
         slot_conflict = False
         try:
             policy.validate_new_schedule_candidate(occupancy, slot)
         except Exception:
             slot_conflict = True
         if slot_conflict:
+            # A reservation held over from an earlier KST day was never committed
+            # to the provider, and the append-only planner has since handed that
+            # slot to another candidate, so moving it loses nothing. A same-day
+            # conflict still stops for a human, because there an earlier attempt
+            # of this very candidate could be the one holding the slot. This only
+            # applies to a slot that actually conflicts; an uncontested one is
+            # never moved just for being old.
+            if not replan_reasons:
+                reserved_at = _slot_reserved_at(journal)
+                if reserved_at is not None and reserved_at.date() != schedule_now.date():
+                    replan_reasons.append("reserved_on_earlier_kst_date")
             if not replan_reasons:
                 journal["status"] = "blocked_manual_reserved_slot_conflict"
                 store.event(journal, "manual_remediation_required", reason="reserved_slot_conflict")
