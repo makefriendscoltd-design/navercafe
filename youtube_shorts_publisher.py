@@ -646,6 +646,12 @@ SLOT_SETTING_EVENTS = (
 )
 
 
+
+def _candidate_holds_a_scheduled_row(inventory: Any, manifest: Any, attached_identity: str) -> bool:
+    """이 후보의 첨부 초안이나 그 복제본(같은 매니페스트와 맞는 행)이 이미 예약돼 있는가."""
+    own = {r.identity for r in inventory.matches(manifest)} | {attached_identity}
+    return any(r.status == "scheduled" and r.identity in own for r in inventory.rows)
+
 def _slot_reserved_at(journal: Mapping[str, Any]) -> datetime | None:
     """When the journalled slot was last chosen, in KST."""
     history = journal.get("history")
@@ -1509,6 +1515,14 @@ class YouTubeShortsPublisher:
                 reserved_at = _slot_reserved_at(journal)
                 if reserved_at is not None and reserved_at.date() != schedule_now.date():
                     replan_reasons.append("reserved_on_earlier_kst_date")
+            if not replan_reasons:
+                # 같은 날 충돌을 사람에게 넘기는 이유는 이 후보의 이전 시도가 그 자리를
+                # 갖고 있을 수 있어서다. 이 후보의 첨부 초안은 아직 예약 전(row가
+                # scheduled면 위에서 이미 반환)이고, 이 후보와 같은 행이나 그 복제본이
+                # 예약된 게 채널에 하나도 없다면, 충돌한 자리는 전부 다른 영상의 것이다.
+                # 한 묶음에서 앞 후보가 멈춘 사이 뒤 후보들이 그 자리를 채운 경우다.
+                if not _candidate_holds_a_scheduled_row(precommit, manifest, row.identity):
+                    replan_reasons.append("reserved_slot_taken_by_other_candidate")
             if not replan_reasons:
                 journal["status"] = "blocked_manual_reserved_slot_conflict"
                 store.event(journal, "manual_remediation_required", reason="reserved_slot_conflict")

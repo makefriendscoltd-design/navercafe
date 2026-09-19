@@ -1765,3 +1765,30 @@ def test_slot_reserved_on_an_earlier_day_is_replannable_but_a_same_day_one_is_no
     assert reserved_at({"history": [{"event": "attachment_invocation_interrupted",
                                      "at": "2026-09-16T09:00:00+09:00"}]}) is None
     assert reserved_at({"history": [{"event": "attachment_reserved", "at": "not-a-time"}]}) is None
+
+
+def test_same_day_slot_conflict_replans_only_when_no_row_of_this_candidate_is_scheduled():
+    """다른 영상이 자리를 가졌으면 옮기고, 이 후보나 그 복제본이 예약돼 있으면 사람에게 넘긴다."""
+    from types import SimpleNamespace as NS
+    holds = publisher._candidate_holds_a_scheduled_row
+
+    class Inv:
+        def __init__(self, rows, dupes=()):
+            self.rows = rows
+            self._dupes = dupes
+        def matches(self, manifest):
+            return tuple(self._dupes)
+
+    attached = "ZgIor8ELtJY"
+    other = NS(identity="yfuMe0JPryI", status="scheduled")
+    mine_draft = NS(identity=attached, status="draft")
+    # 앞 후보가 멈춘 사이 다른 영상이 그 자리를 채웠다: 옮겨도 된다.
+    assert not holds(Inv([other, mine_draft]), None, attached)
+    # 이 후보의 첨부 초안이 이미 예약돼 있다: 사람이 봐야 한다.
+    assert holds(Inv([NS(identity=attached, status="scheduled")]), None, attached)
+    # 이 후보의 복제본(같은 매니페스트와 맞는 다른 행)이 예약돼 있다: 사람이 봐야 한다.
+    dupe = NS(identity="DupDupDup11", status="scheduled")
+    assert holds(Inv([other, dupe], dupes=[dupe]), None, attached)
+    # 복제본이 있어도 예약 전이면 이 후보가 자리를 가진 게 아니다.
+    dupe_draft = NS(identity="DupDupDup11", status="private")
+    assert not holds(Inv([other, dupe_draft], dupes=[dupe_draft]), None, attached)
