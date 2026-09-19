@@ -116,6 +116,17 @@ def produce(source_key: str, today: str) -> dict:
             "complete": provider["complete"]}
 
 
+
+def _link_related_video(root: Path) -> str:
+    """채널 정책 정본: 쇼츠는 소개 영상을 관련 동영상으로 걸고 재조회로 확인해야 업로드 완료다."""
+    receipt = root / "shorts/provider/schedule_receipt.json"
+    try:
+        provider_id = json.loads(receipt.read_text(encoding="utf-8"))["provider_id"]
+    except (OSError, KeyError, json.JSONDecodeError):
+        return "fail: schedule_receipt 에 provider_id 없음"
+    ok, note = _run(["shorts_related_video.py", provider_id], timeout=900)
+    return "ok" if ok else f"fail: {note}"
+
 def publish(root: Path, verdict: dict) -> dict:
     """Publish the channels whose artefacts passed, and only those.
 
@@ -187,6 +198,7 @@ def publish(root: Path, verdict: dict) -> dict:
         if shorts["verified"]:
             steps["shorts_provider"] = "ok"
             steps["shorts_publish"] = "ok"
+            steps["shorts_related_video"] = _link_related_video(root)
             return steps
         manifest = root / "shorts/07_provider_manifest.json"
         # The provider step refuses to overwrite a manifest, which on a resumed
@@ -200,6 +212,8 @@ def publish(root: Path, verdict: dict) -> dict:
             ok, note = _run(["youtube_shorts_aside_adapter.py", str(manifest), "--live"],
                             timeout=2400)
             steps["shorts_publish"] = "ok" if ok else f"fail: {note}"
+            if ok:
+                steps["shorts_related_video"] = _link_related_video(root)
         elif ok:
             steps["shorts_publish"] = "fail: 07_provider_manifest.json 없음"
     return steps
