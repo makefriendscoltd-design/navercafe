@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import youtube_shorts_publisher as publisher
+from content_production_policy import load_channel_policy, shorts_description
 from shorts_repair_prepare import binding
 
 EXPECTED_CHANNEL = "나민수 AI"
@@ -31,14 +32,17 @@ def prepare(root: str | Path) -> dict:
     script = (root / "07_script_final.txt").read_text(encoding="utf-8").strip()
     urls = [f"https://youtu.be/{source_key}", f"https://www.youtube.com/watch?v={source_key}"]
     video = binding(root / "final.mp4")
+    # 설명글의 채널 목적·CTA와 관련 동영상은 채널 정책 정본에서 온다.
+    channel_policy = load_channel_policy()
     manifest = {
         "source_key": source_key,
         "title": production["render_inputs"]["upload_title"],
-        "description": script + "\n\n▶ 원본 영상\n" + "\n".join(urls),
+        "description": shorts_description(script, urls, channel_policy),
         "final_mp4": str(root / "final.mp4"),
         "final_mp4_sha256": video["sha256"],
         "original_urls": urls,
         "expected_channel": EXPECTED_CHANNEL,
+        "related_video_id": channel_policy["introduction_video_id"],
         "journal": str(root / "provider/journal.json"),
     }
     visual = json.loads((root / "visual_validation.json").read_text(encoding="utf-8"))

@@ -1318,7 +1318,13 @@ def plan_shorts_schedule(
 
     if now_kst.tzinfo is None or getattr(now_kst.tzinfo, "key", None) != "Asia/Seoul":
         raise ProductionPolicyError("현재 시각에는 Asia/Seoul 시간대가 필요합니다.")
-    existing = validate_schedule(existing_slots)
+    # Provider inventory is evidence, not a schedule we are authorized to
+    # rewrite. Preserve every row even when older reservations already violate
+    # today's policy, while requiring every newly appended candidate to be safe.
+    existing = sorted(existing_slots)
+    if any(slot.tzinfo is None or getattr(slot.tzinfo, "key", None) != "Asia/Seoul"
+           for slot in existing):
+        raise ProductionPolicyError("기존 예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
     cursor = max([now_kst, *existing])
     start_date = cursor.date()
     for offset in range(horizon_days + 1):
@@ -1334,11 +1340,28 @@ def plan_shorts_schedule(
             if candidate <= cursor:
                 continue
             try:
-                validate_schedule([*existing, candidate])
+                validate_new_schedule_candidate(existing, candidate)
             except ProductionPolicyError:
                 continue
             return candidate
     raise ProductionPolicyError("예약 가능한 쇼츠 슬롯을 찾지 못했습니다.")
+
+
+def validate_new_schedule_candidate(
+    existing_slots: Iterable[datetime], candidate: datetime
+) -> datetime:
+    """Validate one addition without rewriting or forgiving existing rows."""
+    existing = list(existing_slots)
+    validate_schedule([candidate])
+    if any(slot.tzinfo is None or getattr(slot.tzinfo, "key", None) != "Asia/Seoul"
+           for slot in existing):
+        raise ProductionPolicyError("기존 예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
+    if sum(slot.date() == candidate.date() for slot in existing) >= SCHEDULE["max_per_day"]:
+        raise ProductionPolicyError("새 쇼츠를 더하면 하루 최대 2개를 넘습니다.")
+    gap_seconds = SCHEDULE["minimum_gap_hours"] * 3600
+    if any(abs((candidate - slot).total_seconds()) < gap_seconds for slot in existing):
+        raise ProductionPolicyError("새 쇼츠 예약 간격은 기존 예약과 최소 5시간이어야 합니다.")
+    return candidate
 
 
 def validate_replacement_sequence(events: Iterable[str]) -> None:
@@ -1352,3 +1375,54 @@ def validate_replacement_sequence(events: Iterable[str]) -> None:
         positions.append(values.index(event))
     if positions != sorted(positions):
         raise ProductionPolicyError("교체 순서는 새 게시 확인 → 기존 취소/숨김 → 삭제 → CRM입니다.")
+
+
+# ---------------------------------------------------------------------------
+# 나민수 AI 채널 정책 정본 (2026-09-08 확정, 2026-09-14 소개 영상 연결 추가 확정)
+#
+# 설명글·고정댓글에 들어갈 채널 목적 문구와 CTA 블록, 쇼츠 관련 동영상으로 걸
+# 소개 영상은 이 파일이 정본이다. 값을 여기 복사하면 소유자가 정본을 고쳐도
+# 파이프라인이 옛 문구로 계속 올리므로, 발행할 때마다 정본을 읽는다. 파일이
+# 없거나 채널이 다르면 CTA 없이 올리지 않도록 발행을 막는다.
+# ---------------------------------------------------------------------------
+CHANNEL_POLICY_PATH = Path("/Users/apple/orca/projects/video-workflow-audit-20260907/channel-policy.json")
+NAMINSOO_CHANNEL_ID = "UCWyi-m_CdIbRpcwZN6MgBfg"
+
+
+def load_channel_policy(path: str | Path = CHANNEL_POLICY_PATH) -> dict[str, Any]:
+    """나민수 AI 채널 정책 정본을 읽고, 발행에 필요한 값이 온전한지 확인한다."""
+    policy_path = Path(path)
+    if not policy_path.is_file():
+        raise ProductionPolicyError(f"채널 정책 정본이 없습니다: {policy_path}")
+    policy = json.loads(policy_path.read_text(encoding="utf-8"))
+    if policy.get("channel_id") != NAMINSOO_CHANNEL_ID:
+        raise ProductionPolicyError("채널 정책 정본의 채널이 나민수 AI가 아닙니다.")
+    positioning = str(policy.get("positioning_copy") or "").strip()
+    cta_block = str(policy.get("cta_block") or "").strip()
+    if not positioning or not cta_block:
+        raise ProductionPolicyError("채널 정책 정본에 채널 목적 문구나 CTA 블록이 비어 있습니다.")
+    intro = policy.get("introduction_video") or {}
+    intro_id = str(intro.get("video_id") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", intro_id) or intro.get("shorts_related_video") is not True:
+        raise ProductionPolicyError("채널 정책 정본의 쇼츠 관련 동영상(소개 영상) 지정이 올바르지 않습니다.")
+    return {
+        "channel_id": policy["channel_id"],
+        "positioning_copy": positioning,
+        "cta_block": cta_block,
+        "introduction_video_id": intro_id,
+        "introduction_video_title": str(intro.get("title") or ""),
+    }
+
+
+def shorts_description(script: str, original_urls: list[str], policy: dict[str, Any]) -> str:
+    """정책 정본의 '본문에 채널 목적과 cta_block 포함'을 따르는 쇼츠 설명글.
+
+    자료집 신청 링크가 없는 콘텐츠이므로 cta_block 전체를 그대로 쓴다. 링크는
+    소유자가 준 그대로 두고 UTM을 붙이지 않는다(정본 links_rule).
+    """
+    return "\n\n".join((
+        script.strip(),
+        "▶ 원본 영상\n" + "\n".join(original_urls),
+        policy["positioning_copy"],
+        policy["cta_block"],
+    ))

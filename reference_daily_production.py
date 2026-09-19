@@ -51,8 +51,9 @@ def _run(args: list[str], *, timeout: int = 3600) -> tuple[bool, str]:
         return False, f"timeout after {exc.timeout}s"
     except OSError as exc:
         return False, f"runner error: {exc}"
-    tail = (completed.stdout or "").strip().splitlines()[-1:] or \
-           (completed.stderr or "").strip().splitlines()[-1:]
+    primary = completed.stderr if completed.returncode else completed.stdout
+    secondary = completed.stdout if completed.returncode else completed.stderr
+    tail = (primary or "").strip().splitlines()[-1:] or (secondary or "").strip().splitlines()[-1:]
     return completed.returncode == 0, (tail[0] if tail else "")[:300]
 
 

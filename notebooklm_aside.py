@@ -10,7 +10,7 @@ import unicodedata
 from pathlib import Path
 from typing import Any
 
-from aside_browser import JS_COMMON, _payload_expression, run_repl
+from aside_browser import AsideError, JS_COMMON, _payload_expression, run_repl
 from content_production_policy import (
     ASIDE_ACCOUNT,
     SHORTS_NOTEBOOK_INSTRUCTION,
@@ -23,6 +23,7 @@ from content_production_policy import (
 
 
 PROVIDER_LOCK = Path("/tmp/aimax-aside-u0-provider.lock")
+CLEANUP_PENDING_REASON = "notebook_source_state_restore_failed"
 
 
 class NotebookLMAsideError(RuntimeError):
@@ -80,7 +81,7 @@ def ask_existing_notebook(
     code = JS_COMMON + f"\nconst payload={_payload_expression(payload)};\n" + r'''
 const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&aside_pipeline=${Date.now()}`);
 await sleep(5000);
-const initialUrl=p.url();
+let initialUrl=p.url();
 const norm=s=>(s||'').normalize('NFKC').replace(/[\u2019\u2018]/g,"'")
   .replace(/^(?:Select|선택)\s+/i,'').replace(/\s+(?:Select|선택)$/i,'')
   .replace(/\s+/g,' ').trim();
@@ -98,7 +99,14 @@ let beforeSubmitScreenshotPath='',afterResponseScreenshotPath='';
 let instructionEvidence={},instructionValue='';
 let answerExtraction={};
 try{
-  const values=await notebookValues();
+  let values=await notebookValues();
+  const bindingDeadline=Date.now()+30000;
+  while(Date.now()<bindingDeadline && (!initialUrl.includes(payload.notebookId)||!values.includes(payload.notebookTitle))){
+    if(/accounts\.google\.com|ServiceLogin/i.test(initialUrl))break;
+    await sleep(1000);
+    initialUrl=p.url();
+    values=await notebookValues();
+  }
   before=await sourceState();
   if(/accounts\.google\.com|ServiceLogin/i.test(initialUrl))throw new Error('NotebookLM 로그인이 필요합니다.');
   if(!initialUrl.includes(payload.notebookId)||!values.includes(payload.notebookTitle))throw new Error('NotebookLM 정본 제목/ID를 확인하지 못했습니다.');
@@ -253,9 +261,21 @@ emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload
     PROVIDER_LOCK.touch(exist_ok=True)
     with PROVIDER_LOCK.open("a+") as lock_stream:
         fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
-        result = run_repl(code, timeout=max(360, int(timeout) + 90), account=account)
+        try:
+            result = run_repl(code, timeout=max(360, int(timeout) + 90), account=account)
+        except AsideError as exc:
+            if not isinstance(exc.result, dict):
+                raise NotebookLMAsideError(str(exc)) from exc
+            result = exc.result
     instruction_value = str(result.pop("instructionValue", "") or "")
-    if result.get("status") != "ok":
+    cleanup_pending = (
+        result.get("status") == "error"
+        and str(result.get("message") or "")
+        == "NotebookLM 소스 수/선택 상태가 원래대로 복구되지 않았습니다."
+        and result.get("cleanupRestored") is False
+        and len(str(result.get("answer") or "").strip()) > 100
+    )
+    if result.get("status") != "ok" and not cleanup_pending:
         raise NotebookLMAsideError(str(result.get("message") or json.dumps(result, ensure_ascii=False)))
     if kind == "shorts":
         instruction = result.get("instructionEvidence") or {}
@@ -294,8 +314,14 @@ emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload
         or normalized_label(selected_after[0]) != target
     ):
         raise NotebookLMAsideError("NotebookLM 대상 소스 1개 추가·제출·응답 증거가 완전하지 않습니다.")
-    if not result.get("cleanupRestored") or not str(result.get("answer") or "").strip():
+    if result.get("status") == "ok" and (
+        not result.get("cleanupRestored") or not str(result.get("answer") or "").strip()
+    ):
         raise NotebookLMAsideError("NotebookLM 응답/소스 복구 증거가 완전하지 않습니다.")
+    if cleanup_pending and not evidence_dir:
+        raise NotebookLMAsideError(
+            "완료 응답의 cleanup-pending 증거를 저장할 evidence_dir이 없습니다."
+        )
     if evidence_dir:
         evidence_root = Path(evidence_dir).expanduser().resolve()
         evidence_root.mkdir(parents=True, exist_ok=True)
@@ -309,6 +335,10 @@ emit({status,message,backend:'Aside CLI headless REPL',account:'u0',kind:payload
             target = evidence_root / name
             shutil.copy2(source, target)
             result[key] = str(target)
+        if cleanup_pending:
+            result["status"] = "response_verified_cleanup_pending"
+            result["restorationRequired"] = True
+            result["cleanupReason"] = CLEANUP_PENDING_REASON
         safe_evidence = {
             key: value
             for key, value in result.items()

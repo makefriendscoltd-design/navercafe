@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import re
 import tempfile
@@ -22,6 +23,14 @@ def _payload_from(code: str) -> dict:
 
 
 class AsideBrowserUnitTests(unittest.TestCase):
+    def test_parse_result_preserves_native_error_payload(self):
+        native = {"status": "error", "message": "cleanup failed", "answer": "kept"}
+        with self.assertRaises(aside_browser.AsideError) as raised:
+            aside_browser._parse_result(
+                aside_browser.RESULT_MARKER + json.dumps(native) + "\n"
+            )
+        self.assertEqual(raised.exception.result, native)
+
     def test_parse_result_uses_last_marker(self):
         output = (
             "human status\n"
@@ -248,3 +257,59 @@ class AsideBrowserUnitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestOwnedAsideStageSafety(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.sessions = self.root / "sessions"
+        self.session = self.sessions / "session-one"
+        self.session.mkdir(parents=True)
+        self.source = self.root / "source.mp4"
+        self.source.write_bytes(b"immutable-media")
+        self.digest = hashlib.sha256(self.source.read_bytes()).hexdigest()
+        self.token = "provider-stage-" + "a" * 32
+        self.relative = self.token + "/final.mp4"
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def call(self, target: Path):
+        return aside_browser._owned_aside_stage(
+            self.source,
+            str(target),
+            self.relative,
+            expected_size=self.source.stat().st_size,
+            expected_sha256=self.digest,
+            sessions_root=self.sessions,
+        )
+
+    def test_outside_existing_file_is_never_deleted(self):
+        target = self.root / "outside" / "final.mp4"
+        target.parent.mkdir()
+        target.write_bytes(b"keep")
+        with self.assertRaises(aside_browser.AsideError):
+            with self.call(target):
+                pass
+        self.assertEqual(target.read_bytes(), b"keep")
+
+    def test_existing_staged_file_and_directory_are_never_deleted(self):
+        target = self.session / self.token / "final.mp4"
+        target.parent.mkdir()
+        target.write_bytes(b"keep")
+        with self.assertRaises(aside_browser.AsideError):
+            with self.call(target):
+                pass
+        self.assertEqual(target.read_bytes(), b"keep")
+        self.assertTrue(target.parent.is_dir())
+
+    def test_mkdir_collision_preserves_preexisting_directory(self):
+        target = self.session / self.token / "final.mp4"
+        target.parent.mkdir()
+        marker = target.parent / "unowned.txt"
+        marker.write_text("keep")
+        with self.assertRaises(FileExistsError):
+            with self.call(target):
+                pass
+        self.assertEqual(marker.read_text(), "keep")
+        self.assertTrue(target.parent.is_dir())

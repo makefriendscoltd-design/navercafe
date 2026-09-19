@@ -1,0 +1,14 @@
+{
+  "status": "attached",
+  "account": "u0",
+  "headless": true,
+  "channel": "나민수 AI",
+  "provider_observed_attachment_click_count": 1,
+  "attachment_name": "final.mp4",
+  "attachment_sha256": "22d444607b6ff694cd0b2b1479f08bc53c6efbd80b247fc107d7442534bdc927",
+  "draft_sentinel": "shorts-WY_DesGZhE4-22d444607b6f",
+  "provider_id": "wry-6KeW-oc",
+  "displayed_filename": true,
+  "upload_flow_preserved": true,
+  "session_marker": "779345a9cd7e43cfb87956a98fd5f6fb"
+}

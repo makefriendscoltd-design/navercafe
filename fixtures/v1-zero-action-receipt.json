@@ -1,0 +1,9 @@
+{
+  "status": "blocked",
+  "account": "u0",
+  "headless": true,
+  "channel": "나민수 AI",
+  "provider_observed_attachment_click_count": 0,
+  "diagnostic": {},
+  "error": "extension disconnected"
+}

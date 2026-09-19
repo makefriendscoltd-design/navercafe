@@ -1759,3 +1759,69 @@ def test_a_missing_boundary_sentence_is_cleared_against_the_line_that_needed_it(
     ]
     assert policy.validate_shorts_verbatim_claims(
         narration, fact_verifications=entries)["status"] == "pass"
+
+
+def test_append_planner_preserves_actual_conflicting_inventory_and_adds_seven_safe_slots():
+    kst=ZoneInfo('Asia/Seoul')
+    raw=['2026-09-15T11:00:37+09:00','2026-09-15T11:44:11+09:00','2026-09-15T20:00:00+09:00',
+         '2026-09-16T11:00:00+09:00','2026-09-16T20:00:00+09:00','2026-09-16T20:00:00+09:00']
+    raw += [f'2026-09-{day:02d}T{hour:02d}:00:00+09:00' for day in range(17,24) for hour in (11,20)]
+    existing=[datetime.fromisoformat(x).astimezone(kst) for x in raw]
+    original=list(existing); now=datetime(2026,9,15,12,10,tzinfo=kst); added=[]
+    for _ in range(7):
+        slot=policy.plan_shorts_schedule(existing,now)
+        policy.validate_new_schedule_candidate(existing,slot)
+        existing.append(slot); added.append(slot.isoformat())
+    assert original==existing[:len(original)]
+    assert added==['2026-09-24T11:00:00+09:00','2026-09-24T20:00:00+09:00',
+                   '2026-09-25T11:00:00+09:00','2026-09-25T20:00:00+09:00',
+                   '2026-09-26T11:00:00+09:00','2026-09-26T20:00:00+09:00',
+                   '2026-09-27T11:00:00+09:00']
+    with pytest.raises(policy.ProductionPolicyError): policy.validate_schedule(original)
+
+
+def test_new_candidate_validation_keeps_timezone_daily_cap_and_gap_strict():
+    kst=ZoneInfo('Asia/Seoul'); day=datetime(2026,9,24,11,tzinfo=kst)
+    with pytest.raises(policy.ProductionPolicyError,match='5시간'):
+        policy.validate_new_schedule_candidate([day],day+timedelta(hours=3))
+    with pytest.raises(policy.ProductionPolicyError,match='최대 2개'):
+        policy.validate_new_schedule_candidate([day,day+timedelta(hours=9)],day.replace(hour=2))
+    with pytest.raises(policy.ProductionPolicyError,match='Asia/Seoul'):
+        policy.plan_shorts_schedule([datetime(2026,9,23,20,tzinfo=timezone.utc)],day)
+
+
+def test_shorts_description_carries_channel_purpose_and_cta_from_the_canonical_policy():
+    """정본 '본문에 채널 목적과 cta_block 포함': 원본 링크 뒤에 채널 목적과 CTA 전체가 온다."""
+    pol = {"positioning_copy": "채널 목적 문구", "cta_block": "※신청\nhttps://aixschool.kr/admission/"}
+    urls = ["https://youtu.be/AAAAAAAAAAA", "https://www.youtube.com/watch?v=AAAAAAAAAAA"]
+    desc = policy.shorts_description("대본", urls, pol)
+    assert desc.startswith("대본")
+    for url in urls:
+        assert url in desc
+    assert desc.index("▶ 원본 영상") < desc.index("채널 목적 문구") < desc.index("※신청")
+    assert desc.rstrip().endswith("https://aixschool.kr/admission/")
+    assert "utm_" not in desc  # 정본 links_rule: 소유자 링크를 그대로 쓴다
+
+
+def test_channel_policy_refuses_to_publish_without_cta_or_the_right_channel(tmp_path):
+    good = {"channel_id": policy.NAMINSOO_CHANNEL_ID, "positioning_copy": "목적", "cta_block": "CTA",
+            "introduction_video": {"video_id": "Y1k44op1ZLk", "shorts_related_video": True}}
+    path = tmp_path / "channel-policy.json"
+    path.write_text(json.dumps(good, ensure_ascii=False), encoding="utf-8")
+    assert policy.load_channel_policy(path)["introduction_video_id"] == "Y1k44op1ZLk"
+    for broken in ({**good, "channel_id": "UCfLllxOn8hbOqwVFYw5L-PQ"},
+                   {**good, "cta_block": ""},
+                   {**good, "introduction_video": {"video_id": "short", "shorts_related_video": True}},
+                   {**good, "introduction_video": {"video_id": "Y1k44op1ZLk", "shorts_related_video": False}}):
+        path.write_text(json.dumps(broken, ensure_ascii=False), encoding="utf-8")
+        with pytest.raises(policy.ProductionPolicyError):
+            policy.load_channel_policy(path)
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.load_channel_policy(tmp_path / "missing.json")
+
+
+def test_live_channel_policy_is_readable_and_names_the_introduction_video():
+    pol = policy.load_channel_policy()
+    assert pol["channel_id"] == policy.NAMINSOO_CHANNEL_ID
+    assert "aixschool.kr" in pol["cta_block"] and "pf.kakao.com" in pol["cta_block"]
+    assert pol["introduction_video_id"] == "Y1k44op1ZLk"

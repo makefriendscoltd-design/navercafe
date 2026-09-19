@@ -10,15 +10,21 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import mimetypes
 import os
 import re
+import queue
 import shutil
+import stat
 import subprocess
 import tempfile
+import threading
+import time
+import uuid
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 RESULT_MARKER = "__ASIDE_RESULT__"
@@ -28,6 +34,10 @@ ASIDE_ACCOUNT = "u0"
 
 class AsideError(RuntimeError):
     """Raised when the Aside CLI or the requested browser workflow fails."""
+
+    def __init__(self, message: str, *, result: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.result = result
 
 
 class AsideLoginRequired(AsideError):
@@ -81,10 +91,14 @@ def _parse_result(output: str) -> dict[str, Any]:
         site = data.get("site") or "사이트"
         raise AsideLoginRequired(
             f"Aside 브라우저에서 {site} 로그인이 필요합니다. 열린 로그인 탭에서 "
-            "로그인을 마친 뒤 다시 실행하세요."
+            "로그인을 마친 뒤 다시 실행하세요.",
+            result=data,
         )
     if data.get("status") == "error":
-        raise AsideError(str(data.get("message") or "Aside 브라우저 작업이 실패했습니다."))
+        raise AsideError(
+            str(data.get("message") or "Aside 브라우저 작업이 실패했습니다."),
+            result=data,
+        )
     return data
 
 
@@ -129,6 +143,199 @@ def run_repl(
         tail = "\n".join(output.strip().splitlines()[-10:])
         raise AsideError(f"Aside CLI가 종료 코드 {proc.returncode}로 실패했습니다.\n{tail}")
     return _parse_result(output)
+
+
+def run_repl_with_staged_upload(
+    code_factory: Callable[[str], str],
+    source_path: str | os.PathLike[str],
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    cwd: str | os.PathLike[str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    account: str | None = ASIDE_ACCOUNT,
+) -> dict[str, Any]:
+    """Run two small expressions in one REPL with one session-local file.
+
+    The first expression resolves the fresh Aside session path. Python then
+    copies and verifies the media there. The second expression receives only a
+    relative path; media bytes never enter REPL stdin.
+    """
+    executable = resolve_aside_cli()
+    if not executable:
+        raise AsideError("Aside CLI를 찾을 수 없습니다.")
+    selected_account = (account or ASIDE_ACCOUNT).strip()
+    if selected_account != ASIDE_ACCOUNT:
+        raise AsideError(f"이 프로젝트의 Aside 계정은 {ASIDE_ACCOUNT}만 허용됩니다.")
+    source = Path(source_path).expanduser().resolve()
+    def digest_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    if not source.is_file() or source.stat().st_size != expected_size:
+        raise AsideError("staged upload source size does not match the manifest")
+    source_digest = digest_file(source)
+    if source_digest != expected_sha256:
+        raise AsideError("staged upload source SHA-256 does not match the manifest")
+    token = uuid.uuid4().hex
+    relative = f"provider-stage-{token}/final.mp4"
+    process = subprocess.Popen(
+        [executable, "repl", "--account", selected_account],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=str(cwd or Path.cwd()),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    lines: queue.Queue[str | None] = queue.Queue()
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=read_output, daemon=True).start()
+
+    def evaluate(code: str, deadline: float) -> dict[str, Any]:
+        if process.stdin is None:
+            raise AsideError("Aside REPL stdin is unavailable")
+        expression = f"(async()=>{{\n{code}\n}})()"
+        process.stdin.write("await eval(" + json.dumps(expression, ensure_ascii=False) + ");\n")
+        process.stdin.flush()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AsideError("Aside staged upload timed out")
+            try:
+                line = lines.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise AsideError("Aside staged upload timed out") from exc
+            if line is None:
+                raise AsideError("Aside CLI exited before returning staged upload evidence")
+            if RESULT_MARKER in line:
+                return _parse_result(line)
+
+    deadline = time.monotonic() + timeout
+    try:
+        stage = evaluate(
+            "console.log(" + json.dumps(RESULT_MARKER) + "+JSON.stringify({status:'ready',path:await fs.resolvePath(" + json.dumps(relative) + ")}));",
+            deadline,
+        )
+        raw_path = stage.get("path")
+        if stage.get("status") != "ready" or not isinstance(raw_path, str):
+            raise AsideError("Aside did not return a session staging path")
+        with _owned_aside_stage(
+            source,
+            raw_path,
+            relative,
+            expected_size=expected_size,
+            expected_sha256=expected_sha256,
+        ):
+            result = evaluate(code_factory(relative), deadline)
+    finally:
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+    if process.returncode != 0:
+        raise AsideError(f"Aside CLI exited with code {process.returncode} after staged upload")
+    return result
+
+
+@contextlib.contextmanager
+def _owned_aside_stage(
+    source: Path,
+    raw_path: str,
+    relative: str,
+    *,
+    expected_size: int,
+    expected_sha256: str,
+    sessions_root: Path | None = None,
+):
+    """Create and remove only the exact directory and inode owned here."""
+    staged = Path(raw_path)
+    sessions = (sessions_root or (Path.home() / ".aside" / "u" / "0" / "sessions")).resolve()
+    token_dir = relative.split("/", 1)[0]
+    resolved_parent = staged.parent.resolve(strict=False)
+    if (
+        staged.name != "final.mp4"
+        or resolved_parent.name != token_dir
+        or not re.fullmatch(r"provider-stage-[0-9a-f]{32}", token_dir)
+        or resolved_parent.parent.parent != sessions
+        or staged.exists()
+    ):
+        raise AsideError("Aside staging path escaped the owned session directory")
+    directory_owned = False
+    file_owned = False
+    owned_inode: tuple[int, int] | None = None
+    try:
+        staged.parent.mkdir(mode=0o700, exist_ok=False)
+        directory_owned = True
+        descriptor = os.open(
+            staged,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        file_owned = True
+        created = os.fstat(descriptor)
+        owned_inode = (created.st_dev, created.st_ino)
+        source_hash = hashlib.sha256()
+        try:
+            with source.open("rb") as incoming, os.fdopen(descriptor, "wb") as outgoing:
+                for chunk in iter(lambda: incoming.read(1024 * 1024), b""):
+                    source_hash.update(chunk)
+                    outgoing.write(chunk)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        def digest(path: Path) -> str:
+            value = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    value.update(chunk)
+            return value.hexdigest()
+        if (
+            staged.stat().st_size != expected_size
+            or source_hash.hexdigest() != expected_sha256
+            or digest(staged) != expected_sha256
+        ):
+            raise AsideError("Aside staged copy differs from the approved final media")
+        yield staged
+    finally:
+        if file_owned and owned_inode is not None:
+            try:
+                current = staged.lstat()
+                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == owned_inode:
+                    staged.unlink()
+            except FileNotFoundError:
+                pass
+        if directory_owned:
+            try:
+                staged.parent.rmdir()
+            except OSError:
+                # Never traverse or remove files added by anything else.
+                pass
 
 
 @contextlib.contextmanager

@@ -1,4 +1,5 @@
 import configparser
+import json
 from unittest import mock
 
 import pytest
@@ -9,6 +10,85 @@ import notebooklm_shorts
 import content_production_policy as policy
 import youtube_cafe_auto
 import youtube_cardnews_pipeline
+from aside_browser import AsideError
+
+
+def test_completed_native_answer_is_persisted_as_cleanup_pending(monkeypatch, tmp_path):
+    monkeypatch.setattr(notebooklm_aside, "PROVIDER_LOCK", tmp_path / "provider.lock")
+    before = tmp_path / "native-before.png"
+    after = tmp_path / "native-after.png"
+    before.write_bytes(b"before")
+    after.write_bytes(b"after")
+    native = {
+        "status": "error",
+        "message": "NotebookLM 소스 수/선택 상태가 원래대로 복구되지 않았습니다.",
+        "answer": "완료된 NotebookLM 응답입니다. " * 10,
+        "cleanupRestored": False,
+        "sourceAdded": True,
+        "targetLabel": "정확한 소스 선택",
+        "sourceCountBefore": 7,
+        "sourceCountAfterAdd": 8,
+        "selectedBefore": ["정확한 소스 선택"],
+        "selectedAfter": ["정확한 소스 선택"],
+        "targetOnlyBefore": True,
+        "targetOnlyAfter": True,
+        "instructionValue": policy.SHORTS_NOTEBOOK_INSTRUCTION,
+        "instructionEvidence": {
+            "goal": "맞춤",
+            "responseLength": "길게",
+            "verifiedBeforeSourceAdd": True,
+        },
+        "beforeSubmitScreenshotPath": str(before),
+        "afterResponseScreenshotPath": str(after),
+    }
+    monkeypatch.setattr(
+        notebooklm_aside,
+        "run_repl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AsideError(native["message"], result=native)
+        ),
+    )
+    evidence = tmp_path / "evidence"
+    result = notebooklm_aside.ask_existing_notebook(
+        "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+        policy.SHORTS_NOTEBOOK_PROMPT,
+        kind="shorts",
+        notebook_id=policy.SHORTS_NOTEBOOK["id"],
+        notebook_title=policy.SHORTS_NOTEBOOK["title"],
+        evidence_dir=evidence,
+    )
+    assert result["status"] == "response_verified_cleanup_pending"
+    assert result["restorationRequired"] is True
+    assert result["cleanupReason"] == "notebook_source_state_restore_failed"
+    assert (evidence / "notebooklm-answer.md").read_text().strip() == native["answer"].strip()
+    assert (evidence / "notebooklm-before-submit.png").is_file()
+    assert (evidence / "notebooklm-after-response.png").is_file()
+    saved = json.loads((evidence / "notebooklm-provider-evidence.json").read_text())
+    assert saved["status"] == "response_verified_cleanup_pending"
+    assert saved["cleanupReason"] == "notebook_source_state_restore_failed"
+    assert saved["restorationRequired"] is True
+    assert saved["cleanupRestored"] is False
+
+
+def test_unrelated_native_error_is_not_adopted(monkeypatch, tmp_path):
+    monkeypatch.setattr(notebooklm_aside, "PROVIDER_LOCK", tmp_path / "provider.lock")
+    native = {"status": "error", "message": "NotebookLM 쿼리 입력칸을 찾지 못했습니다."}
+    monkeypatch.setattr(
+        notebooklm_aside,
+        "run_repl",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AsideError(native["message"], result=native)
+        ),
+    )
+    with pytest.raises(notebooklm_aside.NotebookLMAsideError, match="쿼리 입력칸"):
+        notebooklm_aside.ask_existing_notebook(
+            "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+            policy.SHORTS_NOTEBOOK_PROMPT,
+            kind="shorts",
+            notebook_id=policy.SHORTS_NOTEBOOK["id"],
+            notebook_title=policy.SHORTS_NOTEBOOK["title"],
+            evidence_dir=tmp_path,
+        )
 
 
 def test_notebooklm_defaults_to_named_cafe_notebook():

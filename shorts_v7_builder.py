@@ -34,13 +34,14 @@ from content_production_policy import (
     validate_presenter_asset,
     validate_shorts_render_bundle,
 )
-from notebooklm_shorts import fixed_cta, validate_head_copy, validate_head_copy_connection
+from notebooklm_shorts import fixed_cta, validate_comment_keyword, validate_head_copy, validate_head_copy_connection
 
 
 SOURCE_ID = "7cimtg6LPHg"
 SOURCE_URL = "https://youtu.be/7cimtg6LPHg"
 SOURCE_CREDIT = ""
 SOURCE_START_AT = 0.0
+COMMENT_KEYWORD = "자료"
 SOURCE = ROOT / "source_original.mp4"
 PRESENTER = Path("/Users/apple/Downloads/2026-07-02 15-39-18.mp4")
 SCRIPT = ROOT / "07_script_final.txt"
@@ -411,7 +412,7 @@ def generate_minsoo_section(
 
 
 def split_seven_sections(script: str) -> list[str]:
-    cta = fixed_cta(SOURCE_MINUTES)
+    cta = fixed_cta(SOURCE_MINUTES, COMMENT_KEYWORD)
     if not script.endswith(cta):
         raise RuntimeError("source-duration CTA missing")
     body = script[:-len(cta)].rstrip()
@@ -1146,7 +1147,7 @@ def render() -> int:
         if not path.is_file():
             raise FileNotFoundError(path)
     script_text = SCRIPT.read_text(encoding="utf-8").strip()
-    if not script_text.endswith(fixed_cta(SOURCE_MINUTES)) or "여섯째" in script_text:
+    if not script_text.endswith(fixed_cta(SOURCE_MINUTES, COMMENT_KEYWORD)) or "여섯째" in script_text:
         raise RuntimeError("fifth-item/fixed-CTA script gate failed")
     if sum(script_text.count(x) for x in ("첫째", "둘째", "셋째", "넷째", "다섯째")) != 5:
         raise RuntimeError("exactly five ordinal markers required")
@@ -1364,11 +1365,21 @@ def validate_existing_render() -> int:
 def configure(root: Path) -> None:
     global ROOT, SOURCE_ID, SOURCE_URL, SOURCE, PRESENTER, SCRIPT, HEADCOPY, FINAL
     global SOURCE_MINUTES, SCENE_JOBS, SCENE_SENTINELS, UPLOAD_TITLE, SOURCE_CREDIT
-    global SOURCE_START_AT
+    global SOURCE_START_AT, COMMENT_KEYWORD
     from content_lineage import bound_file, validate_shorts_origin
     ROOT = root.resolve()
     origin = validate_shorts_origin(ROOT)
     manifest = json.loads((ROOT / "production_manifest.json").read_text())
+    transform_entry = manifest.get("content_lineage", {}).get("cta_transform") or {}
+    transform_path = Path(str(transform_entry.get("path") or ""))
+    if not transform_path.is_absolute():
+        transform_path = (ROOT / transform_path).resolve()
+    if (not transform_path.is_file() or transform_entry.get("sha256") != sha(transform_path)):
+        raise RuntimeError("comment CTA transform binding is missing or stale")
+    transform = json.loads(transform_path.read_text(encoding="utf-8"))
+    if transform.get("status") != "cta_only" or transform.get("cta_style") != "comment_keyword":
+        raise RuntimeError("comment CTA transform contract is invalid")
+    COMMENT_KEYWORD = validate_comment_keyword(str(transform.get("comment_keyword") or ""))
     data = manifest["render_inputs"]
     SOURCE_ID = origin["source_key"]
     SOURCE_URL = f"https://youtu.be/{SOURCE_ID}"
