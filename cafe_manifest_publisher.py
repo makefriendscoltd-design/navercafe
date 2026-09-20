@@ -192,7 +192,8 @@ def validate_notebooklm_cafe_provenance(manifest_path: Path, manifest: dict, caf
         and canonical.get("account") == "u0"
         and canonical.get("notebookTitle") == "민수대표님_카페글"
         and canonical_source in {long_url, f"https://youtu.be/{source_key}"}
-        and canonical.get("status") in {"ok", "pass", "ok_recovered_after_cli_timeout"}
+        and canonical.get("status") in {"ok", "pass", "ok_recovered_after_cli_timeout",
+                                       "response_verified_cleanup_pending"}
         and (not canonical.get("answer_sha256") or
              (answer_present and sha256(answer_path) == canonical["answer_sha256"]))
     )

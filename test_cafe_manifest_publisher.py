@@ -309,3 +309,30 @@ def test_cafe_gate_refuses_a_source_it_cannot_measure(tmp_path, monkeypatch):
 
     assert result["failures"] == ["source_measurement_available"]
     assert "측정 실패: network down" in result["sourceVideo"]["error"]
+
+
+def test_a_verified_answer_publishes_even_if_notebook_cleanup_failed(tmp_path, monkeypatch):
+    """The notebook filling up must not also withhold the answers it produced.
+
+    When the run cannot remove the source it added, the evidence records
+    response_verified_cleanup_pending. The response itself was verified and its
+    hash is still checked below, so provenance is unchanged; only the notebook
+    housekeeping is outstanding.
+    """
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    monkeypatch.setattr(publisher, "measure_source_video",
+                        lambda source_key: {"seconds": 1200, "width": 1920, "height": 1080})
+    evidence_path = manifest_path.parent / "notebooklm/notebooklm-provider-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["status"] = "response_verified_cleanup_pending"
+    evidence_path.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
+
+    _, _, provider, receipts = publisher.resolve_manifest(str(manifest_path))
+    result = publisher.validate_cafe_eligibility(manifest_path, provider, receipts)
+    assert "notebooklm_provider_evidence_exact" not in result["failures"]
+
+    # An answer that was never verified still cannot publish.
+    evidence["status"] = "response_missing"
+    evidence_path.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
+    refused = publisher.validate_cafe_eligibility(manifest_path, provider, receipts)
+    assert "notebooklm_provider_evidence_exact" in refused["failures"]
