@@ -447,3 +447,26 @@ def test_adopting_the_notebook_answer_needs_the_newest_attempt(tmp_path):
 
     with pytest.raises(RuntimeError, match="최신 시도가 이 원본의 것이 아니어서"):
         recover.adopt_latest_answer("ItwnA9Y0UFA", out_dir=tmp_path / "out", project=tmp_path)
+
+
+def test_a_dead_aside_daemon_is_not_a_failed_entry():
+    """One daemon crash marked three sound queue entries failed.
+
+    Its QuickJS runtime aborts on a GC assertion and takes the daemon with it,
+    so the browser is never opened and the entry is untouched. Charging it an
+    attempt spends a retry on an infrastructure fault, and carrying on spends
+    one per remaining entry.
+    """
+    import cafe_queue_runner as runner
+    from aside_browser import AsideDaemonDown, AsideError
+
+    assert issubclass(AsideDaemonDown, AsideError)
+    for note in ("Aside daemon is not reachable — make sure Aside Browser is running",
+                 "daemon.runtime: REPL context is disposed",
+                 "AsideDaemonDown: Aside 데몬이 죽어 브라우저 작업을 시작하지 못했습니다."):
+        assert runner.daemon_died(note)
+    # A real publishing fault still counts, or nothing would ever be retried.
+    for note in ("Naver image upload completion not confirmed before register",
+                 "precommit check returned no result marker",
+                 "timeout after 900s"):
+        assert not runner.daemon_died(note)

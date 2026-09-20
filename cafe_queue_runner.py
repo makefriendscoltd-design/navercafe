@@ -169,6 +169,17 @@ def save_queue(path: Path, queue: dict) -> None:
     os.replace(tmp, path)
 
 
+def daemon_died(note: str) -> bool:
+    """Did the run fail because the Aside daemon went away rather than the work?
+
+    Its QuickJS runtime aborts on a GC assertion and takes the daemon down, so
+    the browser was never opened and the entry is exactly as it was.
+    """
+    return ("daemon is not reachable" in note
+            or "REPL context is disposed" in note
+            or "데몬이 죽어" in note)
+
+
 def record(
     project: Path, queue_path: Path, source_key: str, now: datetime, ok: bool, note: str
 ) -> None:
@@ -314,6 +325,16 @@ def main(argv=None) -> int:
             )
         except subprocess.TimeoutExpired:
             ok, note = False, f"timeout after {args.timeout}s"
+
+        if not ok and daemon_died(note):
+            print(json.dumps({
+                "source_key": source_key, "action": "abort",
+                "reason": "aside_daemon_down",
+                "detail": "Aside 데몬이 죽어 브라우저를 열지 못했습니다. "
+                          "이 항목은 시도로 세지 않습니다. Aside를 재시작하고 다시 실행하세요.",
+            }, ensure_ascii=False), flush=True)
+            summary["aborted"] = "aside_daemon_down"
+            break
 
         record(project, queue_path, source_key, started, ok, note)
         print(

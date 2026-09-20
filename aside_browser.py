@@ -40,6 +40,16 @@ class AsideError(RuntimeError):
         self.result = result
 
 
+class AsideDaemonDown(AsideError):
+    """The Aside daemon died, so nothing was attempted in the browser.
+
+    Its QuickJS runtime aborts on a GC assertion and takes the daemon with it.
+    The app keeps running, so every later call fails the same way until Aside is
+    restarted. That is an infrastructure fault, not a fault in the work being
+    driven, and callers must not record it against the item they were handling.
+    """
+
+
 class AsideLoginRequired(AsideError):
     """Raised when the selected Aside browser profile is not signed in."""
 
@@ -141,8 +151,46 @@ def run_repl(
     output = "\n".join(part for part in (proc.stdout, proc.stderr) if part)
     if proc.returncode != 0:
         tail = "\n".join(output.strip().splitlines()[-10:])
+        if "daemon is not reachable" in tail or "REPL context is disposed" in tail:
+            raise AsideDaemonDown(
+                f"Aside 데몬이 죽어 브라우저 작업을 시작하지 못했습니다.\n{tail}")
         raise AsideError(f"Aside CLI가 종료 코드 {proc.returncode}로 실패했습니다.\n{tail}")
     return _parse_result(output)
+
+
+def daemon_is_up(*, account: str | None = ASIDE_ACCOUNT, timeout: int = 60) -> bool:
+    """Is the daemon answering? A dead one fails every later call the same way."""
+    try:
+        run_repl(JS_COMMON + "\nemit({status:'ok'});", account=account, timeout=timeout)
+    except AsideError:
+        return False
+    return True
+
+
+def restart_aside(*, wait_seconds: int = 25) -> None:
+    """Quit and relaunch the Aside app, the only way back from a dead daemon."""
+    import subprocess
+    import time
+
+    subprocess.run(["osascript", "-e", 'quit app "Aside"'],
+                   capture_output=True, text=True, timeout=60)
+    time.sleep(6)
+    subprocess.run(["open", "-a", "Aside"], capture_output=True, text=True, timeout=60)
+    time.sleep(wait_seconds)
+
+
+def ensure_daemon(*, account: str | None = ASIDE_ACCOUNT) -> bool:
+    """Make sure the daemon answers before driving the browser.
+
+    Its QuickJS runtime aborts on a GC assertion and takes the daemon with it,
+    while the app itself keeps running, so a dead daemon looks like a healthy
+    install and every later call fails identically. Checking first turns one
+    crash into one clean stop instead of a run of false failures.
+    """
+    if daemon_is_up(account=account):
+        return True
+    restart_aside()
+    return daemon_is_up(account=account)
 
 
 def run_repl_with_staged_upload(
