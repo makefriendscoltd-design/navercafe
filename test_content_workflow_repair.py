@@ -529,3 +529,26 @@ def test_repair_finds_the_video_a_retry_uploaded(tmp_path):
         encoding="utf-8")
     assert repair.approved_description(tmp_path, "_dLj_ih15P0") == "승인된 설명"
     assert repair.approved_description(tmp_path, "otherVID001") == ""
+
+
+def test_a_retired_source_is_not_offered_for_production_again(tmp_path):
+    """A dead source came back as a candidate every single day.
+
+    Nothing in the channel states can say "we are not producing this": a video
+    that barely moves and a script that predates the verbatim rule both leave a
+    source looking merely unfinished.
+    """
+    import content_run_state as state
+
+    root = tmp_path / "outputs" / "abcDEF12345-20260921"
+    root.mkdir(parents=True)
+    assert state.retired(root) == {}
+
+    (root / "retired.json").write_text(json.dumps(
+        {"source_key": "abcDEF12345", "reason": "원본 화면이 거의 정지",
+         "decided_by": "owner 2026-09-21"}), encoding="utf-8")
+    verdict = state.source_state(tmp_path, "abcDEF12345")
+    assert verdict["needs_production"] is False
+    assert verdict["retired"] == "원본 화면이 거의 정지"
+    # A retirement is a decision, not an unfinished run awaiting review.
+    assert verdict["needs_review"] == []

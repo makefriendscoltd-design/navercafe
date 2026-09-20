@@ -91,6 +91,16 @@ def community_state(root: Path, source_key: str) -> dict:
             "protected": False, "url": receipt.get("url")}
 
 
+def retired(root: Path) -> dict:
+    """An explicit decision not to produce this source again.
+
+    A source can be unproduceable for reasons no channel state expresses -- its
+    video barely moves, or its script predates the verbatim rule -- and without
+    somewhere to say so it comes back as a candidate every single day.
+    """
+    return read_json(root / "retired.json")
+
+
 def source_state(project: Path, source_key: str) -> dict:
     roots = output_roots(project, source_key)
     root = roots[0] if roots else project / "outputs" / f"{source_key}-missing"
@@ -108,10 +118,13 @@ def source_state(project: Path, source_key: str) -> dict:
                         and community_handed_off)
     complete = all(x["verified"] for x in channels.values())
     partial = partial_artifacts(root)
+    retirement = retired(root)
     return {"source_key": source_key, "root": str(root), "channels": channels,
             "handed_off": handed_off, "terminal_blocked": terminal_blocked,
-            "needs_review": partial,
-            "needs_production": not (handed_off or terminal_blocked or partial),
+            "needs_review": [] if retirement else partial,
+            "retired": retirement.get("reason") or None,
+            "needs_production": not (handed_off or terminal_blocked or partial
+                                     or retirement),
             "complete": complete}
 
 
