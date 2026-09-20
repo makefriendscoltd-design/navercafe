@@ -494,3 +494,38 @@ def test_a_repeated_same_cause_failure_stops_starving_the_queue():
     assert runner.environmental(login)
     assert runner.failure_cause(upload) == "이미지 업로드 완료를 확인하지 못했습니다"
     assert runner.failure_cause("timeout after 900s") == "timeout after"
+
+
+def test_repair_finds_the_video_a_retry_uploaded(tmp_path):
+    """Three Shorts sat on the channel under their sentinel title, unrepairable.
+
+    A first attach that fails leaves a blocked receipt beside the retry that
+    actually attached, and reading only the first one reported no upload at all.
+    The verified block is no help either: it is written when scheduling
+    finishes, and a short still wearing its sentinel is one where that never
+    happened.
+    """
+    import shorts_title_repair as repair
+
+    provider = tmp_path / "provider"
+    provider.mkdir()
+    (provider / "attachment_receipt.json").write_text(json.dumps(
+        {"status": "blocked", "error": "create-control-cardinality:0",
+         "provider_observed_attachment_click_count": 0}), encoding="utf-8")
+    (provider / "attachment_receipt_retry1.json").write_text(json.dumps(
+        {"status": "attached", "provider_id": "_dLj_ih15P0"}), encoding="utf-8")
+
+    found = ""
+    for receipt in sorted(provider.glob("attachment_receipt*.json")):
+        value = json.loads(receipt.read_text(encoding="utf-8"))
+        if value.get("status") == "attached" and value.get("provider_id"):
+            found = value["provider_id"]
+    assert found == "_dLj_ih15P0"
+
+    # A description the policy pass already verified on this video is approved,
+    # not drift, so the title can be repaired without touching it.
+    (provider / "description_policy_update.json").write_text(json.dumps(
+        {"status": "verified", "video_id": "_dLj_ih15P0", "description": "승인된 설명"}),
+        encoding="utf-8")
+    assert repair.approved_description(tmp_path, "_dLj_ih15P0") == "승인된 설명"
+    assert repair.approved_description(tmp_path, "otherVID001") == ""

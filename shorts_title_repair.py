@@ -41,7 +41,7 @@ try{
   await openEdit();
   const before=await readTitle(), descBefore=await readDesc();
   if(![payload.sentinel,payload.title].includes(before))throw new Error('unexpected-title:'+before);
-  if(descBefore!==payload.description.trim())throw new Error('description-drifted');
+  if(descBefore!==payload.description.trim()&&descBefore!==(payload.approvedDescription||'').trim())throw new Error('description-drifted');
   if(before!==payload.title){
     const loc=p.locator('#title-textarea #textbox');
     await loc.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');
@@ -94,16 +94,45 @@ finally{try{if(p)await p.close();}catch(_){}}
 """
 
 
+def approved_description(root: Path, provider_id: str) -> str:
+    """The description a verified policy pass already wrote onto this video."""
+    update = root / "provider/description_policy_update.json"
+    if not update.is_file():
+        return ""
+    try:
+        value = json.loads(update.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if value.get("status") != "verified" or value.get("video_id") != provider_id:
+        return ""
+    return str(value.get("description") or "")
+
+
 def repair(root: str | Path) -> dict:
     root = Path(root).expanduser().resolve()
     manifest = json.loads((root / "07_provider_manifest.json").read_text(encoding="utf-8"))
     journal = json.loads((root / "provider/journal.json").read_text(encoding="utf-8"))
-    provider_id = (journal.get("replacement_retirement") or {}).get("new_provider_id") \
-        or journal["verified"]["provider_id"]
+    def attached_provider_id() -> str:
+        found = ""
+        for receipt in sorted((root / "provider").glob("attachment_receipt*.json")):
+            try:
+                value = json.loads(receipt.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if value.get("status") == "attached" and value.get("provider_id"):
+                found = str(value["provider_id"])
+        return found
+
+    provider_id = ((journal.get("replacement_retirement") or {}).get("new_provider_id")
+                   or (journal.get("verified") or {}).get("provider_id")
+                   or attached_provider_id())
+    if not provider_id:
+        raise RuntimeError("이 산출물에서 업로드된 영상 ID를 찾지 못했습니다.")
     payload = {
         "id": provider_id,
         "title": manifest["title"],
         "description": manifest["description"],
+        "approvedDescription": approved_description(root, provider_id),
         "sentinel": manifest.get("draft_sentinel")
         or f"shorts-{manifest['source_key']}-{manifest['final_mp4_sha256'][:12]}",
         "list_url": STUDIO_SHORTS_URL,

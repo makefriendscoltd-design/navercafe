@@ -24,9 +24,17 @@ from youtube_shorts_aside_adapter import (
 
 def recover(root: str | Path, *, manifest_name: str = "07_provider_manifest.json") -> dict:
     root = Path(root).expanduser().resolve()
-    receipt_path = root / "provider/attachment_receipt.json"
-    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    if receipt.get("status") != "attached" or not receipt.get("provider_id"):
+    provider_dir = root / "provider"
+    candidates = sorted(provider_dir.glob("attachment_receipt*.json"))
+    receipt = None
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if value.get("status") == "attached" and value.get("provider_id"):
+            receipt = value
+    if receipt is None:
         raise RuntimeError("첨부 영수증에 확정된 provider_id가 없습니다. 재업로드하지 마세요.")
 
     manifest = publisher.load_manifest(root / manifest_name)
