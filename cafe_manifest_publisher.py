@@ -397,7 +397,6 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
             source_long_url=manifest["tail"]["source_long_url"],
             board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
             publish=True, save_draft=False, account="u0",
-            prefer_path_uploads=True,
         )
         if result.get("status") != "published" or "cafe.naver.com" not in result.get("url", ""):
             (evidence / "provider_uncertain_do_not_retry.json").write_text(

@@ -169,6 +169,34 @@ def save_queue(path: Path, queue: dict) -> None:
     os.replace(tmp, path)
 
 
+# Login and daemon faults are about the machine, not the entry, so they must not
+# count toward locking one out. Everything else is the entry's own failure.
+ENVIRONMENT_CAUSES = ("naver login required", "로그인이 필요", "AsideLoginRequired",
+                      "daemon is not reachable", "REPL context is disposed", "데몬이 죽어")
+SAME_CAUSE_LIMIT = 3
+
+
+def failure_cause(note: str) -> str:
+    """A coarse label for why a publish failed, stable enough to compare runs."""
+    text = (note or "").strip()
+    for marker in ("이미지 업로드 완료를 확인하지 못했습니다",
+                   "화면 캡처를 받지 못했습니다",
+                   "결과 마커를 찾지 못했습니다",
+                   "editor_quote_heading_not_found",
+                   "too many arguments",
+                   "timeout after"):
+        if marker in text:
+            return marker
+    tail = [line for line in text.splitlines() if line.strip()]
+    return (tail[-1] if tail else "unknown")[:80]
+
+
+def environmental(note: str) -> bool:
+    lines = [line for line in (note or "").splitlines() if line.strip()]
+    raised = lines[-1] if lines else ""
+    return any(marker in raised for marker in ENVIRONMENT_CAUSES)
+
+
 def daemon_died(note: str) -> bool:
     """Did the run fail because the Aside daemon went away rather than the work?
 
@@ -198,9 +226,20 @@ def record(
             entry["result"] = {"ok": True, "note": note, "url": url}
         else:
             retry = float(queue.get("retry_interval_hours") or 1)
-            entry["status"] = "failed"
-            entry["next_eligible_at"] = (now + timedelta(hours=retry)).isoformat()
+            cause = failure_cause(note)
+            repeats = (int(entry.get("same_cause_failures") or 0) + 1
+                       if entry.get("failure_cause") == cause else 1)
+            entry["failure_cause"] = cause
+            entry["same_cause_failures"] = repeats
             entry["result"] = {"ok": False, "note": note[:2000]}
+            if repeats >= SAME_CAUSE_LIMIT and not environmental(note):
+                entry["status"] = "blocked"
+                entry["next_eligible_at"] = None
+                entry["do_not_retry"] = True
+                entry["last_error"] = f"same_cause_failures={repeats}: {cause}"
+            else:
+                entry["status"] = "failed"
+                entry["next_eligible_at"] = (now + timedelta(hours=retry)).isoformat()
         break
     save_queue(queue_path, queue)
 

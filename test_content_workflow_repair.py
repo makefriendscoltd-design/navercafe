@@ -470,3 +470,27 @@ def test_a_dead_aside_daemon_is_not_a_failed_entry():
                  "precommit check returned no result marker",
                  "timeout after 900s"):
         assert not runner.daemon_died(note)
+
+
+def test_a_repeated_same_cause_failure_stops_starving_the_queue():
+    """Three chronic entries held the oldest slots while 32 were never tried.
+
+    The queue's own failure_policy already says a repeated same-cause failure
+    gets locked; the runner did not implement it. Login and daemon faults are
+    about the machine, so they must not count, and the cause has to be read from
+    the raised error rather than the whole traceback -- a stack that merely
+    mentions login kept a chronic entry retryable forever.
+    """
+    import cafe_queue_runner as runner
+
+    upload = ("Traceback (most recent call last):\n"
+              '  File "aside_browser.py", line 2203, in post_to_naver_cafe\n'
+              "aside_browser.AsideError: 네이버 이미지 업로드 완료를 확인하지 못했습니다.")
+    login = ("Traceback (most recent call last):\n"
+             "  ... 네이버 이미지 업로드 완료를 확인하지 못했습니다 ...\n"
+             "aside_browser.AsideLoginRequired: naver login required before publish")
+
+    assert not runner.environmental(upload)
+    assert runner.environmental(login)
+    assert runner.failure_cause(upload) == "이미지 업로드 완료를 확인하지 못했습니다"
+    assert runner.failure_cause("timeout after 900s") == "timeout after"
