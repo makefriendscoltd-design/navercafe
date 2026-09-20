@@ -114,6 +114,28 @@ def _run(js: str, payload: dict) -> dict:
     return run_repl(code, timeout=110, account=ASIDE_ACCOUNT)
 
 
+
+def live_intro_title(video_id: str) -> str | None:
+    """소개 영상의 현재 제목을 공급자에서 직접 읽는다.
+
+    이 영상은 제목 A/B 테스트 대상이라 정본에 적힌 제목이 실제와 어긋날 수 있다.
+    선택 창이 영상 id를 드러내지 않으므로 제목으로 찾을 수밖에 없고, 정본 제목으로
+    못 찾을 때 실제 제목으로 한 번 더 찾기 위해 쓴다.
+    """
+    try:
+        import yt_dlp
+
+        from youtube_source_options import source_options
+
+        options = {**source_options(), "skip_download": True, "quiet": True, "no_warnings": True}
+        with yt_dlp.YoutubeDL(options) as ydl:
+            info = ydl.extract_info(f"https://youtu.be/{video_id}", download=False)
+        title = str(info.get("title") or "").strip()
+        return title or None
+    except Exception:
+        return None
+
+
 def pin_channel() -> None:
     """Studio 활성 채널이 다른 채널로 가 있으면 편집 화면이 권한 오류로 막힌다."""
     completed = subprocess.run([sys.executable, str(SELECT_CHANNEL)], capture_output=True, text=True, timeout=600)
@@ -128,6 +150,10 @@ def set_related_video(video_id: str) -> dict:
     intro_title = policy["introduction_video_title"].strip()
     if not intro_title:
         raise RuntimeError("채널 정책 정본에 소개 영상 제목이 없어 관련 동영상을 안전하게 고를 수 없습니다.")
+    titles = [intro_title]
+    live = live_intro_title(policy["introduction_video_id"])
+    if live and live != intro_title:
+        titles.append(live)
     payload = {"videoId": video_id, "introTitle": intro_title}
     PROVIDER_LOCK.touch(exist_ok=True)
     with PROVIDER_LOCK.open("a+") as lock:
@@ -135,16 +161,26 @@ def set_related_video(video_id: str) -> dict:
         before = _run(READ_JS, payload)
         if before.get("status") != "ok":
             return {"video_id": video_id, "status": "blocked", "stage": "read", **before}
-        if intro_title in (before.get("related") or ""):
+        if any(t in (before.get("related") or "") for t in titles):
             return {"video_id": video_id, "status": "already_set", "related": before.get("related")}
-        result = _run(SET_JS, payload)
+        # 정본 제목으로 못 찾으면 공급자의 현재 제목으로 한 번 더 찾는다(A/B 테스트 대비).
+        for attempt, title in enumerate(titles):
+            payload = {"videoId": video_id, "introTitle": title}
+            result = _run(SET_JS, payload)
+            if result.get("status") == "saved":
+                intro_title = title
+                break
+            if not str(result.get("error") or "").startswith("intro-card-cardinality:0"):
+                break
         if result.get("status") != "saved":
-            return {"video_id": video_id, "status": "blocked", "stage": "set", **result}
+            return {"video_id": video_id, "status": "blocked", "stage": "set",
+                    "titles_tried": titles, **result}
         # 정본 요구: 저장 후 재조회로 확인한다.
         after = _run(READ_JS, payload)
     verified = after.get("status") == "ok" and intro_title in (after.get("related") or "")
     return {"video_id": video_id, "status": "verified" if verified else "unverified",
             "before": before.get("related"), "after": after.get("related"),
+            "matched_title": intro_title,
             "introduction_video_id": policy["introduction_video_id"]}
 
 
