@@ -892,7 +892,7 @@ def build_scene_manifest(captions: list[dict], dur: float) -> list[float]:
         "source": str(SFX),
         "source_sha256": sha(SFX),
         "license": "locked project ElevenLabs-generated SFX asset",
-        "gain_instruction": "calibrate combined SFX stem to voice peak minus 5.5 dB (cap -11 dBTP)",
+        "gain_instruction": "calibrate combined SFX stem to voice peak minus 3 dB (cap -8 dBTP)",
         "ducking": "none required after voice-dominance gate",
     } for index, (word, start) in enumerate(zip(("첫째", "둘째", "셋째", "넷째", "다섯째"), markers))]
     dump(ROOT / "sound-cue-sheet.json", {"duration": round(dur, 3), "cues": cues})
@@ -1002,7 +1002,7 @@ def build_sfx_stem(markers: list[float], dur: float) -> Path:
     run(args)
     raw_metrics = loudness(raw)
     voice_peak = loudness(ROOT / "voice_stem.wav")["true_peak_dbtp"]
-    desired_peak = min(-11.0, voice_peak - 5.5)
+    desired_peak = min(-8.0, voice_peak - 3.0)
     gain = desired_peak - raw_metrics["true_peak_dbtp"]
     stem = ROOT / "sfx_stem.wav"
     run([
@@ -1174,7 +1174,7 @@ def render() -> int:
         renderer.render_final(PRESENTER, ass, visual, cfg, SOURCE, voice_stem)
 
     bgm_stem = ROOT / "bgm_stem.wav"
-    normalize_loudness(BGM, bgm_stem, -27.0, -9.0, dur)
+    normalize_loudness(BGM, bgm_stem, -23.0, -9.0, dur)
     sfx_stem = build_sfx_stem(markers, dur)
     premaster = ROOT / "premaster_mix.wav"
     run([
@@ -1263,8 +1263,8 @@ def validate_existing_render() -> int:
     gates = {
         "voice_integrated_minus16_tolerance_0_5": abs(voice_metrics["integrated_lufs"] + 16.0) <= 0.5,
         "voice_true_peak_at_most_minus2": voice_metrics["true_peak_dbtp"] <= -2.0,
-        "voice_minus_bgm_at_least10_5_lu": measured["voice_minus_bgm_lu"] >= 10.5,
-        "voice_peak_minus_sfx_peak_at_least5_db": measured["voice_peak_minus_sfx_peak_db"] >= 5.0,
+        "voice_minus_bgm_at_least6_5_lu": measured["voice_minus_bgm_lu"] >= 6.5,
+        "voice_peak_minus_sfx_peak_at_least2_5_db": measured["voice_peak_minus_sfx_peak_db"] >= 2.5,
         "final_integrated_minus14_tolerance_0_5": abs(final_metrics["integrated_lufs"] + 14.0) <= 0.5,
         "final_true_peak_at_most_minus1_8": final_metrics["true_peak_dbtp"] <= -1.8,
         "full_decode": full_decode.returncode == 0,

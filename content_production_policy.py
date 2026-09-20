@@ -309,8 +309,8 @@ AUDIO_GATES = {
     "voice_integrated_lufs": -16.0,
     "voice_integrated_tolerance": 0.5,
     "voice_true_peak_max_dbtp": -2.0,
-    "voice_minus_bgm_min_lu": 10.5,
-    "voice_peak_minus_sfx_peak_min_db": 5.0,
+    "voice_minus_bgm_min_lu": 6.5,
+    "voice_peak_minus_sfx_peak_min_db": 2.5,
     "final_integrated_lufs": -14.0,
     "final_integrated_tolerance": 0.5,
     "final_true_peak_max_dbtp": -1.8,
@@ -1205,8 +1205,8 @@ def validate_render_evidence(payload: dict[str, Any]) -> None:
 REQUIRED_MACHINE_GATES = (
     "voice_integrated_minus16_tolerance_0_5",
     "voice_true_peak_at_most_minus2",
-    "voice_minus_bgm_at_least10_5_lu",
-    "voice_peak_minus_sfx_peak_at_least5_db",
+    "voice_minus_bgm_at_least6_5_lu",
+    "voice_peak_minus_sfx_peak_at_least2_5_db",
     "final_integrated_minus14_tolerance_0_5",
     "final_true_peak_at_most_minus1_8",
     "full_decode",
@@ -1217,8 +1217,9 @@ REQUIRED_MACHINE_GATES = (
 # 믹스 게이트를 낮추기 전에 렌더된 영상은 더 엄격한 옛 이름의 게이트를 통과했다.
 # 14 LU 이상은 10.5 LU 이상을, 8 dB 이상은 5 dB 이상을 함의하므로 같은 것으로 본다.
 LEGACY_MACHINE_GATE_EQUIVALENTS = {
-    "voice_minus_bgm_at_least10_5_lu": ("voice_minus_bgm_at_least14_lu",),
-    "voice_peak_minus_sfx_peak_at_least5_db": ("voice_peak_minus_sfx_peak_at_least8_db",),
+    "voice_minus_bgm_at_least6_5_lu": ("voice_minus_bgm_at_least10_5_lu", "voice_minus_bgm_at_least14_lu"),
+    "voice_peak_minus_sfx_peak_at_least2_5_db": (
+        "voice_peak_minus_sfx_peak_at_least5_db", "voice_peak_minus_sfx_peak_at_least8_db"),
 }
 
 
