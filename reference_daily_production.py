@@ -157,7 +157,8 @@ def _link_related_video(root: Path) -> str:
         provider_id = json.loads(receipt.read_text(encoding="utf-8"))["provider_id"]
     except (OSError, KeyError, json.JSONDecodeError):
         return "fail: schedule_receipt 에 provider_id 없음"
-    ok, note = _run(["shorts_related_video.py", provider_id], timeout=900)
+    # YouTube 영상 id는 "-"로 시작할 수 있다(-zeMccjVb0M). "--" 없이 넘기면 옵션으로 읽힌다.
+    ok, note = _run(["shorts_related_video.py", "--", provider_id], timeout=900)
     return "ok" if ok else f"fail: {note}"
 
 def publish(root: Path, verdict: dict) -> dict:
