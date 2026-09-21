@@ -221,7 +221,7 @@ def publish(root: Path, verdict: dict) -> dict:
                 ok, note = _run(["youtube_community_auto.py", "--schedule-next",
                                  "--expected-channel", EXPECTED_CHANNEL, "--text-file",
                                  str(root / "cardnews/05_youtube_community_post.txt"),
-                                 "--images", *images, "--source-key", root.name.rsplit("-", 1)[0],
+                                 "--images", *images, f"--source-key={root.name.rsplit(chr(45), 1)[0]}",
                                  "--community-url", COMMUNITY_URL,
                                  "--receipt", str(root / "cardnews/provider/publish_receipt.json")], timeout=1800)
                 steps["community_publish"] = "ok" if ok else f"fail: {note}"

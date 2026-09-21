@@ -552,3 +552,24 @@ def test_a_retired_source_is_not_offered_for_production_again(tmp_path):
     assert verdict["retired"] == "원본 화면이 거의 정지"
     # A retirement is a decision, not an unfinished run awaiting review.
     assert verdict["needs_review"] == []
+
+
+def test_a_video_id_starting_with_a_dash_reaches_the_community_step():
+    """-ikuVZ9L-UE published to Cafe and Shorts but not to the community.
+
+    argparse reads a bare value beginning with "-" as another option, so the
+    key never arrived. The Shorts call already guarded this with "--"; the
+    community call did not.
+    """
+    import inspect
+
+    import reference_daily_production as daily
+
+    source = inspect.getsource(daily.publish)
+    assert "--source-key=" in source, "값을 플래그에 붙여야 '-'로 시작하는 ID가 전달된다"
+    assert '"--source-key", ' not in source
+
+    # The same hazard, already handled on the prepare calls.
+    produce = inspect.getsource(daily.produce)
+    assert '"shorts_new_prepare.py", "--"' in produce
+    assert '"cafe_new_prepare.py", "--"' in produce
