@@ -37,7 +37,10 @@ class CafePublishWindowClosed(RuntimeError):
         self.reason = reason
 sys.path.insert(0, str(PROJECT))
 
-from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
+from aside_browser import (
+    JS_COMMON, _payload_expression, post_to_naver_cafe,
+    publish_saved_naver_cafe_draft, run_repl,
+)
 from content_production_policy import ProductionPolicyError, validate_longform_source
 
 
@@ -390,14 +393,44 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
         precheck = run_repl(precheck_code, cwd=base, timeout=220, account="u0")
         if precheck.get("status") != "ok" or precheck.get("matches"):
             raise RuntimeError({"cafe_precommit_blocked": precheck})
-        result = post_to_naver_cafe(
-            manifest["title"], body, images,
+        draft_path = evidence / "11_verified_draft.json"
+        input_hashes = {
+            "manifest": sha256(manifest_path),
+            "body": sha256(manifest_path.parent / manifest["body_file"]),
+            "images": [sha256(path) for path in images],
+        }
+        if draft_path.exists():
+            receipt = read_json(draft_path)
+            if receipt.get("inputHashes") != input_hashes:
+                raise RuntimeError("Saved Cafe draft inputs changed; refusing stale draft publication")
+            draft = receipt["draft"]
+        else:
+            draft = post_to_naver_cafe(
+                manifest["title"], body, images,
+                cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
+                cta_text=manifest["tail"]["cta_text"], cta_link_url=manifest["tail"]["family_day_url"],
+                source_label=manifest["tail"]["source_label"], source_url=manifest["tail"]["source_url"],
+                source_long_url=manifest["tail"]["source_long_url"],
+                board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
+                publish=False, save_draft=True, account="u0",
+            )
+            if draft.get("status") != "draft_saved":
+                raise RuntimeError({"cafe_draft_not_saved": draft})
+            draft_path.write_text(json.dumps({
+                "inputHashes": input_hashes, "draft": draft,
+                "savedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if draft.get("status") != "draft_saved":
+            raise RuntimeError("Cafe saved draft receipt is invalid")
+        result = publish_saved_naver_cafe_draft(
+            manifest["title"],
             cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
-            cta_text=manifest["tail"]["cta_text"], cta_link_url=manifest["tail"]["family_day_url"],
-            source_label=manifest["tail"]["source_label"], source_url=manifest["tail"]["source_url"],
-            source_long_url=manifest["tail"]["source_long_url"],
-            board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
-            publish=True, save_draft=False, account="u0",
+            board_name=manifest["category"], expected_images=len(images),
+            expected_quotes=len(manifest["expected_quote_texts"]),
+            expected_sequence=draft["sequence"],
+            expected_quote_texts=draft["quote_texts"],
+            cta_link_url=manifest["tail"]["family_day_url"],
+            source_url=manifest["tail"]["source_url"], account="u0",
         )
         if result.get("status") != "published" or "cafe.naver.com" not in result.get("url", ""):
             (evidence / "provider_uncertain_do_not_retry.json").write_text(

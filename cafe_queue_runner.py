@@ -144,17 +144,20 @@ def read_provider_url(project: Path, entry: dict) -> str | None:
     except (ValueError, OSError):
         return None
 
+    from cafe_manifest_publisher import canonical_cafe_article_url
+
     stack = [data]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
             for key, value in node.items():
-                if (
-                    isinstance(value, str)
-                    and "cafe.naver.com" in value
-                    and ("articles/" in value or "articleid=" in value)
-                ):
-                    return value
+                if isinstance(value, str) and "cafe.naver.com" in value:
+                    try:
+                        canonical, _ = canonical_cafe_article_url(value)
+                    except (ValueError, RuntimeError):
+                        pass
+                    else:
+                        return canonical
                 stack.append(value)
         elif isinstance(node, list):
             stack.extend(node)
@@ -220,9 +223,15 @@ def record(
         entry["last_attempt_at"] = now.isoformat()
         if ok:
             url = read_provider_url(project, entry)
+            if not url:
+                raise RuntimeError("Cafe success has no verified provider article URL")
             entry["status"] = "published"
             entry["published_url"] = url
             entry["next_eligible_at"] = None
+            entry["last_error"] = None
+            entry["failure_cause"] = None
+            entry["same_cause_failures"] = 0
+            entry["do_not_retry"] = True
             entry["result"] = {"ok": True, "note": note, "url": url}
         else:
             retry = float(queue.get("retry_interval_hours") or 1)

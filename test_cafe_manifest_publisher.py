@@ -5,8 +5,38 @@ import json
 from pathlib import Path
 
 import pytest
+from unittest.mock import Mock
 
 import cafe_manifest_publisher as publisher
+
+
+def test_draft_survives_failed_registration_and_reuses_only_unchanged_inputs(tmp_path, monkeypatch):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    args = publisher.resolve_manifest(str(manifest_path))
+    monkeypatch.setattr(publisher, "LOCK", tmp_path / "provider.lock")
+    monkeypatch.setattr(publisher, "validate_cafe_eligibility", lambda *a: {"status": "pass"})
+    monkeypatch.setattr(publisher, "enforce_cafe_publish_window", lambda **k: None)
+    monkeypatch.setattr(publisher, "run_repl", lambda *a, **k: {"status": "ok", "matches": []})
+    save = Mock(return_value={"status": "draft_saved", "sequence": ["quote", "text"],
+                              "quote_texts": ["소제목 1"]})
+    register = Mock(side_effect=RuntimeError("provider registration unavailable"))
+    crm = Mock()
+    monkeypatch.setattr(publisher, "post_to_naver_cafe", save)
+    monkeypatch.setattr(publisher, "publish_saved_naver_cafe_draft", register)
+    monkeypatch.setattr(publisher, "crm_emit", crm)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="provider registration unavailable"):
+            publisher.publish(*args)
+    assert save.call_count == 1
+    assert save.call_args.kwargs["save_draft"] is True
+    assert save.call_args.kwargs["publish"] is False
+    assert register.call_count == 2
+    assert (args[3] / "11_verified_draft.json").is_file()
+    crm.assert_not_called()
+    (manifest_path.parent / "body.txt").write_text("changed body", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="inputs changed"):
+        publisher.publish(*args)
+    assert register.call_count == 2
 
 
 def write_json(path: Path, payload: dict) -> None:

@@ -158,6 +158,82 @@ def run_repl(
     return _parse_result(output)
 
 
+def run_repl_steps(code: str, *, cwd=None, timeout: int = 900,
+                   account: str | None = ASIDE_ACCOUNT) -> dict[str, Any]:
+    """Advance an async generator in one REPL; each RPC stays below 120s.
+
+    Never replay a failed step: it may already have mutated the provider.
+    """
+    if (account or ASIDE_ACCOUNT) != ASIDE_ACCOUNT:
+        raise AsideError("이 프로젝트의 Aside 계정은 u0만 허용됩니다.")
+    executable = resolve_aside_cli()
+    if not executable:
+        raise AsideError("Aside CLI를 찾을 수 없습니다.")
+    process = subprocess.Popen(
+        [executable, "repl", "--account", ASIDE_ACCOUNT], cwd=cwd,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", bufsize=1,
+    )
+    output: queue.Queue[str | None] = queue.Queue()
+    def read_output():
+        for line in process.stdout:
+            output.put(line)
+        output.put(None)
+    threading.Thread(target=read_output, daemon=True).start()
+    deadline = time.monotonic() + timeout
+    name = "__cafeSteps_" + uuid.uuid4().hex
+    command = f"globalThis.{name}=(async function*(){{\n{code}\n}})();"
+    step = "initialization"
+    try:
+        while True:
+            command += (
+                f"const s=await globalThis.{name}.next();"
+                f"console.log('{RESULT_MARKER}'+JSON.stringify({{status:'step',done:s.done,step:s.value}}));"
+            )
+            # IIFE gives each advance fresh lexical bindings while the generator
+            # retains the editor, helpers and caret state across RPC calls.
+            expression = "(async()=>{" + command + "})()"
+            process.stdin.write("await eval(" + json.dumps(expression, ensure_ascii=False) + ");\n")
+            process.stdin.flush()
+            step_deadline = min(deadline, time.monotonic() + 110)
+            while True:
+                remaining = step_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise AsideError(f"Aside Cafe step timed out: {step}; do not blindly retry")
+                try:
+                    line = output.get(timeout=remaining)
+                except queue.Empty as exc:
+                    raise AsideError(f"Aside Cafe step timed out: {step}; do not blindly retry") from exc
+                if line is None:
+                    raise AsideError(f"Aside CLI disconnected at Cafe step: {step}")
+                if RESULT_MARKER not in line:
+                    continue
+                result = _parse_result(line)
+                if result.get("status") != "step":
+                    return result
+                if result.get("done"):
+                    raise AsideError("Cafe workflow ended without provider evidence")
+                step = str(result.get("step"))
+                print(f"Aside Cafe step: {step}", flush=True)
+                break
+            command = ""
+    finally:
+        if process.stdin:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
 def daemon_is_up(*, account: str | None = ASIDE_ACCOUNT, timeout: int = 60) -> bool:
     """Is the daemon answering? A dead one fails every later call the same way."""
     try:
@@ -494,12 +570,19 @@ async function pageLooksLoggedOut(p, site) {
     return await p.evaluate(siteName => {
       const text = document.body?.innerText || '';
       if (siteName === 'naver') {
-        const loginLink = document.querySelector('a[href*="nidlogin"],a[class*="link_login"]');
-        const logoutControl = document.querySelector(
+        const shown = el => {
+          const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const loginLink = [...document.querySelectorAll(
+          'a[href*="nidlogin"],a[class*="link_login"]'
+        )].some(shown);
+        const logoutControl = [...document.querySelectorAll(
           '[href*="logout"],button[class*="btn_logout"],[class*="logout"]'
-        );
-        // Naver keeps a hidden login link in the homepage DOM even after login.
-        // A visible account logout control/text is therefore the stronger signal.
+        )].some(shown);
+        // Both anonymous and signed-in pages retain hidden auth controls.
+        // Only rendered controls can establish the current session state.
         if (logoutControl || /로그아웃/.test(text)) return false;
         if (loginLink) return true;
         return /네이버 로그인|NAVER\s*로그인/.test(text) && !/로그아웃/.test(text);
@@ -887,14 +970,17 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             return [...document.querySelectorAll('.temp_item_title')]
               .filter(el=>(el.textContent||'').replace(/\s+/g,'').trim()===wanted).length;
           },payload.title);
-          await countButton.first().click();
-          try{await p.keyboard.press('Escape');}catch(_){}
-          // Let the temporary-draft popover finish closing before the editor
-          // receives its first real keyboard/clipboard action.
-          await sleep(650);
+          // This button opens a modal; a second count-button click or Escape
+          // does not close it. The overlay otherwise silently eats body input.
+          const closeDrafts=await findContext(p,'.btn_close[aria-label="레이어팝업 닫기"]');
+          if(!closeDrafts)throw new Error('temporary draft close button missing');
+          await closeDrafts.loc.click();
+          await sleep(300);
+          const modalOpen=await closeDrafts.loc.isVisible();
+          if(modalOpen)throw new Error('temporary draft modal stayed open');
           if(duplicates)workflowError=`동일 제목의 네이버 임시글이 ${duplicates}개 있어 새 임시글을 만들지 않았습니다.`;
         }
-      }catch(_){workflowError='네이버 임시글 중복 여부를 확인하지 못했습니다.';}
+      }catch(error){workflowError=`네이버 임시글 중복 여부를 확인하지 못했습니다: ${String(error?.message||error)}`;}
     }
     let existingTitle='';
     try{existingTitle=(await editor.loc.evaluate(el=>el.value||'')).trim();}catch(_){}
@@ -1006,7 +1092,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         // native caret in the bare P. Clicking that P again drops the caret.
         if(targetIsParagraph)return true;
         try{
-          await inputNode.click({force:true});
+          await inputNode.click();
         }catch(_){
           return false;
         }
@@ -1200,6 +1286,12 @@ if (await pageLooksLoggedOut(p, 'naver')) {
           .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
         if(existing&&!(await focusEnd()))return false;
         if(!(await insertFormattedText(heading)))return false;
+        const entered=await activeParagraph.evaluate(el=>(el.innerText||el.textContent||'')
+          .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
+        if(norm(entered)!==norm(heading)){
+          quoteFailureStage='heading-input-not-retained';
+          return false;
+        }
         pendingQuoteHeadings.push(heading);
         // Keep the provider caret and create the following body paragraph
         // natively.  The later quotation conversion splits only the selected
@@ -1262,10 +1354,8 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         if(existing)return false;
         let oldQuoteClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldQuoteClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           await p.evaluate(async value=>await navigator.clipboard.writeText(value),heading);
         }catch(_){return false;}
@@ -1444,6 +1534,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       let insertedImages=0;
       if(!workflowError)await focusEnd();
       for (let i=0; i<chunks.length; i++) {
+        yield `body-image-${i+1}`;
         if(workflowError)break;
         const parts=chunks[i].split(/(\[BLOCKQUOTE\][\s\S]*?\[\/BLOCKQUOTE\])/g);
         for(const rawPart of parts){
@@ -1577,13 +1668,12 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       // Re-finding the CTA later by pointer coordinates was unsafe on long
       // articles because the final Korean sentence can wrap differently.
       let linksInsertedEarly=false;
+      yield 'link-cards';
       if(!workflowError&&(payload.ctaLinkUrl||payload.sourceUrl)){
         let oldEarlyClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldEarlyClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           const earlyCardSelector=url=>/youtu(?:\.be|be\.com)/i.test(url||'')
             ? '.se-oembed,.se-video' : '.se-oglink';
@@ -1662,12 +1752,11 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       if(!workflowError&&pendingQuoteHeadings.length){
         let oldQuoteClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldQuoteClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           for(const heading of pendingQuoteHeadings){
+            yield `quote-${pendingQuoteHeadings.indexOf(heading)+1}`;
             let component=null;
             let paragraph=null;
             const texts=bodyFound.ctx.locator('.se-components-wrap > .se-component.se-text');
@@ -1875,10 +1964,8 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       if(!workflowError&&!linksInsertedEarly&&(payload.ctaLinkUrl||payload.sourceUrl)){
         let oldClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
 
           const cardSelectorFor=url=>/youtu(?:\.be|be\.com)/i.test(url||'')
@@ -2001,6 +2088,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         if(!workflowError)await sleep(1200);
       }
 
+      yield 'verify-editor';
       const formatState=await bodyFound.ctx.evaluate(({sourceUrl,sourceLongUrl,ctaLinkUrl})=>{
         const components=[...document.querySelectorAll(
           '.se-components-wrap > .se-component'
@@ -2122,6 +2210,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
           sequence:formatState.sequence, quote_texts:formatState.quoteTexts,
           _preview_png:preview, _preview_cards_png:cardsPreview});
       } else {
+        yield 'publish-verified-editor';
         const beforeUrl = p.url();
         const registerSelector = 'a.BaseButton--skinGreen,button.btn_register,button[class*="register"],button[class*="publish"]';
         const button = await findContext(p, registerSelector);
@@ -2200,7 +2289,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
 }
 }
 """
-        result = run_repl(code, cwd=upload_dir, timeout=300, account=account)
+        result = run_repl_steps(code, cwd=upload_dir, timeout=900, account=account)
         return _save_preview(result, preview_path)
 
 

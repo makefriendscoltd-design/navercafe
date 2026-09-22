@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,25 @@ def _payload_from(code: str) -> dict:
 
 
 class AsideBrowserUnitTests(unittest.TestCase):
+    def test_login_ignores_hidden_controls_on_both_auth_states(self):
+        # Naver's anonymous page has a visible login and a hidden logout link.
+        # Signed-in pages can retain the inverse, so test actual JS behavior.
+        code = aside_browser.JS_COMMON + r"""
+globalThis.getComputedStyle = el => ({display:el.shown?'block':'none',visibility:'visible'});
+const control = shown => ({shown,getBoundingClientRect:()=>({width:shown?20:0,height:shown?20:0})});
+(async()=>{
+  const results=[];
+  for(const loggedIn of [false,true]){
+    globalThis.document={body:{innerText:loggedIn?'내정보 보기':'로그인'},
+      querySelectorAll:selector=>selector.includes('nidlogin')?[control(!loggedIn)]:[control(loggedIn)]};
+    results.push(await pageLooksLoggedOut({url:()=> 'https://cafe.naver.com',evaluate:fn=>fn('naver')},'naver'));
+  }
+  console.log(JSON.stringify(results));
+})();
+"""
+        result = subprocess.run(["node", "-e", code], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [True, False])
+
     def test_parse_result_preserves_native_error_payload(self):
         native = {"status": "error", "message": "cleanup failed", "answer": "kept"}
         with self.assertRaises(aside_browser.AsideError) as raised:
@@ -73,7 +93,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             "▶ 원본 영상\nhttps://youtu.be/example",
         )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_urls_are_reserved_for_rich_card_paste(self, run_repl):
         run_repl.return_value = {"status": "filled"}
         with tempfile.TemporaryDirectory() as temp:
@@ -100,7 +120,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             ["quote", "text", "image", "text", "text"],
         )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_keeps_long_source_url_as_raw_text_and_short_url_for_card(self, run_repl):
         run_repl.return_value = {"status": "filled"}
         with tempfile.TemporaryDirectory() as temp:
@@ -121,7 +141,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
         self.assertEqual(payload["sourceLongUrl"], "https://www.youtube.com/watch?v=example")
         self.assertIn("sourceLongRaw", code)
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_draft_clicks_real_temporary_registration(self, run_repl):
         run_repl.return_value = {"status": "draft_saved", "saved_time": "방금"}
         aside_browser.post_to_naver_cafe(
