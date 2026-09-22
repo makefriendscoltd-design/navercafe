@@ -40,8 +40,8 @@ def next_slot(now: datetime, queue: dict) -> datetime:
     minimum_gap = timedelta(hours=float(queue["minimum_gap_hours"]))
     reserved = []
     for entry in queue.get("entries", []):
-        raw = entry.get("not_before")
-        if (raw and entry.get("status") == "pending"
+        raw = entry.get("planned_publish_at") or entry.get("not_before")
+        if (raw and entry.get("status") in {"pending", "failed"}
                 and not entry.get("published_url") and not entry.get("do_not_retry")):
             reserved.append(datetime.fromisoformat(raw).astimezone(KST))
 
@@ -80,7 +80,7 @@ def scan_launch_gate(gate_dir: Path) -> dict:
     return json.loads(out.read_text(encoding="utf-8"))
 
 
-def enroll(manifest_path: Path, *, now: datetime | None = None) -> dict:
+def enroll(manifest_path: Path, *, now: datetime | None = None, refresh: bool = False) -> dict:
     manifest_path = manifest_path.resolve()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     source_key = manifest["source_key"]
@@ -92,9 +92,10 @@ def enroll(manifest_path: Path, *, now: datetime | None = None) -> dict:
     now = now or datetime.now(KST)
     original_queue = QUEUE.read_text(encoding="utf-8")
     queue = json.loads(original_queue)
-    if any(e["source_key"] == source_key for e in queue["entries"]):
+    existing = next((e for e in queue["entries"] if e["source_key"] == source_key), None)
+    if existing and (not refresh or existing.get("published_url") or existing.get("status") in {"published", "blocked"}):
         return {"status": "already_enrolled", "source_key": source_key}
-    slot = next_slot(now, queue)
+    slot = datetime.fromisoformat(existing["not_before"]) if existing else next_slot(now, queue)
 
     manifest_hash = publisher.sha256(manifest_path)
     local_path = manifest_path.parent / "11_local_validation.json"
@@ -138,22 +139,29 @@ def enroll(manifest_path: Path, *, now: datetime | None = None) -> dict:
         "next_eligible_at": None, "published_url": None, "do_not_retry": False,
         "result": None, "enrolled_at": now.isoformat(),
     }
-    queue["entries"].append(entry)
+    if existing:
+        # Refresh missing bindings without resetting attempts, backoff or a reservation.
+        for field in ("manifest", "approval_gate", "launch_gate", "local_gate",
+                      "eligibility_command", "publisher_command", "provider_evidence", "crm_evidence"):
+            existing[field] = entry[field]
+    else:
+        queue["entries"].append(entry)
     if QUEUE.read_text(encoding="utf-8") != original_queue:
         raise RuntimeError("등록 검증 중 카페 큐가 변경됐습니다. 새 상태에서 다시 등록하세요.")
     tmp = QUEUE.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, QUEUE)
-    return {"status": "enrolled", "source_key": source_key, "not_before": entry["not_before"]}
+    return {"status": "refreshed" if existing else "enrolled", "source_key": source_key, "not_before": entry["not_before"]}
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--refresh", action="store_true")
     args = parser.parse_args(argv)
-    result = enroll(args.manifest)
+    result = enroll(args.manifest, refresh=args.refresh)
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if result["status"] in {"enrolled", "already_enrolled"} else 1
+    return 0 if result["status"] in {"enrolled", "refreshed", "already_enrolled"} else 1
 
 
 if __name__ == "__main__":

@@ -39,6 +39,27 @@ def test_draft_survives_failed_registration_and_reuses_only_unchanged_inputs(tmp
     assert register.call_count == 2
 
 
+def test_prepare_only_saves_without_registering_or_emitting_crm(tmp_path, monkeypatch):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    args = publisher.resolve_manifest(str(manifest_path))
+    monkeypatch.setattr(publisher, "LOCK", tmp_path / "provider.lock")
+    monkeypatch.setattr(publisher, "validate_cafe_eligibility", lambda *a: {"status": "pass"})
+    window = Mock(side_effect=AssertionError("drafts must not consume a public slot"))
+    monkeypatch.setattr(publisher, "enforce_cafe_publish_window", window)
+    monkeypatch.setattr(publisher, "run_repl", lambda *a, **k: {"status": "ok", "matches": []})
+    save = Mock(return_value={"status": "draft_saved", "sequence": [], "quote_texts": []})
+    register, crm = Mock(), Mock()
+    monkeypatch.setattr(publisher, "post_to_naver_cafe", save)
+    monkeypatch.setattr(publisher, "publish_saved_naver_cafe_draft", register)
+    monkeypatch.setattr(publisher, "crm_emit", crm)
+    publisher.publish(*args, prepare_only=True)
+    assert save.call_args.kwargs["save_draft"] is True
+    register.assert_not_called()
+    crm.assert_not_called()
+    window.assert_not_called()
+    assert (args[3] / "11_verified_draft.json").is_file()
+
+
 def write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")

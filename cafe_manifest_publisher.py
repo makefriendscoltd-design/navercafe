@@ -350,7 +350,7 @@ def crm_emit(source_key: str, evidence_path: Path) -> dict:
     }
 
 
-def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path) -> None:
+def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path, *, prepare_only: bool = False) -> None:
     eligibility = validate_cafe_eligibility(manifest_path, provider, evidence)
     if eligibility["status"] != "pass":
         raise RuntimeError({"cafe_eligibility_gate_failed": eligibility})
@@ -389,7 +389,8 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
 '''
     with LOCK.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        enforce_cafe_publish_window(source_key=source_key)
+        if not prepare_only:
+            enforce_cafe_publish_window(source_key=source_key)
         precheck = run_repl(precheck_code, cwd=base, timeout=220, account="u0")
         if precheck.get("status") != "ok" or precheck.get("matches"):
             raise RuntimeError({"cafe_precommit_blocked": precheck})
@@ -422,6 +423,11 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
             }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         if draft.get("status") != "draft_saved":
             raise RuntimeError("Cafe saved draft receipt is invalid")
+        if prepare_only:
+            print(json.dumps({"status": "draft_saved", "sourceKey": source_key,
+                              "evidence": str(draft_path), "savedAt": draft.get("saved_time")},
+                             ensure_ascii=False))
+            return
         result = publish_saved_naver_cafe_draft(
             manifest["title"],
             cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
@@ -489,14 +495,16 @@ const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provide
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--validate-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--validate-only", action="store_true")
+    mode.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     manifest_path, base, provider, evidence = resolve_manifest(args.manifest)
     if args.validate_only:
         result = validate_cafe_eligibility(manifest_path, provider, evidence)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result["status"] == "pass" else 1)
-    publish(manifest_path, base, provider, evidence)
+    publish(manifest_path, base, provider, evidence, prepare_only=args.prepare_only)
 
 
 if __name__ == "__main__":

@@ -60,12 +60,105 @@ def due_entries(queue: dict, now: datetime) -> list[dict]:
         not_before = parse_time(entry.get("not_before"))
         if not_before is None or not_before > now:
             continue
+        planned = parse_time(entry.get("planned_publish_at"))
+        if planned and planned > now:
+            continue
         next_eligible = parse_time(entry.get("next_eligible_at"))
         if next_eligible and next_eligible > now:
             continue
         out.append(entry)
-    out.sort(key=lambda e: str(e.get("not_before")))
+    out.sort(key=lambda e: str(e.get("planned_publish_at") or e.get("not_before")))
     return out
+
+
+def draft_candidates(project: Path, queue: dict, now: datetime) -> list[dict]:
+    """Keep only the next few unpublished articles ready, not an unbounded draft pile."""
+    entries = [e for e in queue.get("entries", []) if not is_done(e)
+               and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
+    entries.sort(key=lambda e: str(e.get("planned_publish_at") or e.get("not_before")))
+    candidates = []
+    for entry in entries[:int(queue.get("draft_lookahead", 2))]:
+        manifest = project / str(entry.get("manifest") or "")
+        receipt = manifest.parent / "provider/11_verified_draft.json"
+        retry_at = parse_time(entry.get("draft_retry_after"))
+        if manifest.is_file() and not receipt.exists() and (not retry_at or retry_at <= now):
+            candidates.append(entry)
+    return candidates
+
+
+def plan_remaining(queue: dict, now: datetime, run_windows: list[tuple[int, int]]) -> dict[str, str]:
+    """Reserve remaining articles against the installed timer and current daily policy."""
+    entries = [e for e in queue.get("entries", []) if not is_done(e)
+               and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
+    entries.sort(key=lambda e: str(e.get("not_before")))
+    reserved = [parse_time(e.get("last_attempt_at")) for e in queue.get("entries", []) if is_done(e)]
+    reserved = [stamp for stamp in reserved if stamp]
+    maximum = int(queue["maximum_successes_per_day"])
+    gap = timedelta(hours=float(queue["minimum_gap_hours"]))
+    buffer = timedelta(minutes=int(queue.get("planning_buffer_minutes", 30)))
+    planned_stamps: list[datetime] = []
+    plan = {}
+    for entry in entries:
+        earliest = max(now, parse_time(entry.get("not_before")) or now)
+        if planned_stamps:
+            earliest = max(earliest, planned_stamps[-1] + gap + buffer)
+        day = earliest.replace(hour=0, minute=0, second=0, microsecond=0)
+        chosen = None
+        for _ in range(730):
+            for hour, minute in sorted(run_windows):
+                candidate = day.replace(hour=hour, minute=minute)
+                if candidate < earliest:
+                    continue
+                if sum(t.date() == candidate.date() for t in reserved) >= maximum:
+                    continue
+                if any(abs(candidate - stamp) < gap for stamp in reserved):
+                    continue
+                chosen = candidate
+                break
+            if chosen:
+                break
+            day += timedelta(days=1)
+        if chosen is None:
+            raise RuntimeError("No Cafe reservation slot within two years")
+        plan[entry["source_key"]] = chosen.isoformat()
+        reserved.append(chosen)
+        planned_stamps.append(chosen)
+    return plan
+
+
+def prepare_ahead(project: Path, queue_path: Path, queue: dict, now: datetime, timeout: int) -> dict:
+    candidates = draft_candidates(project, queue, now)
+    if not candidates:
+        return {"action": "drafts_ready_or_deferred"}
+    entry = candidates[0]
+    command = [sys.executable, str(project / "cafe_manifest_publisher.py"),
+               "--manifest", entry["manifest"], "--prepare-only"]
+    try:
+        proc = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout)
+        ok = proc.returncode == 0
+        note = (proc.stderr or proc.stdout or "")[-1200:]
+    except subprocess.TimeoutExpired:
+        ok, note = False, f"draft preparation timed out after {timeout}s"
+    receipt = project / entry["manifest"]
+    receipt = receipt.parent / "provider/11_verified_draft.json"
+    if ok:
+        try:
+            ok = json.loads(receipt.read_text())["draft"]["status"] == "draft_saved"
+        except (OSError, ValueError, KeyError):
+            ok, note = False, "draft command returned no verified saved-draft receipt"
+    latest = load_queue(queue_path)
+    for current in latest["entries"]:
+        if current["source_key"] != entry["source_key"]:
+            continue
+        current["draft_last_attempt_at"] = now.isoformat()
+        current["draft_last_error"] = None if ok else note
+        current["draft_retry_after"] = None if ok else (now + timedelta(hours=1)).isoformat()
+        if ok:
+            current["draft_prepared_at"] = datetime.now(KST).isoformat()
+        break
+    save_queue(queue_path, latest)
+    return {"action": "prepare_draft", "source_key": entry["source_key"], "ok": ok,
+            "detail": "verified saved draft" if ok else note}
 
 
 def successes_today(queue: dict, now: datetime) -> list[datetime]:
@@ -307,10 +400,14 @@ def main(argv=None) -> int:
         return 0
 
     if blocked:
-        print(json.dumps({**summary, "action": "skip"}, ensure_ascii=False))
+        preparation = {"action": "skip"} if args.validate_only else prepare_ahead(
+            project, queue_path, queue, now, args.timeout)
+        print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
     if not due:
-        print(json.dumps({**summary, "action": "nothing_due"}, ensure_ascii=False))
+        preparation = {"action": "nothing_due"} if args.validate_only else prepare_ahead(
+            project, queue_path, queue, now, args.timeout)
+        print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
 
     attempts_per_run = int(queue.get("maximum_attempts_per_run") or 1)

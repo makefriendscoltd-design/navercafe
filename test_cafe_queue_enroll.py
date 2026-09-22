@@ -52,3 +52,13 @@ def test_next_slot_ignores_completed_and_locked_entries():
     now = datetime(2026, 9, 10, 9, 5, tzinfo=KST)
 
     assert next_slot(now, queue) == datetime(2026, 9, 10, 10, 0, tzinfo=KST)
+
+
+def test_new_source_follows_replanned_failed_and_pending_reservations():
+    queue = policy([
+        {**pending("retry", "2026-09-01T10:00:00+09:00"), "status": "failed",
+         "planned_publish_at": "2026-10-24T10:05:00+09:00"},
+        pending("next", "2026-09-02T10:00:00+09:00",
+                planned_publish_at="2026-10-24T16:05:00+09:00"),
+    ])
+    assert next_slot(datetime(2026,9,22,11,tzinfo=KST), queue) == datetime(2026,10,25,10,tzinfo=KST)
