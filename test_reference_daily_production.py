@@ -45,7 +45,7 @@ def test_successful_handoff_is_not_reported_as_a_failed_job(tmp_path, monkeypatc
     monkeypatch.setattr(daily.selection, 'QUEUE_PATH', tmp_path / 'queue.json')
     monkeypatch.setattr(daily.selection, 'load_candidates', lambda: [{'id': 'abcdefghijk', 'title': 'T'}])
     monkeypatch.setattr(daily.selection, 'select', lambda c, limit: (c, []))
-    monkeypatch.setattr(daily, 'produce', lambda *a: {
+    monkeypatch.setattr(daily, 'produce', lambda *a, **kw: {
         'source_key': 'abcdefghijk', 'complete': False, 'handed_off': True})
     assert daily.main(['--limit', '1']) == 0
     assert daily.main(['--limit', '1']) == 0

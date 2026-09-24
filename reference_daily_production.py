@@ -36,7 +36,9 @@ PROJECT = Path(__file__).resolve().parent
 PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
-DAILY_LIMIT = 2
+DAILY_LIMIT = 10
+# 카페·카드뉴스는 발행 큐가 하루 몇 건만 소화한다. 쇼츠만 하루 10개로 올린다.
+CAFE_DAILY_LIMIT = 2
 from youtube_shorts_aside_adapter import CHANNEL_ID, CHANNEL_NAME
 
 EXPECTED_CHANNEL = CHANNEL_NAME
@@ -90,12 +92,18 @@ finally{try{await p.close();}catch(_){}}
     return out
 
 
-def produce(source_key: str, today: str) -> dict:
-    """Shorts render, Cafe candidate and card deck for one source."""
+def produce(source_key: str, today: str, *, shorts_only: bool = False) -> dict:
+    """Shorts render, Cafe candidate and card deck for one source.
+
+    `shorts_only`면 카페·카드뉴스 단계를 건너뛴다. 쇼츠는 하루 10개를 만들지만
+    카페 발행 큐는 그만큼 소화하지 못해서, 다 만들면 후보만 쌓인다.
+    """
     steps: dict[str, str] = {}
     import content_run_state
     root = content_run_state.resumable_root(PROJECT, source_key, today)
     root.mkdir(parents=True, exist_ok=True)
+
+    import content_acceptance
 
     if ((root / "shorts/final.mp4").is_file()
             or ((root / "shorts/07_script_final.txt").is_file()
@@ -107,6 +115,16 @@ def produce(source_key: str, today: str) -> dict:
     if ok and not (root / "shorts/final.mp4").is_file():
         ok, note = _run(["shorts_v7_builder.py", "--root", str(root / "shorts"), "--render"])
         steps["shorts_render"] = "ok" if ok else f"fail: {note}"
+
+    if shorts_only:
+        steps["cafe_answer"] = "skip: shorts-only"
+        verdict = content_acceptance.audit(root)
+        published = publish(root, verdict)
+        provider = content_run_state.source_state(PROJECT, source_key)
+        return {"source_key": source_key, "root": str(root), "steps": steps,
+                "published": published, "provider": provider["channels"],
+                "acceptance": verdict["status"], "problems": {},
+                "handed_off": provider["handed_off"], "complete": provider["complete"]}
 
     if (root / "cafe/notebooklm/notebooklm-answer.md").is_file():
         ok, note = True, "기존 NotebookLM 응답 재사용"
@@ -134,8 +152,6 @@ def produce(source_key: str, today: str) -> dict:
 
     # Exit codes said every one of these runs succeeded while the community body
     # was missing, decks carried no anchor and titles were still sentinels.
-    import content_acceptance
-
     verdict = content_acceptance.audit(root)
     published = publish(root, verdict)
     provider = content_run_state.source_state(PROJECT, source_key)
@@ -256,6 +272,8 @@ def publish(root: Path, verdict: dict) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DAILY_LIMIT)
+    parser.add_argument("--cafe-limit", type=int, default=CAFE_DAILY_LIMIT,
+                        help="이 개수까지만 카페·카드뉴스도 만든다. 나머지는 쇼츠만.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.limit < 1:
@@ -308,9 +326,10 @@ def main(argv=None) -> int:
     if args.dry_run:
         return 0
 
-    for candidate in selected:
+    for order, candidate in enumerate(selected):
         try:
-            report["results"].append(produce(candidate["id"], today))
+            report["results"].append(
+                produce(candidate["id"], today, shorts_only=order >= args.cafe_limit))
         except Exception:
             report["results"].append({"source_key": candidate["id"], "steps": {},
                                       "complete": False, "error": traceback.format_exc()[-400:]})
