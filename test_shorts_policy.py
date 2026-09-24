@@ -1824,4 +1824,5 @@ def test_live_channel_policy_is_readable_and_names_the_introduction_video():
     pol = policy.load_channel_policy()
     assert pol["channel_id"] == policy.NAMINSOO_CHANNEL_ID
     assert "aixschool.kr" in pol["cta_block"] and "pf.kakao.com" in pol["cta_block"]
-    assert pol["introduction_video_id"] == "Y1k44op1ZLk"
+    # 소개 영상은 2026-09-23에 "제가 교장입니다"로 승인 교체됐다(정본 approved_by_user_on).
+    assert pol["introduction_video_id"] == "e2Jp0D3jwOU"

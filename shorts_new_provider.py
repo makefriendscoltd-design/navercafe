@@ -15,6 +15,7 @@ from pathlib import Path
 import youtube_shorts_publisher as publisher
 from content_production_policy import load_channel_policy, shorts_description
 from shorts_repair_prepare import binding
+from shorts_upload_title import upload_title
 
 EXPECTED_CHANNEL = "나민수 AI"
 
@@ -36,7 +37,8 @@ def prepare(root: str | Path) -> dict:
     channel_policy = load_channel_policy()
     manifest = {
         "source_key": source_key,
-        "title": production["render_inputs"]["upload_title"],
+        # 화면 헤드카피를 그대로 올리면 채널 목록에 같은 제목이 쌓인다. 대본으로 새로 쓴다.
+        "title": upload_title(root, production["render_inputs"]["upload_title"]),
         "description": shorts_description(script, urls, channel_policy),
         "final_mp4": str(root / "final.mp4"),
         "final_mp4_sha256": video["sha256"],
