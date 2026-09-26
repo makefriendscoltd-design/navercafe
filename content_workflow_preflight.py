@@ -247,8 +247,11 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
             details["runtime:aside_cli"] = aside
         asset_results = {}
         for name in policy.MINSOO_PRESENTER_ASSETS:
+            # 보관 위치는 정본이 정한다. 예전처럼 Downloads 한 곳만 보면 다른 백업
+            # 작업이 그 폴더를 비울 때 통째로 막힌다.
+            found = policy.presenter_asset_path(name)
             try:
-                asset_results[name] = policy.validate_presenter_asset(Path("/Users/apple/Downloads") / name)["sha256"]
+                asset_results[name] = policy.validate_presenter_asset(found or name)["sha256"]
             except Exception:
                 asset_results[name] = ""
         checks["runtime:approved_presenter_assets"] = all(asset_results.values())

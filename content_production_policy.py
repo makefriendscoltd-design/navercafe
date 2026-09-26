@@ -298,6 +298,17 @@ PRESENTER = {"x": 325, "y": 1298, "width": 430, "height": 430, "shape": "circle"
 SOURCE_SCREEN = {"x": 0, "y": 664, "width": 1080, "height": 608, "speed": 2.0}
 WATERMARK = {"text": "@aimax", "x": 540, "y": 1768, "font_size": 44}
 
+# 승인된 민수 촬영본의 보관 위치. 예전 정본은 ~/Downloads/영상 이었는데, 다른 백업
+# 작업이 Downloads의 큰 영상을 외장 볼륨으로 옮기고 링크만 남겨서 2026-09-26에
+# 렌더가 전부 멈췄다. 그래서 Downloads 밖의 고정 위치를 먼저 본다. 저장소 안에
+# 두지 않는 이유는 다른 세션이 작업 트리를 통째로 커밋하면 수백 MB가 함께 올라가기
+# 때문이다. 이름과 해시가 정본이므로 위치가 늘어도 승인 범위는 넓어지지 않는다.
+PRESENTER_ASSET_DIRS = (
+    Path("/Users/apple/orca/assets/naminsoo-presenter"),
+    Path("/Users/apple/Downloads/영상"),
+    Path("/Users/apple/Downloads"),
+)
+
 MINSOO_PRESENTER_ASSETS = {
     "2026-07-02 15-39-18.mp4": "a84c1f78ca5ac4fc2f45d67d7cb0d2e02f7a8dc25da5c71adae911a47f7b5056",
     "2026-06-29 16-32-49.mp4": "6f1382d51b0f9fc1c58634a3be3116d96dd6fa799da2958b7d05f87a6954b5c4",
@@ -1120,9 +1131,26 @@ def validate_notebook_binding(kind: str, *, account: str, title: str, notebook_i
     return {"account": account, "title": title, "id": notebook_id}
 
 
+def presenter_asset_path(name: str) -> Path | None:
+    """승인된 이름을 보관 위치들에서 찾는다. 먼저 찾은 실제 파일을 쓴다."""
+    if name not in MINSOO_PRESENTER_ASSETS:
+        return None
+    for directory in PRESENTER_ASSET_DIRS:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
 def validate_presenter_asset(path: str | Path) -> dict[str, str]:
-    asset = Path(path).expanduser().resolve()
+    asset = Path(path).expanduser()
     expected = MINSOO_PRESENTER_ASSETS.get(asset.name)
+    if expected and not asset.is_file():
+        # 같은 이름의 승인본이 다른 보관 위치에 있으면 그것을 쓴다. 해시로 다시 확인한다.
+        found = presenter_asset_path(asset.name)
+        if found is not None:
+            asset = found
+    asset = asset.resolve()
     if not asset.is_file() or not expected:
         raise ProductionPolicyError("승인된 민수 촬영본 4개 중 하나가 아닙니다.")
     actual = _sha256(asset)

@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import content_production_policy as policy
 import notebooklm_shorts as scripts
 from shorts_repair_prepare import PROJECT, binding
 from youtube_source_options import source_options
@@ -165,6 +166,12 @@ def prepare(source_key: str) -> dict:
     heads = scripts.extract_head_copy_candidates(answer_path.read_text(encoding="utf-8"))
     title = " ".join(scripts.head_copy_lines(heads[0]))
     presenter_binding = json.loads(PRESENTER_SOURCE.read_text(encoding="utf-8"))["render_inputs"]["presenter"]
+    # 승인본 보관 위치는 정본이 정한다. 옛 매니페스트에 박힌 Downloads 경로가 비어도
+    # 같은 해시의 승인본을 찾아 쓴다(해시는 아래 검증에서 다시 확인된다).
+    presenter_found = policy.presenter_asset_path(Path(presenter_binding["path"]).name)
+    if presenter_found is not None:
+        presenter_binding = {**presenter_binding, "path": str(presenter_found)}
+    policy.validate_presenter_asset(presenter_binding["path"])
     answer = binding(answer_path)
     manifest = {
         "source_id": source_key, "content_rewrite_applied": False,
