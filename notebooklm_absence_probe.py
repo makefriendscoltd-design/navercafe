@@ -29,6 +29,7 @@ from notebooklm_shorts import (
     _write_attempt_ledger,
 )
 
+CLEARABLE_ATTEMPT_STATUSES = {"started", "unknown_after_provider_start"}
 
 PROBE_JS = r'''
 const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&absence_probe=${Date.now()}`);
@@ -92,13 +93,18 @@ def probe(
         raise RuntimeError("쇼츠 NotebookLM 시도 ledger의 schema/source_key가 다릅니다.")
     attempts = list(ledger.get("attempts") or [])
     cleared = 0
+    # "started"는 공급자 호출 전에 죽은 시도다. UI 개편으로 지침 확인 단계에서 전부
+    # 여기서 멈췄다. 부재 증거가 밝히는 사실은 같다 - 이 시도는 아무 답변도 만들지
+    # 않았다. 응답을 이미 받은 시도는 정책 게이트가 따로 거부한다.
     for attempt in attempts:
-        if str(attempt.get("attempt_status") or "") == "unknown_after_provider_start":
+        if str(attempt.get("attempt_status") or "") in CLEARABLE_ATTEMPT_STATUSES:
             attempt["provider_response_absent"] = True
             attempt["absence_evidence"] = evidence
             cleared += 1
     if not cleared:
-        raise RuntimeError("부재로 정리할 unknown_after_provider_start 시도가 없습니다.")
+        raise RuntimeError(
+            "부재로 정리할 시도가 없습니다(" + ", ".join(sorted(CLEARABLE_ATTEMPT_STATUSES)) + ")."
+        )
     _write_attempt_ledger(ledger_path, source_key, attempts)
     return {"cleared_attempts": cleared, "ledger": str(ledger_path), **evidence}
 

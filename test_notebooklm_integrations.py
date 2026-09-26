@@ -329,3 +329,24 @@ def test_cafe_images_are_capped_to_sections_and_cached(tmp_path):
     assert len(images) == 4
     extract.assert_not_called()
     assert body.call_args.args[1] == 4
+
+
+def test_config_button_opens_chat_settings_menu_item_before_reading_instruction(monkeypatch):
+    """Gemini Notebook 개편 뒤 노트북 구성은 메뉴다. 채팅 설정을 눌러야 지침 창이 열린다."""
+    observed = {}
+
+    def fake_run_repl(code, **kwargs):
+        observed["code"] = code
+        raise notebooklm_aside.NotebookLMAsideError("코드만 확인한다")
+
+    monkeypatch.setattr(notebooklm_aside, "run_repl", fake_run_repl)
+    with pytest.raises(notebooklm_aside.NotebookLMAsideError):
+        notebooklm_aside.ask_existing_notebook(
+            "https://www.youtube.com/watch?v=KJWaxYpcXoo",
+            policy.SHORTS_NOTEBOOK_PROMPT,
+            kind="shorts",
+            notebook_id=policy.SHORTS_NOTEBOOK["id"],
+            notebook_title=policy.SHORTS_NOTEBOOK["title"],
+        )
+    code = observed["code"]
+    assert code.index('노트북 구성') < code.index('채팅 설정') < code.index('맞춤 지침을 읽지 못했습니다')
