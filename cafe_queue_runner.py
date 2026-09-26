@@ -334,6 +334,7 @@ def record(
             entry["failure_cause"] = cause
             entry["same_cause_failures"] = repeats
             entry["result"] = {"ok": False, "note": note[:2000]}
+            entry["last_error"] = cause
             if repeats >= SAME_CAUSE_LIMIT and not environmental(note):
                 entry["status"] = "blocked"
                 entry["next_eligible_at"] = None
@@ -412,6 +413,7 @@ def main(argv=None) -> int:
 
     attempts_per_run = int(queue.get("maximum_attempts_per_run") or 1)
     done = 0
+    publish_failed = False
     for entry in due:
         if done >= attempts_per_run:
             break
@@ -472,6 +474,7 @@ def main(argv=None) -> int:
             ok, note = False, f"timeout after {args.timeout}s"
 
         if not ok and daemon_died(note):
+            publish_failed = True
             print(json.dumps({
                 "source_key": source_key, "action": "abort",
                 "reason": "aside_daemon_down",
@@ -482,6 +485,7 @@ def main(argv=None) -> int:
             break
 
         record(project, queue_path, source_key, started, ok, note)
+        publish_failed = publish_failed or not ok
         print(
             json.dumps(
                 {
@@ -496,7 +500,7 @@ def main(argv=None) -> int:
         done += 1
 
     print(json.dumps({**summary, "attempted": done}, ensure_ascii=False))
-    return 0
+    return 1 if publish_failed else 0
 
 
 if __name__ == "__main__":

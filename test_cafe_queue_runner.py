@@ -1,9 +1,91 @@
 import json
+import subprocess
 from datetime import datetime, timezone
 
 import pytest
 
 import cafe_queue_runner as runner
+
+
+@pytest.fixture
+def publish_queue(tmp_path):
+    entry = {
+        "source_key": "source", "status": "failed", "attempts": 19,
+        "not_before": "2026-01-01T10:00:00+09:00",
+        "publisher_command": "unused-by-mocked-publisher",
+        "provider_evidence": "evidence.json",
+        "last_error": "too many arguments",
+        "failure_cause": "AsideLoginRequired: Naver login required before publication",
+        "same_cause_failures": 19,
+    }
+    for field in runner.GATE_FIELDS:
+        entry[field] = f"{field}.json"
+        (tmp_path / entry[field]).write_text("{}")
+    queue = {"entries": [entry], "maximum_successes_per_day": 2,
+             "minimum_gap_hours": 5, "windows": [f"{hour}:00" for hour in range(24)],
+             "maximum_attempts_per_run": 1, "retry_interval_hours": 1}
+    path = tmp_path / runner.QUEUE_RELATIVE
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(queue))
+    return path
+
+
+@pytest.mark.parametrize("outcome", ["login", "timeout", "daemon", "success"])
+def test_main_reports_publish_outcome_without_changing_retry_policy(
+    tmp_path, publish_queue, monkeypatch, outcome
+):
+    original = json.loads(publish_queue.read_text())
+    login_error = "AsideLoginRequired: Naver login required before publication"
+    (tmp_path / "evidence.json").write_text(json.dumps({
+        "providerUrl": "https://cafe.naver.com/westudyssat/6212"}))
+
+    def run(project, command, timeout):
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(command, timeout)
+        error = login_error if outcome == "login" else "daemon is not reachable"
+        return subprocess.CompletedProcess(command, 0 if outcome == "success" else 1,
+                                           stdout="published" if outcome == "success" else "",
+                                           stderr="" if outcome == "success" else error)
+
+    monkeypatch.setattr(runner, "run_command", run)
+    exit_code = runner.main(["--project", str(tmp_path), "--timeout", "60"])
+    current = json.loads(publish_queue.read_text())
+    assert exit_code == (0 if outcome == "success" else 1)
+    if outcome == "daemon":
+        assert current == original  # A daemon failure still does not count as an attempt.
+        return
+    entry = current["entries"][0]
+    assert entry["attempts"] == 20
+    if outcome == "success":
+        assert entry["status"] == "published"
+        assert entry["last_error"] is None
+        assert entry["published_url"] == "https://cafe.naver.com/westudyssat/6212"
+    else:
+        assert entry["status"] == "failed"
+        assert entry["last_error"] == (login_error if outcome == "login" else "timeout after")
+        assert entry["last_error"] == entry["failure_cause"]
+        assert entry["result"]["ok"] is False
+        assert not entry.get("do_not_retry")
+        assert entry["same_cause_failures"] == (20 if outcome == "login" else 1)
+        assert (datetime.fromisoformat(entry["next_eligible_at"]) -
+                datetime.fromisoformat(entry["last_attempt_at"])).total_seconds() == 3600
+
+
+@pytest.mark.parametrize("skip", ["nothing_due", "rate_block", "dry_run", "missing_gates"])
+def test_main_normal_skips_remain_success(tmp_path, publish_queue, monkeypatch, skip):
+    queue = json.loads(publish_queue.read_text())
+    if skip == "nothing_due":
+        queue["entries"] = []
+    elif skip == "rate_block":
+        queue["windows"] = []
+    elif skip == "missing_gates":
+        (tmp_path / queue["entries"][0]["approval_gate"]).unlink()
+    publish_queue.write_text(json.dumps(queue))
+    monkeypatch.setattr(runner, "prepare_ahead", lambda *args: {"action": "skip"})
+    monkeypatch.setattr(runner, "run_command", lambda *args: pytest.fail("publisher must not run"))
+    args = ["--project", str(tmp_path)] + (["--dry-run"] if skip == "dry_run" else [])
+    assert runner.main(args) == 0
+    assert json.loads(publish_queue.read_text()) == queue
 
 
 @pytest.mark.parametrize("url", [
