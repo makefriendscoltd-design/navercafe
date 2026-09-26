@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT))
 
 from aside_browser import (
     JS_COMMON, _payload_expression, post_to_naver_cafe,
-    publish_saved_naver_cafe_draft, run_repl,
+    publish_saved_naver_cafe_draft, run_mcp_repl as run_repl,
 )
 from content_production_policy import ProductionPolicyError, validate_longform_source
 

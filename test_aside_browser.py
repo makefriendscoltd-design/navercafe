@@ -65,7 +65,7 @@ const control = shown => ({shown,getBoundingClientRect:()=>({width:shown?20:0,he
         with self.assertRaises(aside_browser.AsideLoginRequired):
             aside_browser._parse_result(output)
 
-    @mock.patch("aside_browser.run_repl", return_value={"status": "ok"})
+    @mock.patch("aside_browser.run_mcp_repl", return_value={"status": "ok"})
     def test_login_check_is_pinned_to_u0(self, run_repl):
         aside_browser.check_login("naver")
         self.assertEqual(run_repl.call_args.kwargs["account"], "u0")
@@ -167,7 +167,7 @@ const control = shown => ({shown,getBoundingClientRect:()=>({width:shown?20:0,he
                 publish=True, save_draft=True,
             )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_mcp_repl")
     def test_saved_draft_publish_requires_exact_title_and_structure(self, run_repl):
         run_repl.return_value = {"status": "published", "url": "https://cafe.naver.com/x/1"}
         result = aside_browser.publish_saved_naver_cafe_draft(
@@ -196,6 +196,52 @@ const control = shown => ({shown,getBoundingClientRect:()=>({width:shown?20:0,he
                 self.assertEqual(names, ["upload-01.png"])
                 self.assertEqual((root / names[0]).read_bytes(), b"png")
             self.assertFalse(root.exists())
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_run_repl_uses_mcp_u0(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.return_value = aside_browser.RESULT_MARKER + '{"status":"ok"}\n'
+        result = aside_browser.run_mcp_repl("emit({status:'ok'})", account="u0")
+        self.assertEqual(result["status"], "ok")
+        client_type.assert_called_once_with("/tmp/aside", account="u0", cwd=None)
+        self.assertEqual(client.repl.call_count, 1)
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_defaults_to_u0_and_rejects_other_accounts(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.return_value = aside_browser.RESULT_MARKER + '{"status":"ok"}\n'
+        aside_browser.run_mcp_repl("emit({status:'ok'})")
+        with self.assertRaises(aside_browser.AsideError):
+            aside_browser.run_mcp_repl("emit({status:'ok'})", account="u1")
+        client_type.assert_called_once_with("/tmp/aside", account="u0", cwd=None)
+
+    @mock.patch("aside_browser.subprocess.run")
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_failure_is_not_replayed_through_cli(self, _resolve, client_type, cli):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.side_effect = aside_browser.AsideMCPError("timeout; publication state uncertain")
+        with self.assertRaises(aside_browser.AsideError):
+            aside_browser.run_mcp_repl("publish()")
+        self.assertEqual(client.repl.call_count, 1)
+        cli.assert_not_called()
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_steps_keep_final_receipt_before_done(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        marker = aside_browser.RESULT_MARKER
+        client.repl.side_effect = [
+            marker + '{"status":"step","done":false,"step":"editor"}',
+            marker + '{"status":"draft_saved","images":5}\n' + marker + '{"status":"step","done":true}',
+        ]
+        result = aside_browser.run_repl_steps("yield 'editor'; emit({status:'draft_saved',images:5});")
+        self.assertEqual(result, {"status": "draft_saved", "images": 5})
+        self.assertEqual(client_type.call_count, 1)
+        self.assertEqual(client.repl.call_count, 2)
+        self.assertNotIn("async function*", client.repl.call_args.args[0])
 
     @mock.patch("aside_browser.subprocess.run")
     @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")

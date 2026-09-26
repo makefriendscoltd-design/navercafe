@@ -1,4 +1,4 @@
-"""Aside CLI based browser automation for Naver Cafe and YouTube.
+"""Aside browser automation, with MCP for Cafe and CLI for other workflows.
 
 The module deliberately never sends account passwords to Aside.  It reuses the
 browser profile selected in the Aside app and returns ``login_required`` when
@@ -25,6 +25,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from aside_mcp import AsideMCP, AsideMCPError
 
 
 RESULT_MARKER = "__ASIDE_RESULT__"
@@ -112,6 +114,13 @@ def _parse_result(output: str) -> dict[str, Any]:
     return data
 
 
+def _mcp_failure(exc: Exception) -> AsideError:
+    message = str(exc)
+    if "daemon is not reachable" in message or "REPL context is disposed" in message:
+        return AsideDaemonDown("Aside 데몬이 죽어 브라우저 연결이 끊겼습니다. 동일 작업을 자동 재실행하지 않습니다.")
+    return AsideError(f"Aside MCP 작업 실패 (자동 재실행 없음): {message}")
+
+
 def run_repl(
     code: str,
     *,
@@ -158,80 +167,76 @@ def run_repl(
     return _parse_result(output)
 
 
+
+def run_mcp_repl(
+    code: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    account: str | None = ASIDE_ACCOUNT,
+) -> dict[str, Any]:
+    """Execute once through the u0 MCP server; never fall back and replay."""
+    selected_account = (account or ASIDE_ACCOUNT).strip()
+    if selected_account != ASIDE_ACCOUNT:
+        raise AsideError(f"이 프로젝트의 Aside 계정은 {ASIDE_ACCOUNT}만 허용됩니다.")
+    executable = resolve_aside_cli()
+    if not executable:
+        raise AsideError("Aside MCP 실행 파일을 찾을 수 없습니다.")
+    try:
+        with AsideMCP(executable, account=selected_account, cwd=cwd) as client:
+            output = client.repl(
+                f"await (async()=>{{\n{code}\n}})()",
+                title="자동화 브라우저 작업", timeout=timeout,
+            )
+    except (AsideMCPError, OSError) as exc:
+        raise _mcp_failure(exc) from exc
+    return _parse_result(output)
+
+
 def run_repl_steps(code: str, *, cwd=None, timeout: int = 900,
                    account: str | None = ASIDE_ACCOUNT) -> dict[str, Any]:
-    """Advance an async generator in one REPL; each RPC stays below 120s.
-
-    Never replay a failed step: it may already have mutated the provider.
-    """
+    """Advance the editor in one persistent MCP session, once per step."""
     if (account or ASIDE_ACCOUNT) != ASIDE_ACCOUNT:
         raise AsideError("이 프로젝트의 Aside 계정은 u0만 허용됩니다.")
     executable = resolve_aside_cli()
     if not executable:
-        raise AsideError("Aside CLI를 찾을 수 없습니다.")
-    process = subprocess.Popen(
-        [executable, "repl", "--account", ASIDE_ACCOUNT], cwd=cwd,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", bufsize=1,
-    )
-    output: queue.Queue[str | None] = queue.Queue()
-    def read_output():
-        for line in process.stdout:
-            output.put(line)
-        output.put(None)
-    threading.Thread(target=read_output, daemon=True).start()
+        raise AsideError("Aside MCP 실행 파일을 찾을 수 없습니다.")
     deadline = time.monotonic() + timeout
     name = "__cafeSteps_" + uuid.uuid4().hex
     command = f"globalThis.{name}=(async function*(){{\n{code}\n}})();"
     step = "initialization"
     try:
-        while True:
-            command += (
-                f"const s=await globalThis.{name}.next();"
-                f"console.log('{RESULT_MARKER}'+JSON.stringify({{status:'step',done:s.done,step:s.value}}));"
-            )
-            # IIFE gives each advance fresh lexical bindings while the generator
-            # retains the editor, helpers and caret state across RPC calls.
-            expression = "(async()=>{" + command + "})()"
-            process.stdin.write("await eval(" + json.dumps(expression, ensure_ascii=False) + ");\n")
-            process.stdin.flush()
-            step_deadline = min(deadline, time.monotonic() + 110)
+        with AsideMCP(executable, account=ASIDE_ACCOUNT, cwd=cwd) as client:
             while True:
-                remaining = step_deadline - time.monotonic()
+                remaining = min(110, deadline - time.monotonic())
                 if remaining <= 0:
                     raise AsideError(f"Aside Cafe step timed out: {step}; do not blindly retry")
-                try:
-                    line = output.get(timeout=remaining)
-                except queue.Empty as exc:
-                    raise AsideError(f"Aside Cafe step timed out: {step}; do not blindly retry") from exc
-                if line is None:
-                    raise AsideError(f"Aside CLI disconnected at Cafe step: {step}")
-                if RESULT_MARKER not in line:
-                    continue
-                result = _parse_result(line)
-                if result.get("status") != "step":
-                    return result
-                if result.get("done"):
+                expression = command + (
+                    f"const s=await globalThis.{name}.next();"
+                    f"console.log('{RESULT_MARKER}'+JSON.stringify({{status:'step',done:s.done,step:s.value}}));"
+                )
+                output = client.repl(
+                    "await (async()=>{" + expression + "})()",
+                    title=f"카페 편집 단계: {step}", timeout=remaining,
+                )
+                # The final provider receipt precedes the generator's done marker
+                # in one MCP reply. Preserve it instead of selecting the last line.
+                markers = re.findall(rf"{re.escape(RESULT_MARKER)}([^\r\n]+)", output)
+                if not markers:
+                    raise AsideError(f"Aside MCP Cafe step has no result: {step}")
+                advance = None
+                for marker in markers:
+                    result = _parse_result(RESULT_MARKER + marker)
+                    if result.get("status") != "step":
+                        return result
+                    advance = result
+                if advance.get("done"):
                     raise AsideError("Cafe workflow ended without provider evidence")
-                step = str(result.get("step"))
+                step = str(advance.get("step"))
                 print(f"Aside Cafe step: {step}", flush=True)
-                break
-            command = ""
-    finally:
-        if process.stdin:
-            try:
-                process.stdin.close()
-            except OSError:
-                pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
+                command = ""
+    except (AsideMCPError, OSError) as exc:
+        raise _mcp_failure(exc) from exc
 
 
 def daemon_is_up(*, account: str | None = ASIDE_ACCOUNT, timeout: int = 60) -> bool:
@@ -623,7 +628,8 @@ if (loggedOut && payload.keep) {
   emit(result);
 }
 """
-    return run_repl(code, timeout=45, account=account)
+    runner = run_mcp_repl if site == "naver" else run_repl
+    return runner(code, timeout=45, account=account)
 
 
 def capture_youtube_frames(
@@ -2454,7 +2460,7 @@ if(await pageLooksLoggedOut(p,'naver')){
   }
 }
 """
-    result = run_repl(code, timeout=180, account=account)
+    result = run_mcp_repl(code, timeout=180, account=account)
     return _save_preview(result, preview_path)
 
 

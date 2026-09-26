@@ -26,7 +26,7 @@ from aside_browser import (
     _payload_expression,
     _save_preview,
     post_to_naver_cafe,
-    run_repl,
+    run_mcp_repl as run_repl,
 )
 from external_publish_tracking import track_external_event
 from naver_cafe_draft_scheduler import _load_manifest, _provider_lock, _write_result
