@@ -81,6 +81,8 @@ def rejection_reason(candidate: dict) -> str | None:
     title = str(candidate.get("title") or "")
     seconds = candidate.get("duration_seconds")
     minutes = candidate.get("minutes")
+    if candidate.get("attempt_locked"):
+        return "이전 NotebookLM 시도가 잠김"
     if channel in VENDOR_CHANNELS:
         return "벤더·컨퍼런스 발표"
     if channel in COURSE_MILL_CHANNELS:
@@ -148,12 +150,41 @@ def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
     return attempts
 
 
+def attempt_locked_keys(project: Path = PROJECT) -> set[str]:
+    """NotebookLM 시도 ledger에 막혀 재시도가 안 되는 원본들.
+
+    후보당 NotebookLM 기회는 한 번이고, 실패한 시도도 기록돼 재시도를 막는다. 그런
+    후보를 그날의 몫으로 뽑으면 준비 단계에서 바로 죽어서 하루치를 버린다. 잠금은
+    notebooklm_absence_probe 로 "답변이 생기지 않았음"을 증명해야 풀린다.
+    """
+    blocking = {"started", "provider_response_received", "substantive_failed",
+                "unknown_after_provider_start"}
+    locked: set[str] = set()
+    for path in project.glob("outputs/*/shorts/notebooklm-attempt-ledger.json"):
+        if (path.parent / "final.mp4").is_file():
+            continue
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        key = str(ledger.get("sourceKey") or "")
+        if not key:
+            continue
+        for attempt in ledger.get("attempts") or []:
+            status = str(attempt.get("attempt_status") or "")
+            if status in blocking and attempt.get("provider_response_absent") is not True:
+                locked.add(key)
+                break
+    return locked
+
+
 def load_candidates(seen_path: Path | None = None) -> list[dict]:
     """Every discovered reference that has no production yet."""
     path = seen_path or SEEN_PATH
     seen = json.loads(path.read_text(encoding="utf-8"))
     out = []
     attempts = _last_attempts()
+    locked = attempt_locked_keys()
     for vid, meta in (seen.get("videos") or {}).items():
         if already_produced(vid):
             continue
@@ -168,6 +199,7 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
             "first_seen": str(meta.get("seen_at") or meta.get("first_seen") or ""),
             "has_output": bool(list((PROJECT / "outputs").glob(vid + "-20??????"))),
             "last_attempt": attempts.get(vid, ""),
+            "attempt_locked": vid in locked,
         })
     return out
 

@@ -152,3 +152,37 @@ def test_all_four_failed_outputs_remain_retry_candidates():
     selected, rejected = sel.select(rows)
     assert {row["id"] for row in selected} == {row["id"] for row in rows}
     assert rejected == []
+
+
+def test_ledger_locked_candidate_is_not_offered(tmp_path, monkeypatch):
+    """재시도가 막힌 후보를 그날 몫으로 뽑으면 준비 단계에서 죽어 하루치를 버린다."""
+    root = tmp_path / "outputs/abcdefghijk-20260101/shorts"
+    root.mkdir(parents=True)
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started"}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == {"abcdefghijk"}
+    assert sel.rejection_reason({"attempt_locked": True, "minutes": 20}) == "이전 NotebookLM 시도가 잠김"
+
+    # 부재가 증명되면 다시 후보가 된다.
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started", "provider_response_absent": True}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == set()
+
+
+def test_rendered_candidate_is_not_treated_as_locked(tmp_path):
+    """렌더까지 끝난 폴더는 잠금 대상이 아니다. 발행만 남은 상태다."""
+    root = tmp_path / "outputs/abcdefghijk-20260101/shorts"
+    root.mkdir(parents=True)
+    (root / "final.mp4").write_bytes(b"0")
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started"}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == set()
