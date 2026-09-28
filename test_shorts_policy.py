@@ -342,9 +342,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v20.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v21.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "c5621e6768347e7ba7761ca6e1d4776d50ec09e5c60eed6fdd0a01f50c04554a"
+        "3080ce108697f7ceba5a5720870abc3ff3b0cb567946532c70b2cd987348aa61"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1845,7 +1845,7 @@ def test_v19_requires_source_backed_authority_in_the_headline_and_hook():
     """초기 직접 제작분은 후킹에 원본의 수치·권위를 넣었고, v18은 그걸 금지하고 있었다."""
     text = policy.SHORTS_NOTEBOOK_INSTRUCTION
     assert "둘째 줄에 그중 하나를 반드시 넣는다" in text
-    assert "스크립트 도입 첫 문장과 같은 문장으로 쓰지 않는다" in text
+    assert "세 후보의 첫 줄은 서로 달라야 하며" in text
     assert "`팁`, `방법`, `정리`, `노하우`처럼 내용이 없는 명사로 끝내지 않는다" in text
     assert "`~정의입니다`, `~개선입니다`, `~활용입니다`처럼 명사로 끝내지 않는다" in text
     # 지어내기 금지는 그대로 남아 있어야 한다.
@@ -1859,3 +1859,12 @@ def test_v20_converts_dollar_amounts_to_won():
     assert "`약 사백억 원`처럼 한글로 쓴다" in text
     assert "달러 표기를 괄호로도 함께 남기지 않는다" in text
     assert "원본에 없는 금액을 만들지 않는다" in text
+
+
+def test_v21_keeps_the_spoken_opener_off_the_screen():
+    """음성이 "이 남자 미쳤습니다"를 말하는데 화면에도 같은 문장을 띄우면 자리가 낭비된다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "헤드카피 첫 줄에 `미쳤습니다`, `대박입니다`, `천재입니다`를 쓰지 않는다" in text
+    assert "도입 첫 문장을 그대로 옮긴 후보는 하나도 없어야 한다" in text
+    # 도입 공식 자체는 음성에서 그대로 유지한다. 조회수 상위권이 전부 그 공식으로 연다.
+    assert "첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`로 시작한다" in text

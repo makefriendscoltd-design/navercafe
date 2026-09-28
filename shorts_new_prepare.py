@@ -103,12 +103,15 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
     그 첫 후보를 그대로 썼다. 겹치지 않는 후보가 하나라도 있으면 그것을 먼저 쓴다.
     """
     opening = re.sub(r"\s+", "", script.strip().split(".")[0])
-    if not opening:
-        return heads
 
     def duplicates(candidate: str) -> bool:
         first_line = scripts.head_copy_lines(candidate)[0]
-        return re.sub(r"\s+", "", first_line).rstrip("!?.") == opening.rstrip("!?.")
+        flat = re.sub(r"\s+", "", first_line)
+        # 도입 문장을 그대로 옮긴 후보, 그리고 음성이 말하는 공식 문구를 화면에 또
+        # 띄우는 후보를 같이 뒤로 보낸다. 화면은 음성이 하지 않는 말을 해야 한다.
+        if any(word in flat for word in ("미쳤습니다", "대박입니다", "천재입니다")):
+            return True
+        return bool(opening) and flat.rstrip("!?.") == opening.rstrip("!?.")
 
     def rendersafe(candidate: str) -> bool:
         # 후보 추출 단계는 첫 후보만 90px 폭을 실측한다. 순서를 바꾸면 실측을 안 거친

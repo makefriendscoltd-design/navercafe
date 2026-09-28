@@ -46,8 +46,8 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
-SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v20.0"
-SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v20.0
+SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v21.0"
+SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v21.0
 
 ## 작업 원칙
 
@@ -119,7 +119,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 5. 헤드카피 3안의 모든 줄은 BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하여야 한다. 실측을 보장할 수 없으면 공백 포함 13자 이하로 줄여 안전폭을 확보한다.
 6. 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체다. 검사 가능한 문장형을 위해 첫 줄 끝은 `?`, `!`, `입니다`, `됩니다`, `있다`, `된다`, `죠`, `손해` 중 하나로 마친다. 둘째 줄과 스크립트 첫 3문장이 같은 구체적 주제를 이어받아야 한다.
 7. 헤드카피에 원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다. 반대로 STEP 1의 6번(구체적 수치)이나 7번(화자 배경·권위)에 기록한 것이 있으면 둘째 줄에 그중 하나를 반드시 넣는다. 예: `포브스 선정 사업가의 / AI 직원 프롬프트 5가지`. 그 수치가 외화면 아래 내용 규칙 7번의 환산 규칙을 따른다.
-8. 헤드카피 첫 줄을 스크립트 도입 첫 문장과 같은 문장으로 쓰지 않는다. 귀로 듣는 문장을 눈으로 또 읽히지 않는다.
+8. 헤드카피 첫 줄에 `미쳤습니다`, `대박입니다`, `천재입니다`를 쓰지 않는다. 그 문장은 음성이 도입에서 이미 말하므로, 화면 글자는 음성이 하지 않는 말을 해야 한다. 세 후보의 첫 줄은 서로 달라야 하며, 도입 첫 문장을 그대로 옮긴 후보는 하나도 없어야 한다.
 9. 둘째 줄을 `팁`, `방법`, `정리`, `노하우`처럼 내용이 없는 명사로 끝내지 않는다. 무엇에 대한 것인지 대상을 적는다.
 
 ### 내용 규칙
@@ -174,7 +174,7 @@ CTA·콜투액션·행동 유도처럼 시청자 행동을 요청하는 지시�
 다섯째, [다섯 번째 내용 문단]
 """
 # Literal pin filled from normalize_notebook_instruction(SHORTS_NOTEBOOK_INSTRUCTION).
-SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "c5621e6768347e7ba7761ca6e1d4776d50ec09e5c60eed6fdd0a01f50c04554a"
+SHORTS_NOTEBOOK_INSTRUCTION_SHA256 = "3080ce108697f7ceba5a5720870abc3ff3b0cb567946532c70b2cd987348aa61"
 SHORTS_NOTEBOOK_REQUIRED_MARKERS = (
     "BM HANNA 11yrs old 폰트 90px 실측 폭 920px 이하",
     "모든 소스",
