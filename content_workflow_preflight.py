@@ -139,9 +139,16 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         "height": 1920,
         "fps": 30,
     }
+    # 2026-09-28: 제작이 하루 10편이라 발행도 10편으로 올렸다. 검사는 고정 숫자가 아니라
+    # 계약의 모양을 본다 - 하루 상한과 시간대 개수가 맞고, 간격이 시간대 간격 안에 든다.
+    hours = policy.SCHEDULE.get("preferred_hours") or ()
     checks["daily_schedule_contract"] = (
-        policy.SCHEDULE.get("max_per_day") == 2
-        and policy.SCHEDULE.get("minimum_gap_hours") == 5
+        policy.SCHEDULE.get("max_per_day") == len(hours)
+        and len(hours) == len(set(hours))
+        and sorted(hours) == list(hours)
+        and policy.SCHEDULE.get("minimum_gap_hours") >= 1
+        and all(b - a >= policy.SCHEDULE["minimum_gap_hours"]
+                for a, b in zip(hours, hours[1:]))
         and policy.SCHEDULE.get("include_weekends") is True
     )
     checks["notebook_bindings"] = bool(

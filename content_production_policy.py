@@ -355,10 +355,13 @@ CARDNEWS_EDITORIAL = {
         "과장 금지",
     ),
 }
+# 2026-09-28: 제작이 하루 10편인데 발행이 2편이라 재고가 매일 8편씩 쌓였다. 예약이
+# 11월까지 밀려서 오늘 고친 설정이 실제로 공개되는 데 한 달 반이 걸리는 상태였다.
+# 발행을 제작에 맞춰 하루 10편으로 올린다. 기존 11시·20시는 그대로 두고 사이를 채운다.
 SCHEDULE = {
-    "max_per_day": 2,
-    "minimum_gap_hours": 5,
-    "preferred_hours": (11, 20),
+    "max_per_day": 10,
+    "minimum_gap_hours": 1,
+    "preferred_hours": (8, 10, 11, 13, 14, 16, 17, 19, 20, 22),
     "include_weekends": True,
 }
 KST = ZoneInfo("Asia/Seoul")
@@ -1335,10 +1338,12 @@ def validate_schedule(slots: Iterable[datetime]) -> list[datetime]:
             raise ProductionPolicyError("예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
         by_date.setdefault(slot.date(), []).append(slot)
     if any(len(items) > SCHEDULE["max_per_day"] for items in by_date.values()):
-        raise ProductionPolicyError("쇼츠는 하루 최대 2개만 예약합니다.")
+        raise ProductionPolicyError(
+            f"쇼츠는 하루 최대 {SCHEDULE['max_per_day']}개만 예약합니다.")
     for previous, current in zip(ordered, ordered[1:]):
         if (current - previous).total_seconds() < SCHEDULE["minimum_gap_hours"] * 3600:
-            raise ProductionPolicyError("쇼츠 예약 간격은 최소 5시간이어야 합니다.")
+            raise ProductionPolicyError(
+                f"쇼츠 예약 간격은 최소 {SCHEDULE['minimum_gap_hours']}시간이어야 합니다.")
     return ordered
 
 
@@ -1348,7 +1353,7 @@ def plan_shorts_schedule(
     *,
     horizon_days: int = 366,
 ) -> datetime:
-    """Choose the next append-only 11:00/20:00 KST slot.
+    """Choose the next free KST slot from the policy's preferred hours.
 
     Existing provider reservations must already be parsed into exact KST
     datetimes.  Callers must fail closed instead of omitting an unparseable
@@ -1365,7 +1370,10 @@ def plan_shorts_schedule(
     if any(slot.tzinfo is None or getattr(slot.tzinfo, "key", None) != "Asia/Seoul"
            for slot in existing):
         raise ProductionPolicyError("기존 예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
-    cursor = max([now_kst, *existing])
+    # 예전에는 마지막 예약 뒤에만 붙였다. 하루 2편일 때는 그게 안전했지만, 지금은
+    # 앞날짜에 빈 시간대가 남아 있는데도 새 영상이 11월 뒤로 밀린다. 지난 시각만
+    # 피하고 비어 있는 이른 슬롯을 쓴다. 충돌·간격·하루 상한은 아래 검사가 막는다.
+    cursor = now_kst
     start_date = cursor.date()
     for offset in range(horizon_days + 1):
         candidate_date = start_date + timedelta(days=offset)
@@ -1397,10 +1405,12 @@ def validate_new_schedule_candidate(
            for slot in existing):
         raise ProductionPolicyError("기존 예약 시각에는 Asia/Seoul 시간대가 필요합니다.")
     if sum(slot.date() == candidate.date() for slot in existing) >= SCHEDULE["max_per_day"]:
-        raise ProductionPolicyError("새 쇼츠를 더하면 하루 최대 2개를 넘습니다.")
+        raise ProductionPolicyError(
+            f"새 쇼츠를 더하면 하루 최대 {SCHEDULE['max_per_day']}개를 넘습니다.")
     gap_seconds = SCHEDULE["minimum_gap_hours"] * 3600
     if any(abs((candidate - slot).total_seconds()) < gap_seconds for slot in existing):
-        raise ProductionPolicyError("새 쇼츠 예약 간격은 기존 예약과 최소 5시간이어야 합니다.")
+        raise ProductionPolicyError(
+            f"새 쇼츠 예약 간격은 기존 예약과 최소 {SCHEDULE['minimum_gap_hours']}시간이어야 합니다.")
     return candidate
 
 

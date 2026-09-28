@@ -88,15 +88,17 @@ def test_all_four_downloaded_minsoo_assets_have_locked_hashes():
         assert policy.validate_presenter_asset(downloads / name)["sha256"]
 
 
-def test_schedule_allows_two_per_day_with_five_hour_gap():
+def test_schedule_allows_ten_per_day_with_one_hour_gap():
+    """제작이 하루 10편이라 발행도 10편으로 올렸다(2026-09-28)."""
     zone = ZoneInfo("Asia/Seoul")
-    slots = [
-        datetime(2026, 8, 24, 11, tzinfo=zone),
-        datetime(2026, 8, 24, 20, tzinfo=zone),
-    ]
+    slots = [datetime(2026, 8, 24, hour, tzinfo=zone)
+             for hour in policy.SCHEDULE["preferred_hours"]]
+    assert len(slots) == 10
     assert policy.validate_schedule(slots) == slots
-    with pytest.raises(policy.ProductionPolicyError, match="최소 5시간"):
-        policy.validate_schedule([slots[0], slots[0] + timedelta(hours=4)])
+    with pytest.raises(policy.ProductionPolicyError, match="최소 1시간"):
+        policy.validate_schedule([slots[0], slots[0] + timedelta(minutes=30)])
+    with pytest.raises(policy.ProductionPolicyError, match="하루 최대 10개"):
+        policy.validate_schedule(slots + [datetime(2026, 8, 24, 23, tzinfo=zone)])
 
 
 def test_schedule_includes_saturday_and_sunday():
@@ -119,19 +121,25 @@ def test_schedule_rejects_fixed_offset_and_naive_datetimes():
         policy.validate_schedule([datetime(2026, 9, 17, 11)])
 
 
-def test_plan_shorts_schedule_is_append_only_and_gap_safe():
+def test_plan_shorts_schedule_fills_the_earliest_free_slot():
+    """예전에는 마지막 예약 뒤에만 붙였다. 앞날짜가 비어 있는데도 새 영상이 밀렸다."""
     zone = ZoneInfo("Asia/Seoul")
     now = datetime(2026, 9, 5, 0, 30, tzinfo=zone)
-    assert policy.plan_shorts_schedule([], now) == datetime(2026, 9, 5, 11, tzinfo=zone)
+    assert policy.plan_shorts_schedule([], now) == datetime(2026, 9, 5, 8, tzinfo=zone)
+    # 먼 날짜가 이미 잡혀 있어도 오늘 비어 있는 자리를 쓴다.
     assert policy.plan_shorts_schedule(
         [datetime(2026, 9, 16, 11, tzinfo=zone)], now
-    ) == datetime(2026, 9, 16, 20, tzinfo=zone)
-    assert policy.plan_shorts_schedule(
-        [datetime(2026, 9, 16, 20, tzinfo=zone)], now
-    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
-    assert policy.plan_shorts_schedule(
-        [datetime(2026, 9, 16, 18, tzinfo=zone)], now
-    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
+    ) == datetime(2026, 9, 5, 8, tzinfo=zone)
+    # 그날 앞자리가 차 있으면 다음 빈 자리로 간다.
+    taken = [datetime(2026, 9, 5, hour, tzinfo=zone) for hour in (8, 10, 11)]
+    assert policy.plan_shorts_schedule(taken, now) == datetime(2026, 9, 5, 13, tzinfo=zone)
+    # 지난 시각은 절대 쓰지 않는다.
+    late = datetime(2026, 9, 5, 18, 30, tzinfo=zone)
+    assert policy.plan_shorts_schedule([], late) == datetime(2026, 9, 5, 19, tzinfo=zone)
+    # 하루가 다 차면 다음 날 첫 자리로 넘어간다.
+    full = [datetime(2026, 9, 5, hour, tzinfo=zone)
+            for hour in policy.SCHEDULE["preferred_hours"]]
+    assert policy.plan_shorts_schedule(full, now) == datetime(2026, 9, 6, 8, tzinfo=zone)
 
 
 def test_replacement_sequence_is_fail_closed():
@@ -1764,7 +1772,8 @@ def test_a_missing_boundary_sentence_is_cleared_against_the_line_that_needed_it(
         narration, fact_verifications=entries)["status"] == "pass"
 
 
-def test_append_planner_preserves_actual_conflicting_inventory_and_adds_seven_safe_slots():
+def test_planner_preserves_conflicting_inventory_and_fills_the_gaps_between_it():
+    """옛 예약(11시·20시)은 그대로 두고, 그 사이 빈 시간대를 새 영상이 채운다."""
     kst=ZoneInfo('Asia/Seoul')
     raw=['2026-09-15T11:00:37+09:00','2026-09-15T11:44:11+09:00','2026-09-15T20:00:00+09:00',
          '2026-09-16T11:00:00+09:00','2026-09-16T20:00:00+09:00','2026-09-16T20:00:00+09:00']
@@ -1776,19 +1785,20 @@ def test_append_planner_preserves_actual_conflicting_inventory_and_adds_seven_sa
         policy.validate_new_schedule_candidate(existing,slot)
         existing.append(slot); added.append(slot.isoformat())
     assert original==existing[:len(original)]
-    assert added==['2026-09-24T11:00:00+09:00','2026-09-24T20:00:00+09:00',
-                   '2026-09-25T11:00:00+09:00','2026-09-25T20:00:00+09:00',
-                   '2026-09-26T11:00:00+09:00','2026-09-26T20:00:00+09:00',
-                   '2026-09-27T11:00:00+09:00']
+    # 9/15는 11시대가 이미 두 건이라 13시부터 그날 남은 자리를 먼저 쓴다.
+    assert added[0]=='2026-09-15T13:00:00+09:00'
+    assert all(a > now.isoformat() for a in added)
+    assert len(set(added))==len(added)
     with pytest.raises(policy.ProductionPolicyError): policy.validate_schedule(original)
 
 
 def test_new_candidate_validation_keeps_timezone_daily_cap_and_gap_strict():
     kst=ZoneInfo('Asia/Seoul'); day=datetime(2026,9,24,11,tzinfo=kst)
-    with pytest.raises(policy.ProductionPolicyError,match='5시간'):
-        policy.validate_new_schedule_candidate([day],day+timedelta(hours=3))
-    with pytest.raises(policy.ProductionPolicyError,match='최대 2개'):
-        policy.validate_new_schedule_candidate([day,day+timedelta(hours=9)],day.replace(hour=2))
+    with pytest.raises(policy.ProductionPolicyError,match='1시간'):
+        policy.validate_new_schedule_candidate([day],day+timedelta(minutes=20))
+    full=[datetime(2026,9,24,hour,tzinfo=kst) for hour in policy.SCHEDULE["preferred_hours"]]
+    with pytest.raises(policy.ProductionPolicyError,match='최대 10개'):
+        policy.validate_new_schedule_candidate(full,datetime(2026,9,24,23,tzinfo=kst))
     with pytest.raises(policy.ProductionPolicyError,match='Asia/Seoul'):
         policy.plan_shorts_schedule([datetime(2026,9,23,20,tzinfo=timezone.utc)],day)
 
