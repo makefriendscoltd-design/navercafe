@@ -186,3 +186,15 @@ def test_rendered_candidate_is_not_treated_as_locked(tmp_path):
         "attempts": [{"attempt_status": "started"}],
     }), encoding="utf-8")
     assert sel.attempt_locked_keys(tmp_path) == set()
+
+
+def test_source_whose_shorts_already_published_is_not_offered(monkeypatch):
+    """카페가 남아 있으면 needs_production 이 계속 참이라 같은 원본이 매일 다시 뽑힌다."""
+    state = {"channels": {"shorts": {"status": "complete"}, "cafe": {"status": "missing"}},
+             "needs_production": True}
+    monkeypatch.setattr("content_run_state.source_state", lambda project, key: state)
+    assert sel.shorts_done("abcdefghijk") is True
+    assert sel.rejection_reason({"shorts_done": True, "minutes": 20}) == "쇼츠는 이미 발행 완료"
+
+    state["channels"]["shorts"] = {"status": "missing"}
+    assert sel.shorts_done("abcdefghijk") is False

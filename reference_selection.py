@@ -81,6 +81,8 @@ def rejection_reason(candidate: dict) -> str | None:
     title = str(candidate.get("title") or "")
     seconds = candidate.get("duration_seconds")
     minutes = candidate.get("minutes")
+    if candidate.get("shorts_done"):
+        return "쇼츠는 이미 발행 완료"
     if candidate.get("attempt_locked"):
         return "이전 NotebookLM 시도가 잠김"
     if channel in VENDOR_CHANNELS:
@@ -126,6 +128,20 @@ def already_produced(source_key: str) -> bool:
     """True once production handed every channel off, even if Cafe is still queued."""
     from content_run_state import source_state
     return not source_state(PROJECT, source_key)["needs_production"]
+
+
+def shorts_done(source_key: str) -> bool:
+    """쇼츠가 이미 발행까지 끝난 원본.
+
+    카페가 안 끝난 원본은 needs_production 이 계속 참이라, 쇼츠만 만드는 이 경로에서는
+    같은 원본이 매일 다시 뽑힌다. 2026-09-27 실행은 열 자리 중 다섯을 이미 예약까지
+    끝낸 원본에 썼다. 쇼츠가 끝난 원본은 이 경로의 후보가 아니다.
+    """
+    from content_run_state import source_state
+    shorts = source_state(PROJECT, source_key)["channels"].get("shorts") or {}
+    if isinstance(shorts, str):  # 옛 형식
+        return shorts == "complete"
+    return shorts.get("status") == "complete"
 
 
 def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
@@ -200,6 +216,7 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
             "has_output": bool(list((PROJECT / "outputs").glob(vid + "-20??????"))),
             "last_attempt": attempts.get(vid, ""),
             "attempt_locked": vid in locked,
+            "shorts_done": shorts_done(vid),
         })
     return out
 
