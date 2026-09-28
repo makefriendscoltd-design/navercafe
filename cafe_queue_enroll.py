@@ -35,6 +35,11 @@ PUBLISH_SCRIPT = "outputs/cafe-publish-queue-20260823/publish_manifest_cafe.py"
 CONSISTENCY = Path.home() / ".agents/skills/launch-consistency-check/scripts/check_launch_consistency.py"
 def next_slot(now: datetime, queue: dict) -> datetime:
     """First policy-compliant window after all currently reserved first attempts."""
+    from cafe_shorts_alignment import is_shorts_aligned
+    if is_shorts_aligned(queue):
+        # Eligibility comes from the matching Shorts provider evidence. Do not
+        # reserve another independent Cafe calendar while enrolling the source.
+        return now.astimezone(KST)
     windows = sorted({int(value.split(":", 1)[0]) for value in queue["windows"]})
     daily_maximum = int(queue["maximum_successes_per_day"])
     minimum_gap = timedelta(hours=float(queue["minimum_gap_hours"]))

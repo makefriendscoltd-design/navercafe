@@ -23,6 +23,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from cafe_shorts_alignment import aligned_entries, is_shorts_aligned, verified_shorts
 
 KST = timezone(timedelta(hours=9))
 DEFAULT_PROJECT = Path("/Users/apple/orca/navercafe")
@@ -44,12 +45,14 @@ def is_done(entry: dict) -> bool:
     return bool(entry.get("published_url")) or entry.get("status") == "published"
 
 
-def due_entries(queue: dict, now: datetime) -> list[dict]:
+def due_entries(queue: dict, now: datetime, project: Path = DEFAULT_PROJECT) -> list[dict]:
     """정책상 지금 시도할 수 있는 항목을 오래된 예약 순으로 돌려준다.
 
     failure_policy: due pending 과 재시도 가능한 failed 를 합치고,
     not_before 가 가장 오래된 것부터 발행한다.
     """
+    if is_shorts_aligned(queue):
+        return aligned_entries(project, queue, now)
     out = []
     for entry in queue.get("entries", []):
         if is_done(entry) or entry.get("do_not_retry"):
@@ -76,6 +79,8 @@ def draft_candidates(project: Path, queue: dict, now: datetime) -> list[dict]:
     entries = [e for e in queue.get("entries", []) if not is_done(e)
                and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
     entries.sort(key=lambda e: str(e.get("planned_publish_at") or e.get("not_before")))
+    if is_shorts_aligned(queue):
+        entries = aligned_entries(project, queue, now)
     candidates = []
     for entry in entries[:int(queue.get("draft_lookahead", 2))]:
         manifest = project / str(entry.get("manifest") or "")
@@ -86,8 +91,11 @@ def draft_candidates(project: Path, queue: dict, now: datetime) -> list[dict]:
     return candidates
 
 
-def plan_remaining(queue: dict, now: datetime, run_windows: list[tuple[int, int]]) -> dict[str, str]:
+def plan_remaining(queue: dict, now: datetime, run_windows: list[tuple[int, int]], project: Path = DEFAULT_PROJECT) -> dict[str, str]:
     """Reserve remaining articles against the installed timer and current daily policy."""
+    if is_shorts_aligned(queue):
+        return {entry['source_key']: verified_shorts(project, entry)['scheduled_at']
+                for entry in aligned_entries(project, queue, now)}
     entries = [e for e in queue.get("entries", []) if not is_done(e)
                and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
     entries.sort(key=lambda e: str(e.get("not_before")))
@@ -184,6 +192,9 @@ def last_success(queue: dict) -> datetime | None:
 
 def rate_block(queue: dict, now: datetime) -> str | None:
     """정책상 지금 발행하면 안 되는 이유. 없으면 None."""
+    if is_shorts_aligned(queue):
+        windows = {int(v.split(':', 1)[0]) for v in queue['windows']}
+        return None if now.hour in windows else f'현재 {now.hour}시는 발행 윈도우가 아님'
     daily_max = int(queue["maximum_successes_per_day"])
     today = successes_today(queue, now)
     if len(today) >= daily_max:
@@ -214,9 +225,10 @@ def missing_gates(project: Path, entry: dict) -> list[str]:
 
 
 def run_command(project: Path, command: str, timeout: int) -> subprocess.CompletedProcess:
+    import shlex
     return subprocess.run(
-        command,
-        shell=True,
+        shlex.split(command),
+        shell=False,
         cwd=project,
         capture_output=True,
         text=True,
@@ -314,6 +326,33 @@ def record(
             continue
         entry["attempts"] = int(entry.get("attempts") or 0) + 1
         entry["last_attempt_at"] = now.isoformat()
+        if is_shorts_aligned(queue):
+            evidence_path = project / str(entry.get('provider_evidence') or '__missing__')
+            receipt = {}
+            if evidence_path.is_file():
+                try:
+                    receipt = json.loads(evidence_path.read_text())
+                except (ValueError, OSError):
+                    pass
+            verification = receipt.get('publicVerification') or {}
+            verified = (receipt.get('status') == 'published_verified'
+                        and verification.get('status') == 'verified'
+                        and int(verification.get('oglinks') or 0) >= 1
+                        and int(verification.get('embeds') or 0) >= 1
+                        and bool(receipt.get('providerUrl'))
+                        and bool(read_provider_url(project, entry)))
+            uncertain = any((evidence_path.parent / name).is_file() for name in (
+                'provider_uncertain_do_not_retry.json',
+                'published_but_verification_failed_do_not_retry.json',
+                '12_provider_success_reservation.json'))
+            if not verified and (uncertain or receipt.get('status') in {'published', 'published_verified'}):
+                entry.update(status='reconcile_required', next_eligible_at=None,
+                             do_not_retry=True, last_error='provider_result_requires_readonly_reconciliation')
+                save_queue(queue_path, queue)
+                return
+            ok = bool(verified)
+            if not ok and not note:
+                note = 'publisher_finished_without_verified_article'
         if ok:
             url = read_provider_url(project, entry)
             if not url:
@@ -342,7 +381,9 @@ def record(
                 entry["last_error"] = f"same_cause_failures={repeats}: {cause}"
             else:
                 entry["status"] = "failed"
-                entry["next_eligible_at"] = (now + timedelta(hours=retry)).isoformat()
+                next_time = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                             if is_shorts_aligned(queue) else now + timedelta(hours=retry))
+                entry["next_eligible_at"] = next_time.isoformat()
         break
     save_queue(queue_path, queue)
 
@@ -371,7 +412,7 @@ def main(argv=None) -> int:
 
     now = datetime.now(KST)
     queue = load_queue(queue_path)
-    due = due_entries(queue, now)
+    due = due_entries(queue, now, project)
     blocked = rate_block(queue, now)
 
     summary = {
@@ -400,6 +441,23 @@ def main(argv=None) -> int:
         print(json.dumps(summary, ensure_ascii=False))
         return 0
 
+    if is_shorts_aligned(queue):
+        # Both entry points obey the same live guard; never silently pick a
+        # different item or prepare provider drafts behind a blocked guard.
+        proc = subprocess.run([sys.executable, str(project / 'content_queue_guard.py'), '--live'],
+                              cwd=project, capture_output=True, text=True, timeout=240)
+        try:
+            guard = json.loads(proc.stdout)
+        except (ValueError, TypeError):
+            guard = {'status': 'blocked', 'reason': 'unreadable_live_guard'}
+        now = datetime.now(KST)
+        due = due_entries(load_queue(queue_path), now, project)
+        if (proc.returncode != 0 or guard.get('status') != 'pass' or not due
+                or guard.get('source_key') != due[0]['source_key']):
+            print(json.dumps({'action': 'skip', 'guard': guard, 'provider_mutation': False}, ensure_ascii=False))
+            return 0
+        due = due[:1]
+
     if blocked:
         preparation = {"action": "skip"} if args.validate_only else prepare_ahead(
             project, queue_path, queue, now, args.timeout)
@@ -411,7 +469,7 @@ def main(argv=None) -> int:
         print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
 
-    attempts_per_run = int(queue.get("maximum_attempts_per_run") or 1)
+    attempts_per_run = 1 if is_shorts_aligned(queue) else int(queue.get("maximum_attempts_per_run") or 1)
     done = 0
     publish_failed = False
     for entry in due:
@@ -463,6 +521,22 @@ def main(argv=None) -> int:
             )
             continue
 
+        if is_shorts_aligned(queue):
+            eligibility_command = entry.get('eligibility_command')
+            if not eligibility_command:
+                print(json.dumps({'source_key': source_key, 'action': 'blocked',
+                                  'reason': 'missing_eligibility_command'}))
+                return 1
+            validation = run_command(project, eligibility_command, args.timeout)
+            try:
+                result = json.loads(validation.stdout)
+            except (ValueError, TypeError):
+                result = {}
+            if validation.returncode != 0 or result.get('status') != 'pass' or result.get('scope') != 'cafe_only':
+                print(json.dumps({'source_key': source_key, 'action': 'blocked',
+                                  'reason': 'eligibility_failed', 'exit': validation.returncode}))
+                return 1
+
         started = datetime.now(KST)
         try:
             proc = run_command(project, command, args.timeout)
@@ -485,6 +559,9 @@ def main(argv=None) -> int:
             break
 
         record(project, queue_path, source_key, started, ok, note)
+        if is_shorts_aligned(queue):
+            updated = next(e for e in load_queue(queue_path)['entries'] if e['source_key'] == source_key)
+            ok = updated.get('status') == 'published'
         publish_failed = publish_failed or not ok
         print(
             json.dumps(

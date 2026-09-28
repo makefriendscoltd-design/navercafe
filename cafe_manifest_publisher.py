@@ -80,10 +80,16 @@ def canonical_cafe_article_url(raw_url: str) -> tuple[str, str]:
 
 
 def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str | None = None) -> None:
-    """Enforce the queue's daily cap and gap again inside the provider lock."""
+    """Recheck the active queue policy again inside the provider lock."""
     queue = read_json(PROJECT / QUEUE_POLICY_PATH)
     timezone = ZoneInfo(queue["timezone"])
     current = (now or datetime.now(timezone)).astimezone(timezone)
+    from cafe_shorts_alignment import is_shorts_aligned, alignment_block
+    if is_shorts_aligned(queue):
+        reason = alignment_block(PROJECT, queue, current, source_key)
+        if reason:
+            raise CafePublishWindowClosed(reason, f'Cafe Shorts alignment blocked: {reason}')
+        return
     verified_by_source: dict[str, datetime] = {}
     for entry in queue.get("entries", []):
         evidence_source_key = entry.get("source_key")
