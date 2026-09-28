@@ -108,10 +108,23 @@ def prepare(source_key: str) -> dict:
     from content_production_policy import validate_longform_source
 
     validate_longform_source(measure_source_video(source_key))
-    subprocess.run(
+    # 사전점검은 자주 막히는 관문인데, 출력을 버리면 무엇이 막았는지 로그에 안 남는다.
+    # 실패한 항목 이름을 예외 메시지에 실어서 다음 실패를 바로 읽을 수 있게 한다.
+    preflight = subprocess.run(
         [sys.executable, str(PROJECT / "content_workflow_preflight.py"), "--runtime", "--json"],
-        stdout=subprocess.DEVNULL, check=True,
+        capture_output=True, text=True,
     )
+    if preflight.returncode != 0:
+        try:
+            report = json.loads(preflight.stdout or "{}")
+        except ValueError:
+            report = {}
+        failed = report.get("failures") or [
+            name for name, passed in (report.get("checks") or {}).items() if not passed
+        ]
+        detail = ", ".join(str(name) for name in failed) or (
+            (preflight.stderr or preflight.stdout or "").strip()[-200:])
+        raise RuntimeError(f"제작 사전점검 실패: {detail}")
 
     source_video, credit = _download_source(source_key, root)
     if not credit.startswith("출처: ") or len(credit) <= 4:

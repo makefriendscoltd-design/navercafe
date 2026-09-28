@@ -334,9 +334,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v18.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v19.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "82ee6b06f966cd4a136542f5ea3957befd91de9c2f8d42c6993a4f9730d9127d"
+        "edf05d92bf76a4e49a22363442c6a5d6bbe7714dd85b1b1dc68b13db6db817c3"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1696,8 +1696,11 @@ def test_publishing_across_platforms_is_still_caught(sentence):
 
 
 def test_new_shorts_are_built_at_the_owners_narration_pace():
-    assert policy.SHORTS_NARRATION_TARGET_CPS == 9.0
+    """2026-09-28에 9.0(약 1.43배 빨리감기)에서 원래 목소리 속도 6.3으로 내렸다."""
+    assert policy.SHORTS_NARRATION_TARGET_CPS == 6.3
     assert shorts_tempo.SHORTS_NARRATION_TARGET_CPS == policy.SHORTS_NARRATION_TARGET_CPS
+    # 9.0으로 만든 기존 영상은 계속 검증돼야 한다.
+    assert policy.validate_narration_target_cps(9.0) == 9.0
 
 
 def test_shorts_already_scheduled_at_the_reference_pace_still_validate():
@@ -1826,3 +1829,14 @@ def test_live_channel_policy_is_readable_and_names_the_introduction_video():
     assert "aixschool.kr" in pol["cta_block"] and "pf.kakao.com" in pol["cta_block"]
     # 소개 영상은 2026-09-23에 "제가 교장입니다"로 승인 교체됐다(정본 approved_by_user_on).
     assert pol["introduction_video_id"] == "e2Jp0D3jwOU"
+
+
+def test_v19_requires_source_backed_authority_in_the_headline_and_hook():
+    """초기 직접 제작분은 후킹에 원본의 수치·권위를 넣었고, v18은 그걸 금지하고 있었다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "둘째 줄에 그중 하나를 반드시 넣는다" in text
+    assert "스크립트 도입 첫 문장과 같은 문장으로 쓰지 않는다" in text
+    assert "`팁`, `방법`, `정리`, `노하우`처럼 내용이 없는 명사로 끝내지 않는다" in text
+    assert "`~정의입니다`, `~개선입니다`, `~활용입니다`처럼 명사로 끝내지 않는다" in text
+    # 지어내기 금지는 그대로 남아 있어야 한다.
+    assert "원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다" in text
