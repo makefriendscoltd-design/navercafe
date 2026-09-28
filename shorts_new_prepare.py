@@ -95,6 +95,25 @@ def _download_source(source_key: str, root: Path) -> tuple[Path, str]:
     return video, credit
 
 
+def _headcopy_order(heads: list[str], script: str) -> list[str]:
+    """화면 첫 줄이 나레이션 첫 문장과 겹치지 않는 후보를 앞으로 보낸다.
+
+    헤드카피는 귀로 듣는 말을 눈으로 또 읽히는 자리가 아니다. 지침(v19)이 같은 문장을
+    금지하지만 후보 세 개 중 하나는 여전히 도입 첫 문장을 그대로 쓰고 나오며, 지금까지
+    그 첫 후보를 그대로 썼다. 겹치지 않는 후보가 하나라도 있으면 그것을 먼저 쓴다.
+    """
+    opening = re.sub(r"\s+", "", script.strip().split(".")[0])
+    if not opening:
+        return heads
+
+    def duplicates(candidate: str) -> bool:
+        first_line = scripts.head_copy_lines(candidate)[0]
+        return re.sub(r"\s+", "", first_line).rstrip("!?.") == opening.rstrip("!?.")
+
+    fresh = [h for h in heads if not duplicates(h)]
+    return fresh + [h for h in heads if duplicates(h)] if fresh else heads
+
+
 def prepare(source_key: str) -> dict:
     source_root = _source_root(source_key)
     root = source_root / "shorts"
@@ -177,6 +196,7 @@ def prepare(source_key: str) -> dict:
     fact_path = root / "notebooklm" / scripts.FACT_VERIFICATION_FILENAME
 
     heads = scripts.extract_head_copy_candidates(answer_path.read_text(encoding="utf-8"))
+    heads = _headcopy_order(heads, script)
     title = " ".join(scripts.head_copy_lines(heads[0]))
     presenter_binding = json.loads(PRESENTER_SOURCE.read_text(encoding="utf-8"))["render_inputs"]["presenter"]
     # 승인본 보관 위치는 정본이 정한다. 옛 매니페스트에 박힌 Downloads 경로가 비어도
