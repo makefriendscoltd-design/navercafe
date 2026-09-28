@@ -110,8 +110,17 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
         first_line = scripts.head_copy_lines(candidate)[0]
         return re.sub(r"\s+", "", first_line).rstrip("!?.") == opening.rstrip("!?.")
 
-    fresh = [h for h in heads if not duplicates(h)]
-    return fresh + [h for h in heads if duplicates(h)] if fresh else heads
+    def rendersafe(candidate: str) -> bool:
+        # 후보 추출 단계는 첫 후보만 90px 폭을 실측한다. 순서를 바꾸면 실측을 안 거친
+        # 후보가 화면에 올라가 3줄로 접힐 수 있으므로, 바꿔 넣을 후보를 여기서 실측한다.
+        try:
+            scripts.validate_head_copy(candidate, measure_pixels=True)
+        except RuntimeError:
+            return False
+        return True
+
+    fresh = [h for h in heads if not duplicates(h) and rendersafe(h)]
+    return fresh + [h for h in heads if h not in fresh] if fresh else heads
 
 
 def prepare(source_key: str) -> dict:
