@@ -19,14 +19,12 @@
 from __future__ import annotations
 
 import argparse
-import configparser
 import json
 import re
 from datetime import datetime
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent
-MIGRATED_CONFIG = Path("~/orca/projects/ccidacafe/config.ini").expanduser()
 TITLE_FILENAME = "upload_title.json"
 MAX_TITLE_CHARS = 40
 
@@ -49,15 +47,6 @@ FORBIDDEN_TITLE_PATTERNS = (
 
 class TitleError(RuntimeError):
     pass
-
-
-def _api_key() -> str:
-    cfg = configparser.RawConfigParser()
-    local = PROJECT / "config.ini"
-    path = local if local.exists() else MIGRATED_CONFIG
-    if path.exists():
-        cfg.read(path, encoding="utf-8")
-    return cfg.get("GEMINI", "api_key", fallback="").strip()
 
 
 def used_titles(outputs: Path | None = None) -> set[str]:
@@ -135,24 +124,19 @@ JSON 하나만 출력한다: {{"titles":["후보1","후보2","후보3","후보4"
 """
 
 
-def _ask_gemini(prompt: str, api_key: str, model: str) -> list[str]:
-    from google import genai
-    from google.genai import types
+def _ask_agent(prompt: str) -> list[str]:
+    """제목은 구독 에이전트가 쓴다. API 과금 경로를 쓰지 않는다."""
+    import subscription_agent
 
-    with genai.Client(api_key=api_key) as client:
-        response = client.models.generate_content(
-            model=model, contents=prompt,
-            config=types.GenerateContentConfig(temperature=0.9),
-        )
-    text = (response.text or "").strip()
-    match = re.search(r"\{.*\}", text, re.S)
-    if not match:
-        raise TitleError("제목 생성 응답에서 JSON을 찾지 못했습니다.")
-    titles = json.loads(match.group(0)).get("titles") or []
+    try:
+        parsed = subscription_agent.run_json(prompt, timeout=240)
+    except subscription_agent.SubscriptionAgentError as exc:
+        raise TitleError(str(exc)) from None
+    titles = parsed.get("titles") or []
     return [str(t).strip().strip('"') for t in titles if str(t).strip()]
 
 
-def write_title(root: Path, *, model: str = "gemini-2.5-flash", force: bool = False) -> dict:
+def write_title(root: Path, *, force: bool = False) -> dict:
     """후보 폴더의 대본으로 제목을 새로 쓰고 `upload_title.json`에 남긴다."""
     root = Path(root).expanduser().resolve()
     target = root / TITLE_FILENAME
@@ -162,16 +146,14 @@ def write_title(root: Path, *, model: str = "gemini-2.5-flash", force: bool = Fa
         return {**json.loads(target.read_text(encoding="utf-8")), "status": "existing"}
 
     script = (root / "07_script_final.txt").read_text(encoding="utf-8").strip()
-    api_key = _api_key()
-    if not api_key:
-        raise TitleError("제목 생성에 필요한 Gemini API 키가 없습니다.")
     taken = sorted(used_titles())
     rejected: list[dict] = []
     for _ in range(2):
-        for candidate in _ask_gemini(_prompt(script, headcopy, taken), api_key, model):
+        for candidate in _ask_agent(_prompt(script, headcopy, taken)):
             reason = check_title(candidate, headcopy=headcopy, taken=set(taken))
             if reason is None:
-                record = {"title": candidate, "headcopy": headcopy, "model": model,
+                record = {"title": candidate, "headcopy": headcopy,
+                          "writer": "subscription_agent",
                           "rejected": rejected, "status": "written",
                           "written_at": datetime.now().astimezone().isoformat()}
                 target.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
