@@ -334,9 +334,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v19.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v20.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "edf05d92bf76a4e49a22363442c6a5d6bbe7714dd85b1b1dc68b13db6db817c3"
+        "c5621e6768347e7ba7761ca6e1d4776d50ec09e5c60eed6fdd0a01f50c04554a"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1840,3 +1840,12 @@ def test_v19_requires_source_backed_authority_in_the_headline_and_hook():
     assert "`~정의입니다`, `~개선입니다`, `~활용입니다`처럼 명사로 끝내지 않는다" in text
     # 지어내기 금지는 그대로 남아 있어야 한다.
     assert "원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다" in text
+
+
+def test_v20_converts_dollar_amounts_to_won():
+    """달러 금액은 한국 시청자가 크기를 체감하지 못한다. 원화로 바꿔 말해야 한다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "1달러를 1,356원으로 계산하고" in text
+    assert "`약 사백억 원`처럼 한글로 쓴다" in text
+    assert "달러 표기를 괄호로도 함께 남기지 않는다" in text
+    assert "원본에 없는 금액을 만들지 않는다" in text
