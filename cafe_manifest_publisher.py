@@ -390,6 +390,12 @@ def crm_emit(source_key: str, evidence_path: Path) -> dict:
 
 
 def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path, *, prepare_only: bool = False) -> None:
+    backend = read_json(PROJECT / QUEUE_POLICY_PATH).get('provider_backend', 'aside')
+    if backend == 'ego':
+        from cafe_ego_publisher import publish as ego_publish
+        return ego_publish(manifest_path, base, provider, evidence, prepare_only=prepare_only)
+    if backend != 'aside':
+        raise RuntimeError(f'Unknown Cafe provider backend: {backend}')
     eligibility = validate_cafe_eligibility(manifest_path, provider, evidence)
     if eligibility["status"] != "pass":
         raise RuntimeError({"cafe_eligibility_gate_failed": eligibility})

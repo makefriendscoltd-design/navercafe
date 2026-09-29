@@ -1,5 +1,7 @@
 """Cafe request eligibility, independent of Shorts status and publish calendars."""
-from datetime import datetime
+import json
+import math
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from cafe_shorts_alignment import _uncertain_source
@@ -38,6 +40,34 @@ def eligible_entries(project: Path, queue: dict, now: datetime,
     return [entry for _, entry in ranked]
 
 
+def success_interval_deadline(project: Path, queue: dict) -> datetime | None:
+    """Derive durable pacing from provider verification, never attempt start time."""
+    seconds = float(queue.get("success_interval_seconds", 0))
+    if not math.isfinite(seconds) or seconds < 0:
+        raise ValueError("invalid_success_interval_seconds")
+    if not seconds:
+        return None
+    stamps = []
+    for entry in queue.get("entries", []):
+        raw = entry.get("provider_evidence")
+        if not raw:
+            continue
+        path = Path(project) / raw
+        for candidate in (path, path.with_name("12_provider_success_reservation.json")):
+            if not candidate.is_file():
+                continue
+            receipt = json.loads(candidate.read_text(encoding="utf-8"))
+            if receipt.get("status") not in {"published_verified", "provider_success_reserved"}:
+                continue
+            if not receipt.get("providerUrl"):
+                continue
+            stamp = datetime.fromisoformat(receipt["verifiedAt"])
+            if stamp.tzinfo is None:
+                raise ValueError("provider_verification_timestamp_requires_timezone")
+            stamps.append(stamp)
+    return max(stamps) + timedelta(seconds=seconds) if stamps else None
+
+
 def publication_block(project: Path, queue: dict, now: datetime,
                       source_key: str | None) -> str | None:
     if not is_immediate(queue):
@@ -49,4 +79,10 @@ def publication_block(project: Path, queue: dict, now: datetime,
         return "missing_requested_source_key"
     if not eligible_entries(project, queue, now, source_key):
         return "requested_source_not_eligible"
+    try:
+        deadline = success_interval_deadline(project, queue)
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return "success_interval_evidence_invalid"
+    if deadline and now < deadline:
+        return f"success_interval_until:{deadline.isoformat()}"
     return None

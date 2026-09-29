@@ -59,3 +59,9 @@
 - 2026-09-29 최신 사용자 지시: 신규 카페 원고는 같은 source_key 전사문에 버전형 `CAFE_NOTEBOOK_PROMPT`를 적용한다. 초기 카페 글 10편의 사업 문제 → 도구·기능 → 적용 사례·진행 순서 → 결론·첫 행동 → 현재 CTA 흐름을 따른다. v2는 제목·도입·4~8개 소제목과 약 3000자 설명형 존댓말 칼럼이다. 기존 v1 프롬프트 해시·원고·승인·게시 증거는 보존한다. NotebookLM은 호출하지 않는다. 카페·카드뉴스는 이 원고를 공통 입력으로 사용하고 CTA·원본 연결·중복 방지를 검증한다. 카드뉴스 팩트팩은 검증용이며 대체 원고가 아니다.
 - `content_workflow.py prepare-cafe`로 별도 후보를 만들고 원문 보존을 검증한다. 기존 manifest·승인·공급자 증거는 검증 없이 덮어쓰지 않는다.
 - 카페 큐는 공급자 동작 전에 `content_queue_guard.py --live`를 통과한다. 특정 요청은 `--source-key=<source_key>`를 함께 전달하고 다른 항목으로 대체하지 않는다. 실제 자동화 지시문과 Git 추적 `outputs/cafe-publish-queue-20260823/automation_prompt.txt`가 다르면 중단한다. 요청·자동 재시도 모두 `cafe_queue_runner.py`의 공통 실행 잠금을 사용한다.
+
+## 2026-09-29 Ego Lite 순차 발행 — 최신 사용자 지시
+
+- 카페 밀린 글은 Ego Lite로 순차 발행하며, 검증 완료 verifiedAt부터10분 간격을 둔다. 간격과 실행 backend 정본은 기존 큐 JSON의 `success_interval_seconds=600`, `provider_backend=ego`다. 기존 immediate 모드의 무간격 지시와 Aside 전용 지시보다 이 항목이 우선한다.
+- 추적 정본 cafe_manifest_publisher.py가 cafe_ego_publisher.py와 cafe_ego_browser.mjs를 호출한다. 기존 runner/live guard/승인/중복/불확실 게시/CRM 검증 계약은 유지한다. 카페 전용 Ego Space는 outputs/cafe-ego-runtime/space.json으로 이어받으며 사용자의 화면·다른 작업 공간은 건드리지 않는다.
+- 코드/프롬프트/실제 등록 지시문 일치 후에만 운영 큐를 실행한다. 발행이 불확실하면 재시도 금지 증거를 남기고 중단한다. 공개 검증 후 CRM 실패는 동일 dedupe key로 기록만 복구하고 재발행하지 않는다.

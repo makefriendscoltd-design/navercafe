@@ -11,6 +11,7 @@ import argparse
 import fcntl
 import json
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,6 +51,10 @@ def drain(project: Path = PROJECT, *, dry_run: bool = False, timeout: int = 2400
         before = read_queue(project)
         if not is_immediate(before):
             return finish('immediate_mode_required')
+        if before.get('provider_backend') == 'ego' and not dry_run:
+            from cafe_ego_publisher import recover_pending_tracking
+            if not recover_pending_tracking(project, before):
+                return finish('crm_tracking_pending')
         now = datetime.now(timezone.utc)
         safety = publication_block(project, before, now, None)
         if safety and safety.startswith('reconcile_required:'):
@@ -63,6 +68,13 @@ def drain(project: Path = PROJECT, *, dry_run: bool = False, timeout: int = 2400
         if source in seen:
             return finish('source_already_attempted')
         blocked = publication_block(project, before, now, source)
+        if blocked and blocked.startswith('success_interval_until:') and not dry_run:
+            deadline = datetime.fromisoformat(blocked.split(':', 1)[1])
+            remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
+            print(json.dumps({'event': 'waiting_for_success_interval',
+                              'next_publish_after': deadline.isoformat()}, ensure_ascii=False), flush=True)
+            time.sleep(min(30, max(0, remaining)))
+            continue  # Re-read queue, eligibility and safety after every wait.
         if blocked:
             return finish(blocked)
         if dry_run:

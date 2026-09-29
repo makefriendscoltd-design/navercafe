@@ -102,3 +102,36 @@ def test_variable_quotes_require_bound_v2_instruction(tmp_path):
     receipt.write_text(json.dumps({'instruction_version': 'cafe-caption/v1',
                                    'instruction_sha256': prompt_hash('cafe-caption/v1')}))
     assert not publisher.quote_contract(manifest_path, manifest)
+
+
+def test_success_interval_uses_provider_verification_survives_restart(tmp_path):
+    q = queue()
+    q['success_interval_seconds'] = 600
+    q['entries'][0].update(status='published', do_not_retry=True,
+                          published_url='https://cafe.naver.com/westudyssat/1',
+                          provider_evidence='provider/13_provider_evidence.json',
+                          last_attempt_at=(NOW - timedelta(hours=1)).isoformat())
+    path = tmp_path / q['entries'][0]['provider_evidence']
+    path.parent.mkdir()
+    path.write_text(json.dumps({'status': 'published_verified',
+        'providerUrl': q['entries'][0]['published_url'], 'verifiedAt': NOW.isoformat()}))
+    reloaded = json.loads(json.dumps(q))
+    assert policy.publication_block(tmp_path, reloaded, NOW + timedelta(seconds=599), 'b').startswith('success_interval_until:')
+    assert policy.publication_block(tmp_path, reloaded, NOW + timedelta(seconds=600), 'b') is None
+    assert policy.eligible_entries(tmp_path, reloaded, NOW)[0]['source_key'] == 'b'
+    q.pop('success_interval_seconds')
+    assert policy.publication_block(tmp_path, q, NOW, 'b') is None
+
+
+def test_success_interval_invalid_configuration_fails_closed(tmp_path):
+    for value in (-1, 'bad', float('nan'), float('inf')):
+        q = queue()
+        q['success_interval_seconds'] = value
+        assert policy.publication_block(tmp_path, q, NOW, 'a') == 'success_interval_evidence_invalid'
+
+
+def test_success_interval_never_masks_uncertain_publication(tmp_path):
+    q = queue()
+    q['success_interval_seconds'] = 600
+    q['entries'][0]['status'] = 'reconcile_required'
+    assert policy.publication_block(tmp_path, q, NOW, 'b') == 'reconcile_required:a'
