@@ -155,6 +155,18 @@ SPELLED_NUMBER_RE = re.compile(
     r"(시간|분|초|명|개|번|일|주|달|개월|년|원|배|퍼센트|프로|가지|단계|시|천|만|억)")
 
 
+def _written_headcopy(script: str) -> list[str]:
+    """에이전트가 쓴 헤드카피. 실패하면 빈 목록이라 기존 후보를 쓴다."""
+    import shorts_headcopy
+
+    try:
+        written = shorts_headcopy.write_headcopy(
+            script, recent=shorts_headcopy.recent_headcopy())
+    except Exception:  # noqa: BLE001 - 헤드카피 때문에 제작을 멈추지 않는다
+        return []
+    return written
+
+
 def _write_headcopy_file(path: Path, heads: list[str]) -> None:
     """고른 순서와 숫자 표기를 후보 파일에 반영한다."""
     lines = []
@@ -271,6 +283,13 @@ def prepare(source_key: str) -> dict:
 
     heads = scripts.extract_head_copy_candidates(answer_path.read_text(encoding="utf-8"))
     heads = [to_digits(head) for head in _headcopy_order(heads, script)]
+    # 노트북 후보 셋은 틀에 박혀 나온다. 대본을 근거로 직접 쓴 것이 있으면 그것을 쓰고,
+    # 에이전트가 막히거나 검사를 못 넘기면 노트북 후보로 돌아간다.
+    written = _written_headcopy(script)
+    if written:
+        # 화면에 그려지는 것은 1안뿐이다. 직접 쓴 것을 앞에 두고 나머지 자리는 기존
+        # 후보로 채운다. 렌더는 후보 셋을 요구하고 셋 다 형식 검사를 받는다.
+        heads = (written + [h for h in heads if h not in written])[:3]
     # 렌더는 이 파일의 첫 후보를 화면에 그린다. 고른 순서를 파일에도 적어야 화면이 바뀐다.
     _write_headcopy_file(root / "06_headcopy_candidates.txt", heads)
     title = " ".join(scripts.head_copy_lines(heads[0]))
