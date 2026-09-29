@@ -344,7 +344,7 @@ def test_shorts_uses_the_simple_notebooklm_request():
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
     assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v22.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "bde6a2b4ef6547bd6271f1b6829a0b331cb8cf8dcea227c487c0dcf5892dbb08"
+        "362ef1d9e1b128308327e031e223ef5b4bddb9b0bf53573a30b56b88f11ca87f"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
