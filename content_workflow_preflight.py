@@ -268,7 +268,7 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         if queue_path.is_file():
             queue = json.loads(queue_path.read_text(encoding="utf-8"))
             checks["runtime:cafe_queue_policy"] = (
-                (queue.get("publication_mode") == "shorts_aligned"
+                (queue.get("publication_mode") in {"shorts_aligned", "immediate_on_request"}
                  or (queue.get("maximum_successes_per_day") == 4
                      and queue.get("minimum_gap_hours") == 3))
                 and queue.get("include_weekends") is True
