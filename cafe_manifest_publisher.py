@@ -84,6 +84,12 @@ def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str 
     queue = read_json(PROJECT / QUEUE_POLICY_PATH)
     timezone = ZoneInfo(queue["timezone"])
     current = (now or datetime.now(timezone)).astimezone(timezone)
+    from cafe_publication_policy import is_immediate, publication_block
+    if is_immediate(queue):
+        reason = publication_block(PROJECT, queue, current, source_key)
+        if reason:
+            raise CafePublishWindowClosed(reason, f'Cafe request blocked: {reason}')
+        return
     from cafe_shorts_alignment import is_shorts_aligned, alignment_block
     if is_shorts_aligned(queue):
         reason = alignment_block(PROJECT, queue, current, source_key)
@@ -249,6 +255,24 @@ def measure_source_video(source_key: str) -> dict:
             "height": int(info.get("height") or 0), "title": str(info.get("title") or "")}
 
 
+def quote_contract(manifest_path: Path, manifest: dict) -> bool:
+    count = manifest.get('expected_quotes')
+    texts = manifest.get('expected_quote_texts', [])
+    if not isinstance(count, int) or not isinstance(texts, list) or len(texts) != count:
+        return False
+    if count == 5:
+        return True  # The separate provenance gate still checks the receipt.
+    if manifest.get('manuscript_source') == 'captions':
+        from cafe_caption_source import evidence_version
+        try:
+            receipt = read_json(manifest_path.parent / manifest['manuscript_evidence'])
+            if evidence_version(receipt) == 'cafe-business-column/v2':
+                return 4 <= count <= 8
+        except (KeyError, ValueError, OSError, TypeError):
+            return False
+    return count == 5
+
+
 def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Path) -> dict:
     manifest = read_json(manifest_path)
     cafe_local = read_json(manifest_path.parent / "11_local_validation.json")
@@ -290,7 +314,7 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "cta_text_exact": tail.get("cta_text") == EXPECTED_CTA_TEXT,
         "cta_url_exact": tail.get("family_day_url") == EXPECTED_CTA_URL,
         "source_label_exact": tail.get("source_label") == EXPECTED_SOURCE_LABEL,
-        "quote_count_exact": manifest.get("expected_quotes") == 5 and len(manifest.get("expected_quote_texts", [])) == 5,
+        "quote_count_exact": quote_contract(manifest_path, manifest),
         "image_count_exact": manifest.get("expected_images") == 5 and len(manifest.get("images", [])) == 5,
         "image_files_present": len(manifest.get("images", [])) == 5 and all(
             isinstance(relative, str) and (manifest_path.parent / relative).is_file()

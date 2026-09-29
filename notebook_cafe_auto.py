@@ -127,8 +127,21 @@ def split_blocks(manuscript):
     manuscript = _isolate_heading_lines(manuscript)
     raw = [b.strip() for b in re.split(r'\n\s*\n', manuscript.strip()) if b.strip()]
 
-    blocks = [{'kind': 'heading' if _as_heading(b) else 'body',
-               'text': _as_heading(b) or b} for b in raw]
+    # The versioned column has one article title, then an introduction and ##
+    # section headings. Keep the title's words in the body for exact lineage,
+    # but do not turn it (or numbered instructions) into an extra quotation.
+    column = bool(raw and re.fullmatch(r'# [^\n]+', raw[0])
+                  and re.search(r'(?m)^## ', manuscript))
+    blocks = []
+    for i, block in enumerate(raw):
+        if column:
+            heading = re.fullmatch(r'## (.+)', block)
+            blocks.append({'kind': 'heading' if heading else 'body',
+                           'text': heading.group(1) if heading else
+                           (block[2:] if i == 0 else block)})
+        else:
+            blocks.append({'kind': 'heading' if _as_heading(block) else 'body',
+                           'text': _as_heading(block) or block})
 
     # 패턴형 소제목이 전혀 없으면 완화 규칙으로 한 번 더 시도
     if not any(b['kind'] == 'heading' for b in blocks):
@@ -171,8 +184,25 @@ def section_image_slots(blocks):
 
 
 def count_sections(manuscript):
-    """원고의 소제목 섹션 개수 (= 넣을 이미지 장수)."""
+    """원고의 소제목 개수. 칼럼 제목·도입은 소제목에 포함하지 않는다."""
     return sum(1 for b in split_blocks(manuscript) if b['kind'] == 'heading')
+
+
+def column_image_slots(blocks, image_count):
+    """Distribute the existing images without adding or repeating source assets."""
+    ends = sorted(section_image_slots(blocks))
+    if image_count <= 0:
+        return set()
+    if len(ends) >= image_count:
+        return {ends[min(len(ends) - 1, int(len(ends) * (i + .5) / image_count))]
+                for i in range(image_count)}
+    first_heading = next((i for i, b in enumerate(blocks) if b['kind'] == 'heading'), len(blocks))
+    extras = [i for i, b in enumerate(blocks)
+              if i > first_heading and b['kind'] == 'body' and i not in ends]
+    needed = image_count - len(ends)
+    if len(extras) < needed:
+        raise ValueError('Column has too few body paragraphs for the approved images')
+    return set(ends + [extras[int(len(extras) * (i + .5) / needed)] for i in range(needed)])
 
 
 def choose_image_slots(blocks, image_count):
@@ -287,7 +317,9 @@ def build_body(manuscript, image_count, optional_config, use_ai_keywords=True):
 
     # 소제목 섹션마다 1장이 기본. 섹션이 없으면 문단 균등 배치로 폴백.
     slots = section_image_slots(blocks)
-    if slots:
+    if optional_config.get('column_layout'):
+        slots = column_image_slots(blocks, image_count)
+    elif slots:
         slots = set(sorted(slots)[:image_count]) if image_count else set()
         print(f"  -> 이미지 위치(섹션 끝마다): {sorted(slots)} (총 {len(slots)}장)")
     else:

@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 from zoneinfo import ZoneInfo
 from cafe_shorts_alignment import aligned_entries, is_shorts_aligned, verified_shorts
+from cafe_publication_policy import is_immediate, eligible_entries, publication_block
 
 PROJECT = Path(__file__).resolve().parent
 QUEUE = PROJECT / 'outputs/cafe-publish-queue-20260823/queue.json'
@@ -15,7 +16,12 @@ PROMPT = QUEUE.with_name('automation_prompt.txt')
 AUTOMATION_ID = 'ff795f28-7b3a-49ca-aaa8-65a13c52cde3'
 
 
-def select_entry(queue: dict, now: datetime) -> dict | None:
+def select_entry(queue: dict, now: datetime, source_key: str | None = None) -> dict | None:
+    if is_immediate(queue):
+        entries = eligible_entries(PROJECT, queue, now, source_key)
+        return entries[0] if entries else None
+    if source_key:
+        raise ValueError('targeted requests require immediate_on_request mode')
     if is_shorts_aligned(queue):
         entries = aligned_entries(PROJECT, queue, now)
         return entries[0] if entries else None
@@ -103,7 +109,7 @@ def check_live_prompt() -> None:
         raise RuntimeError('live_automation_prompt_differs_from_canonical_file')
 
 
-def audit(*, live: bool = False) -> dict:
+def audit(*, live: bool = False, source_key: str | None = None) -> dict:
     if live:
         check_live_prompt()
     queue = json.loads(QUEUE.read_text(encoding='utf-8'))
@@ -122,7 +128,16 @@ def audit(*, live: bool = False) -> dict:
     if live and is_shorts_aligned(queue):
         refresh_shorts_inventory(queue, now)
         now = datetime.now(ZoneInfo('Asia/Seoul'))
-    selected = select_entry(queue, now)
+    selected = select_entry(queue, now, source_key)
+    if is_immediate(queue):
+        reason = publication_block(PROJECT, queue, now,
+                                   selected.get('source_key') if selected else source_key)
+        if reason and reason.startswith('reconcile_required:'):
+            return {'status': 'reconcile_required', 'reason': reason, 'provider_mutation': False}
+        if selected is None:
+            return {'status': 'no_due_entry', 'source_key': source_key,
+                    'reason': reason, 'provider_mutation': False,
+                    'selection_policy': 'immediate_on_request'}
     if selected is None:
         state = backlog(queue, now)
         # Waiting is normal; a queue where every remaining item is locked is not.
@@ -174,9 +189,10 @@ def refresh_shorts_inventory(queue: dict, now: datetime) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--live', action='store_true')
+    parser.add_argument('--source-key')
     args = parser.parse_args(argv)
     try:
-        result = audit(live=args.live)
+        result = audit(live=args.live, source_key=args.source_key)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as exc:
         result = {'status': 'blocked', 'reason': str(exc)}
     print(json.dumps(result, ensure_ascii=False))

@@ -37,7 +37,7 @@ PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
 DAILY_LIMIT = 20
-# 카페·카드뉴스는 발행 큐가 하루 몇 건만 소화한다. 쇼츠만 하루 10개로 올린다.
+# Legacy queue modes retain their original production limit.
 CAFE_DAILY_LIMIT = 2
 # 동시에 만들 편수. 렌더가 ffmpeg 을 오래 물고 있어서 이 값이 하루치 소요를 정한다.
 # 이 맥에서 3개까지는 서로 느려지지 않았다.
@@ -194,13 +194,18 @@ def publish(root: Path, verdict: dict) -> dict:
         return {"source": "fail: " + "; ".join(problems)}
 
     if verdict["channels"]["cafe"]["status"] == "pass":
-        cafe = content_run_state.cafe_state(PROJECT, source_key)
-        if cafe.get("enrolled"):
-            ok, note = True, f"기존 큐 상태 {cafe['status']}"
+        ok, note = _run(["cafe_publish_request.py", "--manifest",
+                         str(root / "cafe/06_cafe_manifest.json")], timeout=2400)
+        try:
+            cafe_result = json.loads(note)
+        except (ValueError, TypeError):
+            cafe_result = {}
+        if cafe_result.get("published") is True:
+            steps["cafe_publish"] = "published"
+        elif cafe_result.get("status") in {"queued", "deferred"}:
+            steps["cafe_publish"] = cafe_result["status"]
         else:
-            ok, note = _run(["cafe_queue_enroll.py", "--manifest",
-                             str(root / "cafe/06_cafe_manifest.json")], timeout=900)
-        steps["cafe_enroll"] = "enrolled" if ok else f"fail: {note}"
+            steps["cafe_publish"] = f"fail: {note}"
 
     if verdict["channels"]["cardnews"]["status"] == "pass":
         community = content_run_state.community_state(root, source_key)
@@ -270,17 +275,28 @@ def publish(root: Path, verdict: dict) -> dict:
     return steps
 
 
+def cafe_production_limit(queue: dict, total: int, explicit: int | None) -> int:
+    if explicit is not None:
+        return explicit
+    from cafe_publication_policy import is_immediate
+    return total if is_immediate(queue) else CAFE_DAILY_LIMIT
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DAILY_LIMIT)
     parser.add_argument("--workers", type=int, default=PRODUCE_WORKERS,
                         help="동시에 만들 편수. 발행은 항상 한 줄로 한다")
-    parser.add_argument("--cafe-limit", type=int, default=CAFE_DAILY_LIMIT,
-                        help="이 개수까지만 카페·카드뉴스도 만든다. 나머지는 쇼츠만.")
+    parser.add_argument("--cafe-limit", type=int, default=None,
+                        help="명시한 개수까지만 카페·카드뉴스도 만든다. 즉시 발행 모드 기본값은 제한 없음.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.limit < 1:
         parser.error("--limit은 1 이상이어야 합니다")
+
+    import content_run_state
+    policy = content_run_state.read_json(selection.QUEUE_PATH)
+    args.cafe_limit = cafe_production_limit(policy, args.limit, args.cafe_limit)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     lock_handle = (REPORT_DIR / "run.lock").open("a+")

@@ -43,6 +43,7 @@ def audit_cafe_queue() -> dict:
 def prepare_cafe(manifest_path: Path, candidate: Path, recovered_answer: Path | None = None) -> dict:
     """Rebuild formatting from the preserved answer, using existing approved images."""
     from notebook_cafe_auto import build_body, count_sections
+    from cafe_new_prepare import _mark_headings
     manifest_path = manifest_path.resolve()
     manifest = read_json(manifest_path)
     answer = manifest_path.parent / (manifest.get('notebook_answer') or manifest.get('notebooklm_answer')
@@ -71,18 +72,19 @@ def prepare_cafe(manifest_path: Path, candidate: Path, recovered_answer: Path | 
     if not all(origin.values()):
         raise ValueError('Cafe manuscript/source binding failed')
     cleaned = clean_cafe_answer(answer.read_text(encoding='utf-8'))
-    # Bare NotebookLM heading lines retain their exact words. No generated headings.
-    if count_sections(cleaned) != 5:
-        lines = cleaned.splitlines()
-        headings = [line.strip() for line in lines if 4 <= len(line.strip()) <= 45
-                    and not re.search(r'[.!?。]$|^\d+$', line.strip())]
-        if len(headings) != 5:
-            raise ValueError('Exactly five original NotebookLM headings could not be recovered')
-        cleaned = '\n\n'.join('## ' + line.strip() if line.strip() in headings else line.strip()
-                              for line in lines if line.strip())
-    body = build_body(cleaned, 5, {}, use_ai_keywords=False)
-    if body.count('[BLOCKQUOTE]') != 5 or body.count('[IMAGE_HERE]') != 5:
-        raise ValueError('Original heading/image structure did not produce five sections')
+    column_layout = False
+    if from_captions:
+        from cafe_caption_source import evidence_version
+        version = evidence_version(read_json(manifest_path.parent / manifest['manuscript_evidence']))
+        column_layout = version == 'cafe-business-column/v2'
+        manifest['instruction_version'] = version
+    # Retain every original word, including the v2 title and introduction.
+    cleaned, _ = _mark_headings(cleaned, column_layout=column_layout)
+    body = build_body(cleaned, 5, {'column_layout': column_layout}, use_ai_keywords=False)
+    if body.count('[BLOCKQUOTE]') != count_sections(cleaned) or body.count('[IMAGE_HERE]') != 5:
+        raise ValueError('Original heading structure or five approved images were not preserved')
+    if column_layout:
+        manifest['title'] = cleaned.splitlines()[0][2:]
     candidate.mkdir(parents=True, exist_ok=False)
     body_path = candidate / '03_cafe_body.txt'
     body_path.write_text(body, encoding='utf-8')
@@ -97,12 +99,16 @@ def prepare_cafe(manifest_path: Path, candidate: Path, recovered_answer: Path | 
     manifest.pop('notebook_answer', None)
     manifest['images'] = [str((manifest_path.parent / image).resolve()) for image in manifest['images']]
     manifest['expected_quote_texts'] = re.findall(r'\[BLOCKQUOTE\](.*?)\[/BLOCKQUOTE\]', body, re.S)
+    manifest['expected_quotes'] = len(manifest['expected_quote_texts'])
+    manifest['expected_images'] = 5
     manifest['content_lineage'] = evidence
     manifest['status'] = 'candidate_requires_editor_and_approval_validation'
     (candidate / '06_cafe_manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2))
     (candidate / '11_local_validation.json').write_text(json.dumps({
         'status': 'pass', 'scope': 'content_and_structure_only', 'source_key': manifest['source_key'],
-        'checks': {'original_body_preserved': True, 'five_quotes': True, 'five_image_markers': True},
+        'checks': {'original_body_preserved': True, 'original_headings_preserved': True,
+                   **({'five_quotes': True} if manifest['expected_quotes'] == 5 else {}),
+                   'five_image_markers': True},
         'asset_status': 'present' if len(manifest['images']) == 5 and all(Path(p).is_file() for p in manifest['images']) else 'missing',
         'evidence': evidence, 'provider_mutation': False,
     }, ensure_ascii=False, indent=2))

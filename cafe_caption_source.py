@@ -11,8 +11,18 @@ from content_lineage import read_json, sha256
 import content_production_policy as policy
 
 
-def prompt_hash() -> str:
-    return hashlib.sha256(policy.CAFE_NOTEBOOK_PROMPT.encode('utf-8')).hexdigest()
+def prompt_hash(version: str | None = None) -> str:
+    return hashlib.sha256(policy.CAFE_PROMPTS[version or policy.CAFE_INSTRUCTION_VERSION].encode('utf-8')).hexdigest()
+
+
+def evidence_version(evidence: dict) -> str:
+    version = evidence.get('instruction_version')
+    if version is None:
+        # Receipts created before versioning contain the exact legacy hash only.
+        version = 'cafe-caption/v1'
+    if version not in policy.CAFE_PROMPTS or evidence.get('instruction_sha256') != prompt_hash(version):
+        raise ValueError('Unknown or mismatched Cafe instruction version')
+    return version
 
 
 def answer_path(manifest_path: Path, manifest: dict) -> Path:
@@ -43,7 +53,7 @@ def validate_provenance(manifest_path: Path, manifest: dict) -> dict:
             sha256(answer) == evidence.get('answer_sha256'),
             sha256(transcript) == evidence.get('transcript_sha256') == captions.get('transcript_sha256'),
             sha256(caption_path) == evidence.get('caption_evidence_sha256'),
-            evidence.get('instruction_sha256') == prompt_hash(),
+            bool(evidence_version(evidence)),
             int(captions.get('segment_count', 0)) >= 20,
         ])
     except (OSError, ValueError, KeyError, TypeError):
@@ -51,8 +61,30 @@ def validate_provenance(manifest_path: Path, manifest: dict) -> dict:
     return checks
 
 
-def validate_answer(answer: str) -> None:
+def validate_answer(answer: str, version: str | None = None) -> None:
+    version = version or policy.CAFE_INSTRUCTION_VERSION
+    if version not in policy.CAFE_PROMPTS:
+        raise ValueError('Unknown Cafe instruction version')
+    if re.search(r'https?://|▶ 원본 영상|패밀리데이|\[IMAGE_HERE\]|\[BLOCKQUOTE\]', answer):
+        raise ValueError('CTA and editor markers belong to the fixed assembly step')
     sections = re.split(r'(?m)^## ', answer)
+    if version == 'cafe-business-column/v2':
+        if re.search(r'(?m)^\s*\|.*\|\s*$', answer):
+            raise ValueError('Cafe editor does not support Markdown pipe tables; use prose comparisons')
+        title, sep, intro = sections[0].strip().partition('\n')
+        if not title.startswith('# ') or not title[2:].strip() or not sep or not intro.strip():
+            raise ValueError('Cafe business column requires a # title and introduction')
+        if len(re.findall(r'(?m)^# ', answer)) != 1 or re.search(r'(?m)^#{3,}\s', answer):
+            raise ValueError('Cafe business column supports one # title and ## headings')
+        if not 4 <= len(sections) - 1 <= 8:
+            raise ValueError('Cafe business column requires four to eight ## headings')
+        if not 900 <= len(answer) <= 5000:
+            raise ValueError(f'Cafe business column must be 900–5000 characters: {len(answer)}')
+        for section in sections[1:]:
+            heading, sep, prose = section.partition('\n')
+            if not heading.strip() or not sep or not prose.strip():
+                raise ValueError('Each Cafe heading requires prose')
+        return
     if sections[0].strip() or len(sections) != 6:
         raise ValueError('Cafe manuscript requires exactly five ## headings and no preamble')
     if not 900 <= len(answer) <= 1500:
@@ -61,8 +93,6 @@ def validate_answer(answer: str) -> None:
         heading, sep, prose = section.partition('\n')
         if not heading.strip() or not sep or len(re.split(r'\n\s*\n', prose.strip())) not in (2, 3):
             raise ValueError('Each Cafe heading requires two or three paragraphs')
-    if re.search(r'https?://|▶ 원본 영상|패밀리데이|\[IMAGE_HERE\]|\[BLOCKQUOTE\]', answer):
-        raise ValueError('CTA and editor markers belong to the fixed assembly step')
 
 
 def write_to(out_dir: Path, transcript_evidence: dict, *, caption_evidence_path: Path) -> dict:
@@ -90,6 +120,7 @@ def write_to(out_dir: Path, transcript_evidence: dict, *, caption_evidence_path:
                 'transcript': str(transcript), 'transcript_sha256': sha256(transcript),
                 'caption_evidence': str(caption_evidence_path.resolve()),
                 'caption_evidence_sha256': sha256(caption_evidence_path),
+                'instruction_version': policy.CAFE_INSTRUCTION_VERSION,
                 'instruction_sha256': prompt_hash(), 'writer': 'subscription_agent'}
     receipt.write_text(json.dumps(evidence, ensure_ascii=False, indent=2), encoding='utf-8')
     return evidence

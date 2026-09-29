@@ -36,9 +36,9 @@ CONSISTENCY = Path.home() / ".agents/skills/launch-consistency-check/scripts/che
 def next_slot(now: datetime, queue: dict) -> datetime:
     """First policy-compliant window after all currently reserved first attempts."""
     from cafe_shorts_alignment import is_shorts_aligned
-    if is_shorts_aligned(queue):
-        # Eligibility comes from the matching Shorts provider evidence. Do not
-        # reserve another independent Cafe calendar while enrolling the source.
+    from cafe_publication_policy import is_immediate
+    if is_shorts_aligned(queue) or is_immediate(queue):
+        # These modes do not reserve an independent Cafe publication calendar.
         return now.astimezone(KST)
     windows = sorted({int(value.split(":", 1)[0]) for value in queue["windows"]})
     daily_maximum = int(queue["maximum_successes_per_day"])
@@ -98,7 +98,7 @@ def enroll(manifest_path: Path, *, now: datetime | None = None, refresh: bool = 
     original_queue = QUEUE.read_text(encoding="utf-8")
     queue = json.loads(original_queue)
     existing = next((e for e in queue["entries"] if e["source_key"] == source_key), None)
-    if existing and (not refresh or existing.get("published_url") or existing.get("status") in {"published", "blocked"}):
+    if existing and (not refresh or existing.get("published_url") or existing.get("do_not_retry") or existing.get("status") in {"published", "blocked", "reconcile_required"}):
         return {"status": "already_enrolled", "source_key": source_key}
     slot = datetime.fromisoformat(existing["not_before"]) if existing else next_slot(now, queue)
 
@@ -142,7 +142,7 @@ def enroll(manifest_path: Path, *, now: datetime | None = None, refresh: bool = 
         "shorts_mutation_allowed": False, "community_mutation_allowed": False,
         "status": "pending", "attempts": 0, "last_attempt_at": None,
         "next_eligible_at": None, "published_url": None, "do_not_retry": False,
-        "result": None, "enrolled_at": now.isoformat(),
+        "result": None, "enrolled_at": now.isoformat(), "requested_at": now.isoformat(),
     }
     if existing:
         # Refresh missing bindings without resetting attempts, backoff or a reservation.
@@ -163,10 +163,19 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--enqueue-only", action="store_true",
+                        help="Register while holding a provider lock; caller must dispatch after releasing it")
     args = parser.parse_args(argv)
     result = enroll(args.manifest, refresh=args.refresh)
+    if result["status"] in {"enrolled", "refreshed", "already_enrolled"}:
+        from cafe_publish_request import publish_enrolled
+        publication = ({"status": "queued", "published": False} if args.enqueue_only
+                       else publish_enrolled(result["source_key"]))
+        result["publication"] = publication
+        print(json.dumps(result, ensure_ascii=False))
+        return 0 if publication["status"] in {"published", "queued"} else 2
     print(json.dumps(result, ensure_ascii=False))
-    return 0 if result["status"] in {"enrolled", "refreshed", "already_enrolled"} else 1
+    return 1
 
 
 if __name__ == "__main__":

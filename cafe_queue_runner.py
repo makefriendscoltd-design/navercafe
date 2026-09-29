@@ -24,6 +24,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from cafe_shorts_alignment import aligned_entries, is_shorts_aligned, verified_shorts
+from cafe_publication_policy import is_immediate, eligible_entries
 
 KST = timezone(timedelta(hours=9))
 DEFAULT_PROJECT = Path("/Users/apple/orca/navercafe")
@@ -51,6 +52,8 @@ def due_entries(queue: dict, now: datetime, project: Path = DEFAULT_PROJECT) -> 
     failure_policy: due pending 과 재시도 가능한 failed 를 합치고,
     not_before 가 가장 오래된 것부터 발행한다.
     """
+    if is_immediate(queue):
+        return eligible_entries(project, queue, now)
     if is_shorts_aligned(queue):
         return aligned_entries(project, queue, now)
     out = []
@@ -192,6 +195,8 @@ def last_success(queue: dict) -> datetime | None:
 
 def rate_block(queue: dict, now: datetime) -> str | None:
     """정책상 지금 발행하면 안 되는 이유. 없으면 None."""
+    if is_immediate(queue):
+        return None
     if is_shorts_aligned(queue):
         windows = {int(v.split(':', 1)[0]) for v in queue['windows']}
         return None if now.hour in windows else f'현재 {now.hour}시는 발행 윈도우가 아님'
@@ -326,7 +331,7 @@ def record(
             continue
         entry["attempts"] = int(entry.get("attempts") or 0) + 1
         entry["last_attempt_at"] = now.isoformat()
-        if is_shorts_aligned(queue):
+        if is_shorts_aligned(queue) or is_immediate(queue):
             evidence_path = project / str(entry.get('provider_evidence') or '__missing__')
             receipt = {}
             if evidence_path.is_file():
@@ -402,6 +407,7 @@ def main(argv=None) -> int:
         help="발행 직전까지 자격 검증만 실행한다 (카페에 글이 올라가지 않는다)",
     )
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--source-key", help="Process only this requested source in immediate mode")
     args = parser.parse_args(argv)
 
     project = args.project.resolve()
@@ -412,7 +418,12 @@ def main(argv=None) -> int:
 
     now = datetime.now(KST)
     queue = load_queue(queue_path)
+    if args.source_key and not is_immediate(queue):
+        print(json.dumps({'action': 'blocked', 'reason': 'targeted_request_requires_immediate_mode'}))
+        return 1
     due = due_entries(queue, now, project)
+    if args.source_key:
+        due = [e for e in due if e.get('source_key') == args.source_key]
     blocked = rate_block(queue, now)
 
     summary = {
@@ -441,10 +452,13 @@ def main(argv=None) -> int:
         print(json.dumps(summary, ensure_ascii=False))
         return 0
 
-    if is_shorts_aligned(queue):
+    if is_shorts_aligned(queue) or is_immediate(queue):
         # Both entry points obey the same live guard; never silently pick a
         # different item or prepare provider drafts behind a blocked guard.
-        proc = subprocess.run([sys.executable, str(project / 'content_queue_guard.py'), '--live'],
+        guard_command = [sys.executable, str(project / 'content_queue_guard.py'), '--live']
+        if args.source_key:
+            guard_command.append(f'--source-key={args.source_key}')
+        proc = subprocess.run(guard_command,
                               cwd=project, capture_output=True, text=True, timeout=240)
         try:
             guard = json.loads(proc.stdout)
@@ -452,6 +466,8 @@ def main(argv=None) -> int:
             guard = {'status': 'blocked', 'reason': 'unreadable_live_guard'}
         now = datetime.now(KST)
         due = due_entries(load_queue(queue_path), now, project)
+        if args.source_key:
+            due = [e for e in due if e.get('source_key') == args.source_key]
         if (proc.returncode != 0 or guard.get('status') != 'pass' or not due
                 or guard.get('source_key') != due[0]['source_key']):
             print(json.dumps({'action': 'skip', 'guard': guard, 'provider_mutation': False}, ensure_ascii=False))
@@ -469,7 +485,7 @@ def main(argv=None) -> int:
         print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
 
-    attempts_per_run = 1 if is_shorts_aligned(queue) else int(queue.get("maximum_attempts_per_run") or 1)
+    attempts_per_run = 1 if is_shorts_aligned(queue) or is_immediate(queue) else int(queue.get("maximum_attempts_per_run") or 1)
     done = 0
     publish_failed = False
     for entry in due:
@@ -521,7 +537,7 @@ def main(argv=None) -> int:
             )
             continue
 
-        if is_shorts_aligned(queue):
+        if is_shorts_aligned(queue) or is_immediate(queue):
             eligibility_command = entry.get('eligibility_command')
             if not eligibility_command:
                 print(json.dumps({'source_key': source_key, 'action': 'blocked',
@@ -559,7 +575,7 @@ def main(argv=None) -> int:
             break
 
         record(project, queue_path, source_key, started, ok, note)
-        if is_shorts_aligned(queue):
+        if is_shorts_aligned(queue) or is_immediate(queue):
             updated = next(e for e in load_queue(queue_path)['entries'] if e['source_key'] == source_key)
             ok = updated.get('status') == 'published'
         publish_failed = publish_failed or not ok

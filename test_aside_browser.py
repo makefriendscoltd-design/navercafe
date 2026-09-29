@@ -24,6 +24,46 @@ def _payload_from(code: str) -> dict:
 
 
 class AsideBrowserUnitTests(unittest.TestCase):
+    @mock.patch("aside_browser.run_repl_steps", return_value={"status": "filled"})
+    def test_quote_after_intro_uses_provider_paragraph_without_bottom_edge(self, run_repl):
+        heading = '새로운 도구를 실제 업무에 도입하기 전에 사업자가 반드시 정해야 할 운영 기준'
+        aside_browser.post_to_naver_cafe(
+            "제목", f"도입 문단\n\n[BLOCKQUOTE]{heading}[/BLOCKQUOTE]\n본문", [],
+            cafe_url="https://cafe.naver.com/ca-fe/cafes/1/menus/2/articles/write",
+            publish=False,
+        )
+        generated = run_repl.call_args.args[0]
+        self.assertGreater(len(heading), 30)
+        self.assertEqual(_payload_from(generated)['expectedQuoteTexts'], [heading])
+        function = generated[generated.index("const insertPlainQuoteHeading ="):generated.index("const insertQuote =")]
+        # Provider fixture: Enter adds a paragraph in the existing component;
+        # the bottom-edge action cannot create another text component.
+        fixture = r"""
+const norm=s=>s.replace(/\s+/g,'');
+const sleep=async()=>{};
+const pendingQuoteHeadings=[];
+let quoteFailureStage='',reuseCurrentParagraph=false;
+const wrap=text=>{const el={textContent:text,innerText:text,closest:()=>({id:'body'})};
+return {el,evaluate:async fn=>fn(el)};};
+const paragraphs=[wrap('도입 문단')];
+let activeParagraph=paragraphs[0];
+const isOutsideQuote=async()=>true;
+const focusEnd=async()=>{throw Error('bottom edge is unavailable for ordinary text');};
+const focusBodyParagraph=async p=>{activeParagraph=p;return true;};
+const bodyFound={ctx:{locator:()=>({count:async()=>paragraphs.length,nth:i=>paragraphs[i]})}};
+const p={keyboard:{press:async key=>{if(key==='Enter')paragraphs.push(wrap(''));}}};
+const insertFormattedText=async text=>{activeParagraph.el.textContent=text;activeParagraph.el.innerText=text;return true;};
+"""
+        run = subprocess.run(["node", "-e", fixture + function + 'const expectedHeading=' + json.dumps(heading) + ';' + r"""
+(async()=>{const ok=await insertPlainQuoteHeading(expectedHeading);
+console.log(JSON.stringify({ok,texts:paragraphs.map(p=>p.el.textContent),pendingQuoteHeadings,reuseCurrentParagraph}));})();
+"""], capture_output=True, text=True, check=True)
+        result = json.loads(run.stdout)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['texts'], ['도입 문단', heading, ''])
+        self.assertEqual(result['pendingQuoteHeadings'], [heading])
+        self.assertTrue(result['reuseCurrentParagraph'])
+
     def test_login_ignores_hidden_controls_on_both_auth_states(self):
         # Naver's anonymous page has a visible login and a hidden logout link.
         # Signed-in pages can retain the inverse, so test actual JS behavior.

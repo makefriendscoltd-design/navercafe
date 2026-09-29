@@ -41,6 +41,8 @@ def test_timeout_is_a_channel_failure_not_an_exception(monkeypatch):
 
 
 def test_successful_handoff_is_not_reported_as_a_failed_job(tmp_path, monkeypatch):
+    monkeypatch.setattr("aside_browser.ensure_daemon", lambda: True)
+    monkeypatch.setattr(daily, "notebook_headroom", lambda: {"cafe": 0, "shorts": 0})
     monkeypatch.setattr(daily, 'PROJECT', tmp_path)
     monkeypatch.setattr(daily, 'REPORT_DIR', tmp_path / 'reports')
     monkeypatch.setattr(daily.selection, 'SEEN_PATH', tmp_path / 'seen.json')

@@ -762,7 +762,7 @@ def _naver_structure_expectation(body: str) -> tuple[list[str], list[str]]:
         quote = re.fullmatch(r"\[BLOCKQUOTE\]([\s\S]*?)\[/BLOCKQUOTE\]", token)
         if quote:
             sequence.append("quote")
-            quote_texts.append(quote.group(1).splitlines()[0].strip()[:30])
+            quote_texts.append(quote.group(1).splitlines()[0].strip())
         elif token == "[IMAGE_HERE]":
             sequence.append("image")
         elif re.sub(r"\[/?(?:BOLD|HIGHLIGHT)\]", "", token).strip():
@@ -1288,7 +1288,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       // and images are complete.
       const pendingQuoteHeadings=[];
       const insertPlainQuoteHeading = async rawHeading => {
-        const heading=(rawHeading||'').split('\n')[0].trim().slice(0,30);
+        const heading=(rawHeading||'').split('\n')[0].trim();
         if(!heading)return true;
         if(!activeParagraph||!(await isOutsideQuote(activeParagraph))){
           if(!(await focusEnd()))return false;
@@ -1338,7 +1338,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       };
 
       const insertQuote = async heading => {
-        heading=(heading||'').split('\n')[0].trim().slice(0,30);
+        heading=(heading||'').split('\n')[0].trim();
         if (!heading) return true;
         quoteFailureStage='focus-before';
         // Type in a normal top-level paragraph first, then use SmartEditor's
@@ -2419,7 +2419,7 @@ if(await pageLooksLoggedOut(p,'naver')){
               quotes:components.filter(el=>el.classList.contains('se-quotation')).length,
               sequence:meaningful.map(item=>item.kind),
               quoteTexts:meaningful.filter(item=>item.kind==='quote')
-                .map(item=>item.text.split('\n')[0].replace(/\u00a0/g,' ').trim().slice(0,30)),
+                .map(item=>item.text.split('\n')[0].replace(/\u00a0/g,' ').trim()),
               ctaRaw:!ctaLinkUrl||paragraphs.includes(ctaLinkUrl),
               sourceRaw:!sourceUrl||paragraphs.includes(sourceUrl),
               oglinks:document.querySelectorAll('.se-oglink').length,
