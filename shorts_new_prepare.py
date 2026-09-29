@@ -113,6 +113,16 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
             return True
         return bool(opening) and flat.rstrip("!?.") == opening.rstrip("!?.")
 
+    recent = _recent_headcopy_openers()
+
+    def repeats_recent(candidate: str) -> bool:
+        """최근에 쓴 첫 줄과 같은 틀이면 목록에서 또 똑같아 보인다.
+
+        `이 남자 미쳤습니다` 반복을 막았더니 `아직도 ~하나요?`가 그 자리를 채웠다.
+        하루치 열 편 중 여섯 편이 같은 틀로 나온 날이 있었다(2026-09-29).
+        """
+        return _opener(scripts.head_copy_lines(candidate)[0]) in recent
+
     def rendersafe(candidate: str) -> bool:
         # 후보 추출 단계는 첫 후보만 90px 폭을 실측한다. 순서를 바꾸면 실측을 안 거친
         # 후보가 화면에 올라가 3줄로 접힐 수 있으므로, 바꿔 넣을 후보를 여기서 실측한다.
@@ -122,8 +132,34 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
             return False
         return True
 
-    fresh = [h for h in heads if not duplicates(h) and rendersafe(h)]
-    return fresh + [h for h in heads if h not in fresh] if fresh else heads
+    usable = [h for h in heads if not duplicates(h) and rendersafe(h)]
+    varied = [h for h in usable if not repeats_recent(h)]
+    chosen = varied or usable
+    return chosen + [h for h in heads if h not in chosen] if chosen else heads
+
+
+def _opener(line: str) -> str:
+    """첫 줄의 틀. 어미와 대상만 바꾼 같은 문형을 한 덩어리로 본다."""
+    flat = re.sub(r"\s+", "", line)
+    for pattern in ("아직도", "혼자", "그냥", "직접"):
+        if flat.startswith(pattern):
+            return pattern
+    if flat.endswith("손해!") or flat.endswith("손해죠?"):
+        return "손해"
+    return flat[:6]
+
+
+def _recent_headcopy_openers(limit: int = 6, project: Path = PROJECT) -> set[str]:
+    """최근 만든 후보들이 화면 첫 줄에 쓴 틀."""
+    picked = []
+    for path in project.glob("outputs/*/shorts/production_manifest.json"):
+        try:
+            title = json.loads(path.read_text(encoding="utf-8"))["render_inputs"]["upload_title"]
+        except (OSError, ValueError, KeyError):
+            continue
+        picked.append((path.stat().st_mtime, str(title).split(" ")[0:]))
+    picked.sort(reverse=True)
+    return {_opener(" ".join(words)) for _, words in picked[:limit]}
 
 
 def prepare(source_key: str) -> dict:

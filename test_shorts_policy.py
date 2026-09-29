@@ -342,9 +342,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v21.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v22.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "3080ce108697f7ceba5a5720870abc3ff3b0cb567946532c70b2cd987348aa61"
+        "bde6a2b4ef6547bd6271f1b6829a0b331cb8cf8dcea227c487c0dcf5892dbb08"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1871,3 +1871,12 @@ def test_v21_keeps_the_spoken_opener_off_the_screen():
     assert "도입 첫 문장을 그대로 옮긴 후보는 하나도 없어야 한다" in text
     # 도입 공식 자체는 음성에서 그대로 유지한다. 조회수 상위권이 전부 그 공식으로 연다.
     assert "첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`로 시작한다" in text
+
+
+def test_v22_puts_the_before_and_after_contrast_on_screen():
+    """대본이 "세 시간 걸리던 일을 이 분에"라고 말하는데 화면은 "세 시간 절약"만 남겼다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "전후 대비가 있으면 그 대비를 첫 줄에 그대로 쓴다" in text
+    assert "숫자 하나만 떼어내" in text
+    assert "질문형(`아직도 ~하나요?`)은 세 후보 중 최대 하나만" in text
+    assert "숫자와 명사를 붙여만 놓지 말고 읽어서 말이 되는 구로 쓴다" in text
