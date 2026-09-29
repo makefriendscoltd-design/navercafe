@@ -115,6 +115,15 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
 
     recent = _recent_headcopy_openers()
 
+    def spells_out_numbers(candidate: str) -> bool:
+        """화면 글자에 한글로 풀어 쓴 숫자가 남았는지 본다.
+
+        음성은 TTS가 읽어야 해서 `세 시간`으로 쓰지만, 화면은 눈으로 읽으므로
+        `3시간`이어야 한 눈에 들어온다. 지침(v23)이 그렇게 요구한다.
+        """
+        text = " ".join(scripts.head_copy_lines(candidate))
+        return bool(SPELLED_NUMBER_RE.search(text)) and not re.search(r"\d", text)
+
     def repeats_recent(candidate: str) -> bool:
         """최근에 쓴 첫 줄과 같은 틀이면 목록에서 또 똑같아 보인다.
 
@@ -133,9 +142,16 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
         return True
 
     usable = [h for h in heads if not duplicates(h) and rendersafe(h)]
-    varied = [h for h in usable if not repeats_recent(h)]
+    numeric = [h for h in usable if not spells_out_numbers(h)] or usable
+    varied = [h for h in numeric if not repeats_recent(h)]
     chosen = varied or usable
     return chosen + [h for h in heads if h not in chosen] if chosen else heads
+
+
+# 화면에서 숫자로 보여야 하는 것들. 단위가 붙은 한글 수사만 잡는다.
+SPELLED_NUMBER_RE = re.compile(
+    r"(한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|스무|백|천|만|억|일|이|삼|사|오|육|칠|팔|구|십)\s*"
+    r"(시간|분|초|명|개|번|일|주|달|개월|년|원|배|퍼센트|프로|가지|단계|시|천|만|억)")
 
 
 def _opener(line: str) -> str:

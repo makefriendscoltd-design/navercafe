@@ -342,9 +342,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v22.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v23.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "362ef1d9e1b128308327e031e223ef5b4bddb9b0bf53573a30b56b88f11ca87f"
+        "65fe39487b58f9fe2fb472a2d4d92d0af176167854c06acfb278e216dc40d0f3"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1877,6 +1877,16 @@ def test_v22_puts_the_before_and_after_contrast_on_screen():
     """대본이 "세 시간 걸리던 일을 이 분에"라고 말하는데 화면은 "세 시간 절약"만 남겼다."""
     text = policy.SHORTS_NOTEBOOK_INSTRUCTION
     assert "전후 대비가 있으면 그 대비를 첫 줄에 그대로 쓴다" in text
+    assert "3시간을 2분으로 / 클로드 업무 자동화" in text
     assert "숫자 하나만 떼어내" in text
     assert "질문형(`아직도 ~하나요?`)은 세 후보 중 최대 하나만" in text
     assert "숫자와 명사를 붙여만 놓지 말고 읽어서 말이 되는 구로 쓴다" in text
+
+
+def test_v23_puts_digits_on_screen_and_hangul_in_the_voice():
+    """화면은 눈으로 읽는다. "세 시간"보다 "3시간"이 한 눈에 들어온다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "헤드카피의 숫자는 아라비아 숫자로 쓴다" in text
+    assert "`세 시간`, `이 분`, `일천삼백만 원`처럼 한글로 풀어 쓰지 않는다" in text
+    # 음성은 TTS가 읽으므로 대본은 한글 그대로다.
+    assert "스크립트 본문은 음성이 읽으므로 지금처럼 한글로 쓴다" in text
