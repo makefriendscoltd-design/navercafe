@@ -617,6 +617,25 @@ def require_strong_hook(script: str) -> str:
     return first_sentence
 
 
+# 분석 단계에서 쓰는 호칭이 본문까지 새어 나왔다. 사람이 말할 때 "화자는"이라고 하지 않는다.
+REPORT_VOICE_RE = re.compile(r"(?:^|[\s,.])(화자|발표자|영상 제작자|원본 영상)(?:는|가|의|은|을|를|에서)")
+# 알파벳이 붙은 숫자를 한국어 수사로 읽으면 음성이 "사케이"라고 발음한다.
+MISREAD_UNITS = {"사케이": "포케이(4K)", "팔케이": "에이트케이(8K)", "오지": "파이브지(5G)",
+                 "삼디": "쓰리디(3D)", "이디": "투디(2D)"}
+
+
+def validate_spoken_wording(script: str) -> None:
+    """음성이 읽을 본문에서 보고서 말투와 잘못 읽힐 표기를 막는다."""
+    found = REPORT_VOICE_RE.search(script)
+    if found:
+        raise RuntimeError(
+            f"대본 본문에 분석용 호칭이 있습니다: {found.group(1)}. 이름을 쓰거나 주어를 뺀다."
+        )
+    for wrong, right in MISREAD_UNITS.items():
+        if wrong in script:
+            raise RuntimeError(f"대본에 잘못 읽히는 표기가 있습니다: {wrong} → {right}")
+
+
 def validate_intro_promise(script: str) -> None:
     require_strong_hook(script)
     intro = re.split(r"(?m)^\s*첫째", script, maxsplit=1)[0].strip()
@@ -819,6 +838,7 @@ def fetch(
             preserve_authorized_wording=preserve_authorized_wording,
             fact_verifications=load_fact_verifications(evidence_dir),
         )
+        validate_spoken_wording(adopted_body)
         minutes = duration_minutes(get_video_duration(url))
         keyword = derive_comment_keyword(adopted_body, head_copies[0], override=comment_keyword)
         final = f"{adopted_body}\n\n{fixed_cta(minutes, keyword)}"

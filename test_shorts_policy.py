@@ -342,9 +342,9 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v23.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v24.0"
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "65fe39487b58f9fe2fb472a2d4d92d0af176167854c06acfb278e216dc40d0f3"
+        "35516a23da58099e1b3b6171e6d7048b4b996eca0857b95871660ff17f111671"
     )
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
@@ -1895,3 +1895,12 @@ def test_v23_puts_digits_on_screen_and_hangul_in_the_voice():
     assert "`세 시간`, `이 분`, `일천삼백만 원`처럼 한글로 풀어 쓰지 않는다" in text
     # 음성은 TTS가 읽으므로 대본은 한글 그대로다.
     assert "스크립트 본문은 음성이 읽으므로 지금처럼 한글로 쓴다" in text
+
+
+def test_report_words_and_misread_units_are_rejected_in_the_spoken_script():
+    """음성이 읽을 본문이다. "화자는"은 사람이 안 쓰는 말이고 "사케이"는 4K의 잘못된 발음이다."""
+    shorts.validate_spoken_wording("리버사이드를 쓰다가 텔라로 바꿨는데 포케이 영상도 나옵니다.")
+    with pytest.raises(RuntimeError, match="분석용 호칭"):
+        shorts.validate_spoken_wording("화자는 리버사이드를 쓰다가 텔라로 바꿨습니다.")
+    with pytest.raises(RuntimeError, match="잘못 읽히는 표기"):
+        shorts.validate_spoken_wording("폰으로 찍어도 사케이 영상을 만들 수 있습니다.")
