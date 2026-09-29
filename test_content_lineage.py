@@ -80,7 +80,7 @@ def test_real_factpack_render_is_not_verbatim_upload_authorization():
 
 
 def test_cardnews_factpack_origin_is_rejected():
-    with pytest.raises(lineage.LineageError, match='Cafe NotebookLM'):
+    with pytest.raises(lineage.LineageError, match='source-bound Cafe manuscript'):
         lineage.validate_cardnews_origin({'content_lineage': {'mode': 'factpack'}})
 
 

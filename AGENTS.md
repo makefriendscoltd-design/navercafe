@@ -56,6 +56,6 @@
 
 ## 콘텐츠 복구 실행 계약
 
-- 카페·카드뉴스의 입력은 같은 source_key의 카페 NotebookLM 원응답이다. 카드뉴스의 팩트팩은 검증용이며 대체 원고가 아니다.
+- 2026-09-29 사용자 지시: 신규 카페 원고는 같은 source_key 원본 영상 전사문에 기존 `CAFE_NOTEBOOK_PROMPT`를 적용해 생성한다. NotebookLM은 호출하지 않는다. 카페·카드뉴스는 이 카페 원고를 공통 입력으로 사용하고 CTA·원본 연결·중복 방지를 검증한다. 기존 NotebookLM 원고·승인·게시 증거는 보존한다. 카드뉴스 팩트팩은 검증용이며 대체 원고가 아니다.
 - `content_workflow.py prepare-cafe`로 별도 후보를 만들고 원문 보존을 검증한다. 기존 manifest·승인·공급자 증거는 검증 없이 덮어쓰지 않는다.
 - 카페 큐는 공급자 동작 전에 `content_queue_guard.py --live`를 통과한다. 실제 자동화 지시문과 Git 추적 `outputs/cafe-publish-queue-20260823/automation_prompt.txt`가 다르면 중단한다.

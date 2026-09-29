@@ -133,16 +133,10 @@ def produce(source_key: str, today: str, *, shorts_only: bool = False,
                 "acceptance": verdict["status"], "problems": {},
                 "handed_off": provider["handed_off"], "complete": provider["complete"]}
 
-    if (root / "cafe/notebooklm/notebooklm-answer.md").is_file():
-        ok, note = True, "기존 NotebookLM 응답 재사용"
+    if (root / "cafe/06_cafe_manifest.json").is_file():
+        ok, note = True, "기존 카페 매니페스트 재사용"
     else:
-        ok, note = _run(["-c", (
-        "import sys; sys.path.insert(0, '.');"
-        "import youtube_cafe_auto as auto, notebooklm_source as nlm;"
-        f"cfg = nlm.load_config(auto.load_or_create_config());"
-        f"cfg['evidence_dir'] = r'{root / 'cafe' / 'notebooklm'}';"
-        "import pathlib; pathlib.Path(cfg['evidence_dir']).mkdir(parents=True, exist_ok=True);"
-            f"nlm.fetch_manuscript('https://youtu.be/{source_key}', cfg)")])
+        ok, note = _run(["cafe_caption_source.py", "--root", str(root), "--", source_key])
     steps["cafe_answer"] = "ok" if ok else f"fail: {note}"
     if (root / "cafe/06_cafe_manifest.json").is_file():
         steps["cafe_candidate"] = "ok"

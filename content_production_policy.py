@@ -50,6 +50,7 @@ SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
 # 멈추고(9/25~9/28 사흘간 제작 0편), 후보당 기회가 한 번뿐이라 실패하면 그 영상을
 # 영영 못 쓰며, 브라우저 하나를 잡아 병렬 제작을 막는다. "notebooklm"으로 되돌릴 수 있다.
 SHORTS_SCRIPT_SOURCE = "captions"
+CAFE_SCRIPT_SOURCE = "captions"
 SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v24.0"
 SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v24.0
 

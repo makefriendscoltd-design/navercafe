@@ -259,15 +259,22 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     source_url = f"https://youtu.be/{source_key}"
     source_long_url = f"https://www.youtube.com/watch?v={source_key}"
     tail = manifest.get("tail", {})
-    notebooklm = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
+    from_captions = manifest.get("manuscript_source") == "captions"
+    if from_captions:
+        from cafe_caption_source import validate_provenance, answer_path as caption_answer_path
+        manuscript = validate_provenance(manifest_path, manifest)
+    else:
+        manuscript = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
     from content_lineage import cafe_body_lineage
     answer_path = _resolve_cafe_relative(
         manifest_path, manifest.get("notebook_answer") or manifest.get("notebooklm_answer")
         or (manifest.get("notebooklm") or {}).get("answer") or "notebooklm/notebooklm-answer.md"
     )
+    if from_captions:
+        answer_path = caption_answer_path(manifest_path, manifest)
     body_path = _resolve_cafe_relative(manifest_path, manifest.get("body_file"))
     try:
-        lineage = cafe_body_lineage(answer_path, body_path) if body_path else {}
+        lineage = cafe_body_lineage(answer_path, body_path, **({"content_origin": "captions_cafe"} if from_captions else {})) if body_path else {}
         body_preserved = lineage.get("body_preserved") is True
     except (OSError, ValueError):
         body_preserved = False
@@ -290,9 +297,11 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
             for relative in manifest.get("images", [])
         ),
         "cafe_local_validation_pass": cafe_local.get("status") == "pass" and cafe_local.get("source_key") == source_key,
-        "notebooklm_answer_present": notebooklm["answer_present"],
-        "notebooklm_provider_evidence_exact": notebooklm["provider_evidence_exact"],
-        "notebooklm_actual_body_preserved": body_preserved,
+        **{("manuscript_" if from_captions else "notebooklm_") + key: value for key, value in {
+            "answer_present": manuscript["answer_present"],
+            "provider_evidence_exact": manuscript["provider_evidence_exact"],
+            "actual_body_preserved": body_preserved,
+        }.items()},
         "approval_gate_pass": approval.get("status") == "pass" and not approval.get("failures"),
         "launch_consistency_pass": launch.get("status") == "pass" and launch.get("summary", {}).get("issues") == 0,
         "launch_manifest_sha256": launch.get("manifestSha256") == sha256(manifest_path),

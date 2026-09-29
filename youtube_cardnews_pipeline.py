@@ -735,7 +735,7 @@ def normalize_deck(deck, manuscript, title, wanted=10):
 
 
 def make_card_deck(manuscript, title, *, content_lineage=None, evidence_dir=None):
-    if not content_lineage or content_lineage.get("mode") != "notebooklm_cafe_summary":
+    if not content_lineage or content_lineage.get("mode") not in {"notebooklm_cafe_summary", "captions_cafe_summary"}:
         raise RuntimeError("카드뉴스는 출처가 연결된 카페 NotebookLM 입력만 사용합니다.")
     from content_lineage import bound_file, clean_cafe_answer
     answer_path = bound_file(Path("."), content_lineage.get("answer"), "cardnews answer")

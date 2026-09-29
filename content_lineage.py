@@ -48,14 +48,15 @@ def canonical_prose(text: str) -> str:
     return re.sub(r'\s+', '', text.replace('**', ''))
 
 
-def cafe_body_lineage(answer: Path, body: Path) -> dict:
+def cafe_body_lineage(answer: Path, body: Path, *, content_origin: str = 'notebooklm_cafe') -> dict:
     if not answer.is_file() or not body.is_file():
         raise LineageError('NotebookLM answer or actual Cafe body is missing')
     original = canonical_prose(clean_cafe_answer(answer.read_text(encoding='utf-8')))
     actual = canonical_prose(body.read_text(encoding='utf-8'))
     if not original or original != actual:
         raise LineageError('Cafe body differs from NotebookLM answer beyond permitted formatting')
-    return {'content_origin': 'notebooklm_cafe', 'notebook_answer_sha256': sha256(answer),
+    return {'content_origin': content_origin, 'answer_sha256': sha256(answer),
+            **({'notebook_answer_sha256': sha256(answer)} if content_origin == 'notebooklm_cafe' else {}),
             'body_sha256': sha256(body), 'body_preserved': True}
 
 
@@ -251,22 +252,31 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
 def validate_cardnews_origin(deck: dict) -> dict:
     """Bind generation input and every content card's quoted anchor to the Cafe answer."""
     origin = deck.get('content_lineage', {})
-    if origin.get('mode') != 'notebooklm_cafe_summary':
-        raise LineageError('Cardnews input must be the Cafe NotebookLM answer')
+    mode = origin.get('mode')
+    if mode not in {'notebooklm_cafe_summary', 'captions_cafe_summary'}:
+        raise LineageError('Cardnews input must be the source-bound Cafe manuscript')
     answer = bound_file(Path('.'), origin.get('answer'), 'cardnews answer')
     provider_path = bound_file(Path('.'), origin.get('provider_evidence'), 'cardnews provider')
-    provider = read_json(provider_path)
-    import content_production_policy as policy
     source = origin.get('source_key')
-    if (provider.get('account') != policy.ASIDE_ACCOUNT
-            or provider.get('notebookTitle') != policy.CAFE_NOTEBOOK['title']
-            or provider.get('sourceUrl', provider.get('source_url')) not in
-            {f'https://youtu.be/{source}', f'https://www.youtube.com/watch?v={source}'}):
-        raise LineageError('Cardnews NotebookLM provider/source binding is invalid')
+    if mode == 'captions_cafe_summary':
+        from cafe_caption_source import validate_provenance
+        if not all(validate_provenance(answer.parent / '06_cafe_manifest.json', {
+                'source_key': source, 'manuscript_source': 'captions',
+                'manuscript_answer': str(answer.resolve()),
+                'manuscript_evidence': str(provider_path.resolve())}).values()):
+            raise LineageError('Cardnews caption manuscript/source binding is invalid')
+    else:
+        provider = read_json(provider_path)
+        import content_production_policy as policy
+        if (provider.get('account') != policy.ASIDE_ACCOUNT
+                or provider.get('notebookTitle') != policy.CAFE_NOTEBOOK['title']
+                or provider.get('sourceUrl', provider.get('source_url')) not in
+                {f'https://youtu.be/{source}', f'https://www.youtube.com/watch?v={source}'}):
+            raise LineageError('Cardnews NotebookLM provider/source binding is invalid')
     original = canonical_prose(clean_cafe_answer(answer.read_text(encoding='utf-8')))
     slides = deck.get('slides', [])
     for slide in slides[1:-1]:
         anchor = canonical_prose(slide.get('source_anchor', ''))
         if len(anchor) < 15 or anchor not in original:
             raise LineageError('Cardnews content slide has no literal NotebookLM evidence anchor')
-    return {'content_origin': 'notebooklm_cafe', 'answer_sha256': sha256(answer)}
+    return {'content_origin': 'captions_cafe' if mode == 'captions_cafe_summary' else 'notebooklm_cafe', 'answer_sha256': sha256(answer)}
