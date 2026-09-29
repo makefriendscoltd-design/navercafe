@@ -18,6 +18,7 @@ import tempfile
 from pathlib import Path
 
 import content_production_policy as policy
+from headcopy_digits import to_digits
 import notebooklm_shorts as scripts
 from shorts_repair_prepare import PROJECT, binding
 from youtube_source_options import source_options
@@ -154,6 +155,15 @@ SPELLED_NUMBER_RE = re.compile(
     r"(시간|분|초|명|개|번|일|주|달|개월|년|원|배|퍼센트|프로|가지|단계|시|천|만|억)")
 
 
+def _write_headcopy_file(path: Path, heads: list[str]) -> None:
+    """고른 순서와 숫자 표기를 후보 파일에 반영한다."""
+    lines = []
+    for index, head in enumerate(heads, 1):
+        first, second = scripts.head_copy_lines(head)
+        lines.append(f"{index}. {first} / {second}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _opener(line: str) -> str:
     """첫 줄의 틀. 어미와 대상만 바꾼 같은 문형을 한 덩어리로 본다."""
     flat = re.sub(r"\s+", "", line)
@@ -260,7 +270,9 @@ def prepare(source_key: str) -> dict:
     fact_path = root / "notebooklm" / scripts.FACT_VERIFICATION_FILENAME
 
     heads = scripts.extract_head_copy_candidates(answer_path.read_text(encoding="utf-8"))
-    heads = _headcopy_order(heads, script)
+    heads = [to_digits(head) for head in _headcopy_order(heads, script)]
+    # 렌더는 이 파일의 첫 후보를 화면에 그린다. 고른 순서를 파일에도 적어야 화면이 바뀐다.
+    _write_headcopy_file(root / "06_headcopy_candidates.txt", heads)
     title = " ".join(scripts.head_copy_lines(heads[0]))
     presenter_binding = json.loads(PRESENTER_SOURCE.read_text(encoding="utf-8"))["render_inputs"]["presenter"]
     # 승인본 보관 위치는 정본이 정한다. 옛 매니페스트에 박힌 Downloads 경로가 비어도
