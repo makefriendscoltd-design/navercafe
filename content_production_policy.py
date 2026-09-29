@@ -23,7 +23,7 @@ CAFE_NOTEBOOK = {
     "title": "민수대표님_카페글",
     "id": "c09a56d4-b87c-4f54-bfdb-93219326fbae",
 }
-CAFE_NOTEBOOK_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 올릴 칼럼을 작성해줘.
+CAFE_NOTEBOOK_PROMPT_V1 = """이 영상 내용을 바탕으로 네이버 카페에 올릴 칼럼을 작성해줘.
 
 형식:
 - 소제목은 반드시 마크다운 '## 소제목' 형태로 쓸 것 (매우 중요)
@@ -38,6 +38,38 @@ CAFE_NOTEBOOK_PROMPT = """이 영상 내용을 바탕으로 네이버 카페에 
 - 영상에 없는 내용은 절대 지어내지 말 것
 
 제목이나 머리말 없이 본문만 출력해줘."""
+
+# 2026-09-29: initial category posts establish the new business-column voice.
+# Keep v1 byte-for-byte: already approved manuscripts remain bound to its hash.
+CAFE_NOTEBOOK_PROMPT_V2 = """이 영상의 전사문을 바탕으로 네이버 카페의 AI 자동화&수익화 정보 칼럼을 작성해줘.
+
+문체와 구성은 기존 카페 초기 게시글 10편을 분석한 기준을 따른다.
+- 사업자의 업무 문제 → 필요한 도구와 기능 → 구체적인 적용 사례 → 업무 진행 순서 → 결론과 첫 행동의 흐름으로 쓴다.
+- 설명형 존댓말을 사용한다. 보통 한 단락은 2~4문장이며 개념과 이유를 풀어 설명한다. 짧은 독백체나 반말로 바꾸지 않는다.
+- 기능을 나열하는 데서 끝내지 말고 어떤 업무에서 왜 필요한지, 무엇을 입력하고 어떤 결과물을 확인하는지 연결한다.
+- 영상의 순서를 그대로 옮기기보다 독자의 사업 문제에 맞춰 사례를 배치한다. 원본의 사실, 제작자의 평가, 칼럼에서 제안하는 적용 방법을 구분한다. 가상의 적용 예시는 예시라고 밝힌다.
+
+형식:
+- 첫 줄은 '# 제목'으로 쓴다. 독자의 업무와 얻을 효용이 드러나는 제목을 붙인다.
+- 제목 다음에 도입 문단을 쓰고, 본문은 '## 소제목' 4~8개로 나눈다. 결론도 이 소제목 수에 포함한다. 본론 4~5개를 기본으로 삼되 소재에 맞게 구성한다.
+- 약 3000자 전후를 목표로 한다. 근거가 짧으면 억지로 늘리지 않으며 전체 900~5000자 범위로 쓴다.
+- 문단 사이는 빈 줄로 구분한다. 비교나 순서는 번호가 있는 문장 또는 설명 문단으로 풀어 쓴다. 현재 편집기에서 표를 보존하지 못하므로 마크다운 파이프 표는 쓰지 않는다.
+- 마지막 결론은 사업자가 판단할 기준과 지금 해볼 첫 행동으로 끝낸다. 현재 승인된 CTA와 원본 링크는 후처리에서 붙이므로 직접 쓰지 않는다.
+
+근거와 표현:
+- 기존 카페 글은 문체와 구조의 참고일 뿐 사실 근거가 아니다. 사실·수치·도구 기능·인물·성과는 이번 원본 전사문에서 확인되는 것만 사용한다.
+- 직접 사용하지 않은 경험이나 성과를 '저는', '제가 해보니' 같은 말로 꾸미지 않는다. 감상 한 문단을 붙이는 것으로 관점을 대신하지 않는다.
+- 원본의 구체적인 숫자·도구명·회사명을 정확히 보존하고, 제작자의 주장이나 시연 결과를 일반적인 성능·수익 보장으로 확대하지 않는다.
+- 과장, 불필요한 영어 병기, 이모지, 해시태그, 구두점 잔재를 쓰지 않는다. 검증되지 않은 새 사실을 덧붙이지 않는다.
+
+제목과 완성된 원고만 출력하고 작업 설명이나 검증 보고는 출력하지 않는다."""
+CAFE_INSTRUCTION_VERSION = 'cafe-business-column/v2'
+CAFE_PROMPTS = {
+    'cafe-caption/v1': CAFE_NOTEBOOK_PROMPT_V1,
+    CAFE_INSTRUCTION_VERSION: CAFE_NOTEBOOK_PROMPT_V2,
+}
+CAFE_NOTEBOOK_PROMPT = CAFE_PROMPTS[CAFE_INSTRUCTION_VERSION]
+
 
 SHORTS_NOTEBOOK = {
     "title": "민수대표님_숏폼",
@@ -764,6 +796,25 @@ def validate_shorts_verbatim_claims(
 # checked this, so a 54-second vertical Short became a Cafe column, and Shorts
 # built from one-minute sources carry the line "1분 짜리 영상 내용을 모두 정리했습니다".
 MIN_LONGFORM_SOURCE_SECONDS = 480
+
+
+# The Cafe editor keeps a markdown code fence as literal text, so a body written
+# with ``` publishes with the backticks showing. Four reels write-ups went out
+# that way on 2026-09-29 and could not be edited afterwards through automation.
+CAFE_RAW_MARKUP = {
+    "코드 펜스(```)": re.compile(r"^\s*```", re.M),
+    "머리말 기호(#)": re.compile(r"^#{1,6}\s+\S", re.M),
+}
+
+
+def validate_cafe_body_markup(body: str) -> None:
+    """Refuse a Cafe body still carrying markdown the editor will not render."""
+    found = [name for name, pattern in CAFE_RAW_MARKUP.items() if pattern.search(body or "")]
+    if found:
+        raise ProductionPolicyError(
+            "카페 본문에 에디터가 변환하지 못하는 마크다운이 남아 있습니다: "
+            + ", ".join(found)
+            + ". 명령어는 별도 문단으로 쓰고 기호를 지운 뒤 다시 게시하세요.")
 
 
 def validate_longform_source(measurement: dict[str, Any]) -> dict[str, Any]:

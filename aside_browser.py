@@ -796,6 +796,11 @@ def post_to_naver_cafe(
     register_evaluate_click: bool = False,
 ) -> dict[str, Any]:
     """Fill, persist as a Naver draft, or publish through the signed-in profile."""
+    from content_production_policy import validate_cafe_body_markup
+
+    # Every Cafe publication funnels through here, so this is where a body
+    # still carrying unrendered markdown has to stop.
+    validate_cafe_body_markup(body)
     if publish and save_draft:
         raise ValueError("네이버 카페 글은 임시등록과 발행을 동시에 요청할 수 없습니다.")
     final_body = _compose_naver_body(
@@ -1290,7 +1295,24 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         }
         const existing=await activeParagraph.evaluate(el=>(el.innerText||el.textContent||'')
           .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
-        if(existing&&!(await focusEnd()))return false;
+        if(existing){
+          // The body writer leaves SmartEditor's live caret at the final
+          // paragraph. Its bottom-edge button does not create a new component
+          // after normal text, so focusEnd() cannot separate this heading.
+          // Enter creates a provider-owned paragraph in the same component;
+          // quotation conversion will split that exact paragraph afterwards.
+          quoteFailureStage='heading-new-paragraph';
+          const componentId=await activeParagraph.evaluate(el=>el.closest('.se-component')?.id||'');
+          if(!componentId)return false;
+          await p.keyboard.press('Enter');await sleep(180);
+          const paragraphs=bodyFound.ctx.locator(`[id="${componentId}"] .se-text-paragraph`);
+          const count=await paragraphs.count();
+          if(!count)return false;
+          activeParagraph=paragraphs.nth(count-1);
+          const empty=await activeParagraph.evaluate(el=>!(el.textContent||'')
+            .replace(/내용을 입력하세요\.?/g,'').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').trim());
+          if(!empty||!(await isOutsideQuote(activeParagraph)))return false;
+        }
         if(!(await insertFormattedText(heading)))return false;
         const entered=await activeParagraph.evaluate(el=>(el.innerText||el.textContent||'')
           .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
