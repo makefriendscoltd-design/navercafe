@@ -65,3 +65,15 @@ def test_recent_headcopy_reads_the_first_line_of_each_candidate_file(tmp_path: P
     (root / "06_headcopy_candidates.txt").write_text(
         "1. 제안서 3시간을 2분으로 / 클로드 업무 자동화\n2. 다른 안 / 둘째 줄\n", encoding="utf-8")
     assert headcopy.recent_headcopy(project=tmp_path) == ["제안서 3시간을 2분으로 / 클로드 업무 자동화"]
+
+
+def test_ai_symbols_and_industry_jargon_are_rejected(monkeypatch):
+    """가운뎃점은 AI가 쓴 티가 나고, `리드`는 화면을 스쳐 보는 사람이 모른다."""
+    import subscription_agent
+
+    monkeypatch.setattr(subscription_agent, "run_json", lambda *a, **k: _answer([
+        ("보고서까지 15분", "리드 메일 자동 처리"),
+        ("보고서까지 15분", "문의·메일 자동 처리"),
+        ("보고서까지 15분", "문의 메일 자동 처리"),
+    ]))
+    assert headcopy.write_headcopy(SCRIPT) == ["보고서까지 15분\n문의 메일 자동 처리"]

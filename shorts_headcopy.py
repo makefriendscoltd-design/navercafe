@@ -40,6 +40,11 @@ GOOD_EXAMPLES = (
 # 음성이 도입에서 말하는 문구, 그리고 어느 영상에 붙여도 말이 되는 빈 문구.
 SPOKEN_BY_VOICE = ("미쳤습니다", "대박입니다", "천재입니다")
 EMPTY_PHRASES = ("모르면 손해", "모르면 진짜", "상상 못한", "아직도 그냥", "충격")
+# 가운뎃점 같은 기호는 사람이 손으로 쓴 자막에 잘 안 나온다. AI가 쓴 티가 난다.
+FORBIDDEN_SYMBOLS = ("·", "ㆍ", "•", "…", "→", "⇒", "※", "＆")
+# 업계에서만 쓰는 말. 화면을 스쳐 보는 사람이 모르면 그 줄은 없는 것과 같다.
+JARGON = ("리드", "퍼널", "온보딩", "파이프라인", "레버리지", "인사이트", "이터레이션",
+          "세일즈 퍼널", "그로스", "KPI", "ROI")
 
 
 class HeadcopyError(RuntimeError):
@@ -69,6 +74,9 @@ def _prompt(script: str, recent: list[str]) -> str:
 - `아직도 ~하나요?`, `~하면 손해!`, `모르면 손해`, `상상 못한`처럼 아무 영상에나 붙는
   문구를 쓰지 않는다. 이 영상에만 해당하는 말을 써라.
 - `팁`, `방법`, `정리`, `노하우`로 끝내지 않는다.
+- 가운뎃점(·), 화살표(→), 말줄임표(…) 같은 기호를 쓰지 않는다. 쉼표나 띄어쓰기로 쓴다.
+- 업계에서만 쓰는 말을 쓰지 않는다. `리드`는 `고객`이나 `문의`로, `퍼널`은 `과정`으로,
+  `온보딩`은 `첫 안내`로 바꿔 쓴다. 화면을 스쳐 보는 사람이 아는 말이어야 한다.
 - 세 후보는 서로 다른 각도여야 한다. 어미만 바꾼 같은 문장 세 개는 안 된다.
 
 최근에 이미 쓴 문구(겹치지 마라):
@@ -105,7 +113,9 @@ def _validated(pairs: list[tuple[str, str]], script: str) -> list[str]:
     for first, second in pairs:
         candidate = to_digits(f"{first}\n{second}")
         flat = candidate.replace("\n", " ")
-        if any(word in flat for word in SPOKEN_BY_VOICE + EMPTY_PHRASES):
+        if any(word in flat for word in SPOKEN_BY_VOICE + EMPTY_PHRASES + JARGON):
+            continue
+        if any(symbol in flat for symbol in FORBIDDEN_SYMBOLS):
             continue
         if not _fits_comfortably(candidate):
             continue
