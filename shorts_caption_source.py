@@ -30,6 +30,22 @@ BLOCKED_BACKOFF_SECONDS = (30, 120, 300)
 _LAST_REQUEST = [0.0]
 
 
+# 이미 내려받은 영상 파일에서 직접 받아쓴다. 유튜브에 자막을 따로 묻지 않으므로
+# IP 차단에 걸리지 않고, 자막이 없는 영상도 쓸 수 있다.
+ASR_PYTHON = Path(__file__).resolve().parent / ".venv-aligner/bin/python"
+ASR_MODEL = "mlx-community/whisper-large-v3-turbo"
+ASR_SCRIPT = """
+import json, sys
+import mlx_whisper
+result = mlx_whisper.transcribe(sys.argv[1], path_or_hf_repo=sys.argv[2], verbose=False)
+print(json.dumps({"language": result.get("language"), "segments": [
+    {"start": round(float(x["start"]), 3), "end": round(float(x["end"]), 3),
+     "text": " ".join((x.get("text") or "").split())}
+    for x in (result.get("segments") or []) if (x.get("text") or "").strip()]},
+    ensure_ascii=False))
+"""
+
+
 class CaptionError(RuntimeError):
     pass
 
@@ -62,6 +78,28 @@ def _throttle() -> None:
     if waited < REQUEST_GAP_SECONDS:
         time.sleep(REQUEST_GAP_SECONDS - waited)
     _LAST_REQUEST[0] = time.monotonic()
+
+
+def _from_local_asr(media: Path | None) -> tuple[str, list[dict]] | None:
+    """내려받은 영상에서 로컬 음성인식으로 받아쓴다. 유튜브 요청이 없다."""
+    import subprocess
+
+    if media is None or not Path(media).is_file() or not ASR_PYTHON.is_file():
+        return None
+    try:
+        completed = subprocess.run(
+            [str(ASR_PYTHON), "-c", ASR_SCRIPT, str(media), ASR_MODEL],
+            capture_output=True, text=True, timeout=2400)
+    except subprocess.TimeoutExpired:
+        return None
+    if completed.returncode != 0:
+        return None
+    lines = [x for x in (completed.stdout or "").splitlines() if x.strip().startswith("{")]
+    if not lines:
+        return None
+    parsed = json.loads(lines[-1])
+    segments = parsed.get("segments") or []
+    return (f"asr:{parsed.get('language') or 'unknown'}", segments) if segments else None
 
 
 def _from_api(source_key: str) -> tuple[str, list[dict]] | None:
@@ -114,11 +152,13 @@ def _from_ytdlp(source_key: str, out_dir: Path) -> tuple[str, list[dict]] | None
     return None
 
 
-def fetch(source_key: str, out_dir: Path, *, minutes: float | None = None) -> dict:
+def fetch(source_key: str, out_dir: Path, *, minutes: float | None = None,
+          media: Path | None = None) -> dict:
     """자막을 받아 `transcript.txt`와 증거를 남기고 요약을 돌려준다."""
     out_dir = Path(out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    picked = _from_api(source_key) or _from_ytdlp(source_key, out_dir)
+    # 이미 받은 영상에서 먼저 받아쓴다. 유튜브 자막 요청은 IP 차단을 부른다.
+    picked = _from_local_asr(media) or _from_api(source_key) or _from_ytdlp(source_key, out_dir)
     if picked is None:
         raise CaptionError(f"자막을 받지 못했습니다: {source_key}")
     lang, segments = picked

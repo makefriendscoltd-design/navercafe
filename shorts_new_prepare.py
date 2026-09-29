@@ -204,7 +204,7 @@ def _recent_headcopy_openers(limit: int = 6, project: Path = PROJECT) -> set[str
     return {_opener(" ".join(words)) for _, words in picked[:limit]}
 
 
-def _write_from_captions(source_key: str, root: Path) -> dict | None:
+def _write_from_captions(source_key: str, root: Path, media: Path | None = None) -> dict | None:
     """자막을 받아 원고를 쓴다. 막히면 None을 돌려주고 NotebookLM 경로로 간다.
 
     NotebookLM은 화면이 개편되면 멈추고, 후보당 기회가 한 번뿐이라 실패하면 그 영상을
@@ -217,7 +217,7 @@ def _write_from_captions(source_key: str, root: Path) -> dict | None:
     import shorts_script_writer
 
     try:
-        captions = shorts_caption_source.fetch(source_key, root / "captions")
+        captions = shorts_caption_source.fetch(source_key, root / "captions", media=media)
         return shorts_script_writer.write_to(root / "writer", captions)
     except Exception as exc:  # noqa: BLE001 - 자막이 없거나 구독이 막히면 기존 경로로 간다
         (root / "captions_fallback.txt").write_text(
@@ -277,7 +277,7 @@ def prepare(source_key: str) -> dict:
             "--evidence-dir", str(root / "notebooklm"),
             "--preserve-authorized-wording",
         ]
-        written = _write_from_captions(source_key, root)
+        written = _write_from_captions(source_key, root, media=source_video)
         if written:
             command += ["--answer-file", written["answer"]]
         subprocess.run(command, check=True)

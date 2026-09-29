@@ -1904,3 +1904,18 @@ def test_report_words_and_misread_units_are_rejected_in_the_spoken_script():
         shorts.validate_spoken_wording("화자는 리버사이드를 쓰다가 텔라로 바꿨습니다.")
     with pytest.raises(RuntimeError, match="잘못 읽히는 표기"):
         shorts.validate_spoken_wording("폰으로 찍어도 사케이 영상을 만들 수 있습니다.")
+
+
+def test_caption_source_prefers_local_transcription(monkeypatch, tmp_path):
+    """유튜브에 자막을 따로 물으면 IP가 막힌다. 이미 받은 영상에서 먼저 받아쓴다."""
+    import shorts_caption_source as captions
+
+    calls = []
+    monkeypatch.setattr(captions, "_from_local_asr",
+                        lambda media: calls.append("asr") or ("asr:en", [
+                            {"start": i, "end": i + 1, "text": f"line {i}"} for i in range(30)]))
+    monkeypatch.setattr(captions, "_from_api", lambda key: calls.append("api") or None)
+    monkeypatch.setattr(captions, "_from_ytdlp", lambda key, out: calls.append("ytdlp") or None)
+    evidence = captions.fetch("abcdefghijk", tmp_path, media=tmp_path / "video.mp4")
+    assert calls == ["asr"], "로컬 받아쓰기가 되면 유튜브에 묻지 않는다"
+    assert evidence["language"] == "asr:en" and evidence["segment_count"] == 30
