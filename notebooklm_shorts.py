@@ -75,14 +75,32 @@ STRONG_HOOK_RE = re.compile(
     r"미쳤습니다|대박입니다|천재입니다|신입니다|고수입니다|벌었습니다|만들었습니다)\.?$"
 )
 HEAD_COPY_ITEM_RE = re.compile(r"^\s*(?:[1-3]\s*[.)、:]|[①②③])\s*(.+?)\s*$")
-# 첫 줄은 말하듯 끝나야 한다. 2026-09-29에 사건형을 열었다: `세 시간이 이 분으로`,
-# `직원 백 명 다 내보냄`처럼 벌어진 일을 적는 형태가 조회수 상위권의 공통점인데,
-# 예전 목록은 어미만 보고 그런 문구를 전부 막았다.
-HEAD_COPY_SPOKEN_RE = re.compile(
-    r"(?:[?!]|(?:습니다|니다|있다|된다|바뀐다|끝이다|가능하다|임|함|잖아|네|죠)[.!]?$|"
-    r"(?:손해|충분|끝|가능)[.!]?$|"
-    r"(?:으로|로|까지|만에|뿐|째)[.!]?$)"
+# 첫 줄은 말이 끊기지 않은 채로 끝나야 한다. 예전에는 허용 어미를 좁게 나열했는데,
+# 그 목록이 채널 최고 성과 문구(`100명 직원 다 짜름`, `포브스 선정 사업가의`)를 모두
+# 거부해서 `아직도 ~하나요?` 같은 문장만 살아남았다(2026-09-29). 이제 조사나 연결어미로
+# 끊긴 조각만 막는다.
+HEAD_COPY_DANGLING_RE = re.compile(
+    r"(?:그리고|그래서|그런데|하지만|그러면|또는|및)$|"
+    r"(?:은|는|이|가|을|를|에|에게|에서|와|과|하고|이나|거나|면서|려고|해서|하는|한|된|될|의)$"
 )
+
+
+# 첫 줄은 둘째 줄로 이어질 수 있다(`포브스 선정 사업가의` / `AI 직원 프롬프트 5가지`).
+# 그래서 첫 줄에서는 접속어만 막고, 말이 끝나는 자리인 둘째 줄에서 조사 끊김을 본다.
+HEAD_COPY_CONJUNCTION_RE = re.compile(r"(?:그리고|그래서|그런데|하지만|그러면|또는|및)$")
+
+
+def _head_copy_is_whole(first: str, second: str) -> bool:
+    """두 줄을 한 문구로 보고 중간에서 끊겼는지 본다."""
+    head = first.strip().rstrip("!?.")
+    tail = second.strip().rstrip("!?.")
+    if not head or not tail:
+        return False
+    if HEAD_COPY_CONJUNCTION_RE.search(head):
+        return False
+    return not HEAD_COPY_DANGLING_RE.search(tail)
+
+
 HEAD_COPY_STOP_WORDS = {
     "이거", "그냥", "진짜", "오늘", "지금", "방법", "하는법", "전략", "충분",
 }
@@ -321,9 +339,9 @@ def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
         raise RuntimeError("쇼츠 헤드카피가 너무 짧습니다.")
     if "#" in first or "#" in second:
         raise RuntimeError("쇼츠 헤드카피에는 해시태그를 넣지 않습니다.")
-    if not HEAD_COPY_SPOKEN_RE.search(first):
+    if not _head_copy_is_whole(first, second):
         raise RuntimeError(
-            "쇼츠 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체여야 합니다."
+            "쇼츠 헤드카피가 조사나 연결어미로 끊겨 있습니다."
         )
     if measure_pixels:
         try:

@@ -25,7 +25,11 @@ from pathlib import Path
 import notebooklm_shorts as scripts
 from headcopy_digits import to_digits
 
-MAX_LINE_CHARS = 18
+# 실측 기준. 안전폭 920px은 "깨지지 않는 한계"고, 잘 나온 영상들은 1행 690~740px,
+# 2행 820px 선이다. 한계까지 채우면 두 줄이 같은 덩어리로 보여 눈이 안 잡는다.
+MAX_LINE_CHARS = 12
+FIRST_LINE_MAX_PX = 760
+SECOND_LINE_MAX_PX = 840
 GOOD_EXAMPLES = (
     ("포브스 선정 사업가의", "AI 직원 프롬프트 5가지"),
     ("100명 직원 다 짜름", "2026년 가장 값진 스킬"),
@@ -54,7 +58,8 @@ def _prompt(script: str, recent: list[str]) -> str:
 {examples}
 
 규칙:
-- 두 줄. 각 줄 공백 포함 {MAX_LINE_CHARS}자 이내. 짧을수록 좋다.
+- 두 줄. 각 줄 공백 포함 {MAX_LINE_CHARS}자 이내. 첫 줄은 10자 안쪽이면 가장 좋다.
+- 첫 줄이 둘째 줄보다 짧아야 한다. 눈이 첫 줄을 먼저 잡고 둘째 줄로 내려간다.
 - 첫 줄은 대본에서 실제로 벌어진 일을 쓴다. 전후 대비가 있으면 그대로 쓴다(3시간을 2분으로).
   대비가 없으면 결과나 규모를 쓴다(직원 100명 다 내보냄).
 - 둘째 줄은 그래서 무엇을 얻는지 또는 무엇에 대한 것인지 쓴다.
@@ -77,6 +82,23 @@ JSON 하나만 출력한다:
 """
 
 
+def line_widths(candidate: str) -> tuple[int, int]:
+    """두 줄의 90px 실측 폭."""
+    from PIL import ImageFont
+
+    import content_production_policy as policy
+
+    font = ImageFont.truetype(str(policy.SHORTS_TITLE_FONT_PATH), 90)
+    first, second = scripts.head_copy_lines(candidate)
+    return font.getbbox(first)[2], font.getbbox(second)[2]
+
+
+def _fits_comfortably(candidate: str) -> bool:
+    """안전폭이 아니라 잘 나온 영상들의 폭에 맞춘다."""
+    first, second = line_widths(candidate)
+    return first <= FIRST_LINE_MAX_PX and second <= SECOND_LINE_MAX_PX and first <= second
+
+
 def _validated(pairs: list[tuple[str, str]], script: str) -> list[str]:
     """검사를 통과한 후보만, 통과한 순서대로 돌려준다."""
     accepted = []
@@ -84,6 +106,8 @@ def _validated(pairs: list[tuple[str, str]], script: str) -> list[str]:
         candidate = to_digits(f"{first}\n{second}")
         flat = candidate.replace("\n", " ")
         if any(word in flat for word in SPOKEN_BY_VOICE + EMPTY_PHRASES):
+            continue
+        if not _fits_comfortably(candidate):
             continue
         try:
             scripts.validate_head_copy(candidate, measure_pixels=True)

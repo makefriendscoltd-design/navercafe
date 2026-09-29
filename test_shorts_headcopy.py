@@ -23,28 +23,28 @@ def test_written_headcopy_keeps_only_candidates_that_pass_the_gates(monkeypatch)
     import subscription_agent
 
     monkeypatch.setattr(subscription_agent, "run_json", lambda *a, **k: _answer([
-        ("제안서 3시간을 2분으로", "클로드 업무 자동화"),
-        ("이 남자 미쳤습니다!", "클로드 업무 자동화"),        # 음성이 말하는 문구
+        ("3시간을 2분으로", "클로드 제안서 루틴"),
+        ("이 남자 미쳤습니다!", "클로드 제안서 루틴"),        # 음성이 말하는 문구
         ("가", "나"),                                        # 너무 짧다
     ]))
     heads = headcopy.write_headcopy(SCRIPT)
-    assert heads == ["제안서 3시간을 2분으로\n클로드 업무 자동화"]
+    assert heads == ["3시간을 2분으로\n클로드 제안서 루틴"]
 
 
 def test_spelled_out_numbers_become_digits(monkeypatch):
     import subscription_agent
 
     monkeypatch.setattr(subscription_agent, "run_json", lambda *a, **k: _answer([
-        ("제안서 세 시간을 이 분으로", "클로드 업무 자동화"),
+        ("세 시간을 이 분으로", "클로드 제안서 루틴"),
     ]))
-    assert headcopy.write_headcopy(SCRIPT)[0].startswith("제안서 3시간을 2분으로")
+    assert headcopy.write_headcopy(SCRIPT)[0].startswith("3시간을 2분으로")
 
 
 def test_no_usable_candidate_is_an_error_so_the_caller_can_fall_back(monkeypatch):
     import subscription_agent
 
     monkeypatch.setattr(subscription_agent, "run_json", lambda *a, **k: _answer([
-        ("이 프로그램 대박입니다!", "클로드 업무 자동화"),
+        ("이 프로그램 대박입니다!", "클로드 제안서 루틴"),
     ]))
     with pytest.raises(headcopy.HeadcopyError):
         headcopy.write_headcopy(SCRIPT)

@@ -1307,9 +1307,14 @@ def test_plural_person_hook_and_same_line_body_are_accepted():
     assert shorts.require_strong_hook(script) == "이 남자들 미쳤습니다."
 
 
-def test_generic_noun_head_copy_is_rejected():
-    with pytest.raises(RuntimeError, match="구어체"):
-        shorts.validate_head_copy("클로드 디자인 / 모션그래픽 5가지")
+def test_head_copy_cut_mid_phrase_is_rejected():
+    """끝맺음의 종류는 막지 않는다. 조회수 1만2천 편이 `100명 직원 다 짜름`이었다."""
+    shorts.validate_head_copy("클로드 디자인 / 모션그래픽 5가지", measure_pixels=False)
+    shorts.validate_head_copy("100명 직원 다 짜름 / 2026년 값진 스킬", measure_pixels=False)
+    with pytest.raises(RuntimeError, match="끊겨"):
+        shorts.validate_head_copy("제안서를 쓰는 / 클로드로 하는", measure_pixels=False)
+    with pytest.raises(RuntimeError, match="끊겨"):
+        shorts.validate_head_copy("클로드 그리고 / 업무 자동화", measure_pixels=False)
 
 
 def test_head_copy_must_connect_to_the_script_opening():

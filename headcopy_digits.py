@@ -25,7 +25,7 @@ _SINO_WORD = r"(?:[일이삼사오육륙칠팔구십백천만억]+(?:\s+[일이�
 _NATIVE_WORD = r"(?:스물|스무|다섯|여섯|일곱|여덟|아홉|한|두|세|네|열)"
 _UNIT = "|".join(UNITS)
 # 앞이 한글이면 조사다. `시간이 이 분`의 첫 `이`를 수사로 읽지 않게 막는다.
-PATTERN = re.compile(rf"(?<![가-힣])({_SINO_WORD}|{_NATIVE_WORD})(\s*)({_UNIT})")
+PATTERN = re.compile(rf"(?<![0-9가-힣])({_SINO_WORD}|{_NATIVE_WORD})(\s*)({_UNIT})")
 
 
 def _sino_value(word: str) -> int | None:
