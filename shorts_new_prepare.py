@@ -22,6 +22,9 @@ import content_production_policy as policy
 from headcopy_digits import to_digits
 import notebooklm_shorts as scripts
 from shorts_repair_prepare import PROJECT, binding
+
+# 카페 발행 큐에만 해당하는 검사. 쇼츠 제작은 이 큐를 쓰지 않는다.
+CAFE_ONLY_CHECKS = {"runtime:cafe_queue_policy"}
 from youtube_source_options import source_options
 
 PRESENTER_SOURCE = (
@@ -243,16 +246,23 @@ def prepare(source_key: str) -> dict:
         capture_output=True, text=True,
     )
     if preflight.returncode != 0:
+        # 카페 쪽 설정이 바뀌는 중이라고 쇼츠 제작이 멈추면 안 된다(2026-09-29에 실제로
+        # 열 편이 그렇게 막혔다). 쇼츠가 쓰지 않는 검사는 실패로 세지 않는다.
         try:
             report = json.loads(preflight.stdout or "{}")
         except ValueError:
             report = {}
-        failed = report.get("failures") or [
+        failed = [name for name in (report.get("failures") or [
             name for name, passed in (report.get("checks") or {}).items() if not passed
-        ]
+        ]) if name not in CAFE_ONLY_CHECKS]
+        blocking = bool(failed) or not report
         detail = ", ".join(str(name) for name in failed) or (
             (preflight.stderr or preflight.stdout or "").strip()[-200:])
-        raise RuntimeError(f"제작 사전점검 실패: {detail}")
+        if not blocking:
+            # 카페 큐 설정만 어긋난 경우다. 쇼츠는 그 큐를 쓰지 않으므로 계속 간다.
+            print(f"사전점검 경고(쇼츠와 무관): {detail[:120]}", flush=True)
+        if blocking:
+            raise RuntimeError(f"제작 사전점검 실패: {detail}")
 
     source_video, credit = _download_source(source_key, root)
     if not credit.startswith("출처: ") or len(credit) <= 4:

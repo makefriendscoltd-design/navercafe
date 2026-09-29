@@ -23,6 +23,11 @@ TIMED_LINE = re.compile(
     re.S,
 )
 PREFERRED_LANGS = ("ko", "en", "en-US", "en-GB")
+# 유튜브는 짧은 시간에 자막을 몰아서 받으면 IP를 막는다. 2026-09-29에 실제로 막혀서
+# 열 편 제작이 통째로 멈췄다. 요청 사이에 간격을 두고, 막히면 기다렸다 다시 받는다.
+REQUEST_GAP_SECONDS = 4.0
+BLOCKED_BACKOFF_SECONDS = (30, 120, 300)
+_LAST_REQUEST = [0.0]
 
 
 class CaptionError(RuntimeError):
@@ -49,16 +54,35 @@ def parse_vtt(text: str) -> list[dict]:
     return out
 
 
+def _throttle() -> None:
+    """마지막 요청으로부터 최소 간격을 지킨다. 동시 제작이면 서로 겹친다."""
+    import time
+
+    waited = time.monotonic() - _LAST_REQUEST[0]
+    if waited < REQUEST_GAP_SECONDS:
+        time.sleep(REQUEST_GAP_SECONDS - waited)
+    _LAST_REQUEST[0] = time.monotonic()
+
+
 def _from_api(source_key: str) -> tuple[str, list[dict]] | None:
     """무료 자막 API. yt-dlp보다 먼저 쓴다 - 자막 전용 경로라 429에 덜 걸린다."""
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
         return None
-    try:
-        fetched = YouTubeTranscriptApi().fetch(source_key, languages=list(PREFERRED_LANGS))
-    except Exception:  # noqa: BLE001 - 자막이 없거나 막히면 다음 경로로 넘어간다
-        return None
+    import time
+
+    for attempt, backoff in enumerate((0, *BLOCKED_BACKOFF_SECONDS)):
+        if backoff:
+            time.sleep(backoff)
+        _throttle()
+        try:
+            fetched = YouTubeTranscriptApi().fetch(source_key, languages=list(PREFERRED_LANGS))
+            break
+        except Exception as exc:  # noqa: BLE001
+            blocked = any(word in type(exc).__name__ for word in ("IpBlocked", "TooManyRequests"))
+            if not blocked or attempt == len(BLOCKED_BACKOFF_SECONDS):
+                return None
     segments = [{"start": round(float(item.start), 3),
                  "end": round(float(item.start) + float(item.duration), 3),
                  "text": re.sub(r"\s+", " ", item.text).strip()}
