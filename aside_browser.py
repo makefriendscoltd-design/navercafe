@@ -976,14 +976,14 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             return [...document.querySelectorAll('.temp_item_title')]
               .filter(el=>(el.textContent||'').replace(/\s+/g,'').trim()===wanted).length;
           },payload.title);
-          // This button opens a modal; a second count-button click or Escape
-          // does not close it. The overlay otherwise silently eats body input.
-          const closeDrafts=await findContext(p,'.btn_close[aria-label="레이어팝업 닫기"]');
-          if(!closeDrafts)throw new Error('temporary draft close button missing');
-          await closeDrafts.loc.click();
-          await sleep(300);
-          const modalOpen=await closeDrafts.loc.isVisible();
-          if(modalOpen)throw new Error('temporary draft modal stayed open');
+          // Naver can hide every close button while the draft modal is open.
+          // No content has been entered yet: reload this blank editor without
+          // touching saved drafts, then reacquire its context before writing.
+          await p.goto(p.url());
+          editor=await waitForContext(p,'.textarea_input',12000);
+          if(!editor)throw new Error('temporary draft editor reload failed');
+          if(await findContext(p,'.layer_temporary_content'))
+            throw new Error('temporary draft modal stayed open after reload');
           if(duplicates)workflowError=`동일 제목의 네이버 임시글이 ${duplicates}개 있어 새 임시글을 만들지 않았습니다.`;
         }
       }catch(error){workflowError=`네이버 임시글 중복 여부를 확인하지 못했습니다: ${String(error?.message||error)}`;}
