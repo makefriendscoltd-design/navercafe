@@ -758,7 +758,15 @@ def fetch(
     attempt_ledger_path: str | Path | None = None,
     preserve_authorized_wording: bool = False,
     comment_keyword: str | None = None,
+    provided_answer: str | None = None,
 ) -> tuple[str, str, int, str, dict, list[str]]:
+    """`provided_answer`가 있으면 공급자를 부르지 않고 그 원고를 그대로 쓴다.
+
+    자막을 근거로 구독 에이전트가 쓴 원고를 넣는 경로다. 형식 검사, CTA 변환, 댓글
+    키워드, 다섯 번째 항목까지 자르기는 모두 같은 코드를 지난다 - 바뀌는 것은 원고를
+    누가 쓰느냐뿐이다. 후보당 한 번인 시도 장부도 쓰지 않는다. 자막은 몇 번을 받아도
+    같은 값이 나오므로 기회를 소모한다는 개념이 없다.
+    """
     source_key = _video_id(url)
     cfg, _unused_api_key = load_shorts_config()
     if evidence_dir:
@@ -769,32 +777,35 @@ def fetch(
         if attempt_ledger_path is not None
         else default_ledger
     )
-    prior_attempts = load_shorts_attempt_evidence(source_key, ledger_path, source_root)
-    attempt_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + f"-{os.getpid()}"
-    )
-    reserve_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        discovered_attempts=prior_attempts,
-    )
-    try:
-        provider_answer = nlm.fetch_manuscript(url, cfg, log=log)
-    except Exception:
+    if provided_answer is not None:
+        provider_answer = provided_answer
+    else:
+        prior_attempts = load_shorts_attempt_evidence(source_key, ledger_path, source_root)
+        attempt_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + f"-{os.getpid()}"
+        )
+        reserve_shorts_attempt(
+            ledger_path,
+            source_key,
+            attempt_id=attempt_id,
+            discovered_attempts=prior_attempts,
+        )
+        try:
+            provider_answer = nlm.fetch_manuscript(url, cfg, log=log)
+        except Exception:
+            record_shorts_attempt(
+                ledger_path,
+                source_key,
+                attempt_id=attempt_id,
+                status="unknown_after_provider_start",
+            )
+            raise
         record_shorts_attempt(
             ledger_path,
             source_key,
             attempt_id=attempt_id,
-            status="unknown_after_provider_start",
+            status="provider_response_received",
         )
-        raise
-    record_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        status="provider_response_received",
-    )
     try:
         provider_script_body = _raw_script_body(provider_answer)
         validate_notebooklm_script_layout(provider_script_body)
@@ -822,20 +833,22 @@ def fetch(
         validate_intro_promise(final)
         validate_head_copy_connection(head_copies[0], final)
     except Exception:
+        if provided_answer is None:
+            record_shorts_attempt(
+                ledger_path,
+                source_key,
+                attempt_id=attempt_id,
+                status="substantive_failed",
+                substantive_failure=True,
+            )
+        raise
+    if provided_answer is None:
         record_shorts_attempt(
             ledger_path,
             source_key,
             attempt_id=attempt_id,
-            status="substantive_failed",
-            substantive_failure=True,
+            status="passed",
         )
-        raise
-    record_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        status="passed",
-    )
     return final, chosen, minutes, provider_answer, transform, head_copies
 
 
@@ -921,6 +934,10 @@ def main(argv=None) -> int:
     parser.add_argument("--headline-out")
     parser.add_argument("--evidence-dir")
     parser.add_argument(
+        "--answer-file",
+        help="자막을 근거로 미리 쓴 원고. 주면 NotebookLM을 부르지 않는다",
+    )
+    parser.add_argument(
         "--comment-keyword",
         help="댓글 유도 키워드(한글 2글자). 생략하면 대본과 헤드카피에서 자동 추출",
     )
@@ -966,11 +983,14 @@ def main(argv=None) -> int:
             comment_keyword=args.comment_keyword,
         )
     else:
+        provided = (Path(args.answer_file).expanduser().resolve().read_text(encoding="utf-8")
+                    if args.answer_file else None)
         script, chosen, minutes, raw, transform, head_copies = fetch(
             args.url,
             evidence_dir=args.evidence_dir,
             preserve_authorized_wording=args.preserve_authorized_wording,
             comment_keyword=args.comment_keyword,
+            provided_answer=provided,
         )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

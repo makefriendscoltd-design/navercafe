@@ -9,6 +9,7 @@ leaves scheduling to the publisher.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import json
 import re
 import shutil
@@ -200,6 +201,28 @@ def _recent_headcopy_openers(limit: int = 6, project: Path = PROJECT) -> set[str
     return {_opener(" ".join(words)) for _, words in picked[:limit]}
 
 
+def _write_from_captions(source_key: str, root: Path) -> dict | None:
+    """자막을 받아 원고를 쓴다. 막히면 None을 돌려주고 NotebookLM 경로로 간다.
+
+    NotebookLM은 화면이 개편되면 멈추고, 후보당 기회가 한 번뿐이라 실패하면 그 영상을
+    영영 못 쓰고, 브라우저 하나를 잡고 있어서 병렬 제작을 막는다. 자막은 그 셋이 모두
+    없다. 지침과 뒤따르는 검사는 그대로 쓴다.
+    """
+    if policy.SHORTS_SCRIPT_SOURCE != "captions":
+        return None
+    import shorts_caption_source
+    import shorts_script_writer
+
+    try:
+        captions = shorts_caption_source.fetch(source_key, root / "captions")
+        return shorts_script_writer.write_to(root / "writer", captions)
+    except Exception as exc:  # noqa: BLE001 - 자막이 없거나 구독이 막히면 기존 경로로 간다
+        (root / "captions_fallback.txt").write_text(
+            f"{datetime.now().astimezone().isoformat(timespec='seconds')} {exc}\n",
+            encoding="utf-8")
+        return None
+
+
 def prepare(source_key: str) -> dict:
     source_root = _source_root(source_key)
     root = source_root / "shorts"
@@ -237,13 +260,17 @@ def prepare(source_key: str) -> dict:
 
     script_path = root / "07_script_final.txt"
     if not script_path.exists():
-        subprocess.run([
+        command = [
             sys.executable, str(PROJECT / "notebooklm_shorts.py"),
             "--url", f"https://youtu.be/{source_key}", "--out", str(script_path),
             "--headline-out", str(root / "06_headcopy_candidates.txt"),
             "--evidence-dir", str(root / "notebooklm"),
             "--preserve-authorized-wording",
-        ], check=True)
+        ]
+        written = _write_from_captions(source_key, root)
+        if written:
+            command += ["--answer-file", written["answer"]]
+        subprocess.run(command, check=True)
 
     script = script_path.read_text(encoding="utf-8").strip()
     scripts.validate_intro_promise(script)
@@ -277,7 +304,12 @@ def prepare(source_key: str) -> dict:
     recovery_path = root / "notebooklm/notebooklm-answer-recovery-evidence.json"
     if answer_path.exists() != recovery_path.exists():
         raise RuntimeError("복구한 원응답과 그 증거는 함께 있어야 합니다.")
-    if not answer_path.exists():
+    # 자막 경로로 쓴 원고가 있으면 그것이 원고의 원본이다.
+    written_answer = root / "writer/answer.md"
+    from_captions = written_answer.is_file()
+    if from_captions:
+        answer_path = written_answer
+    elif not answer_path.exists():
         answer_path = root / "notebooklm/notebooklm-answer.md"
     fact_path = root / "notebooklm" / scripts.FACT_VERIFICATION_FILENAME
 
@@ -305,11 +337,17 @@ def prepare(source_key: str) -> dict:
         "source_id": source_key, "content_rewrite_applied": False,
         "provider_mutation_attempted": False, "studio_opened": False, "crm_emitted": False,
         "content_lineage": {
-            "mode": "notebooklm_verbatim", "answer": answer,
-            "provider_evidence": binding(root / "notebooklm/notebooklm-provider-evidence.json"),
-            **({"answer_recovery": binding(recovery_path),
-                "stored_answer": binding(root / "notebooklm/notebooklm-answer.md")}
-               if recovery_path.exists() else {}),
+            **({"mode": "caption_written", "answer": answer,
+                "transcript": binding(root / "captions/transcript.txt"),
+                "caption_evidence": binding(root / "captions/evidence.json"),
+                "writer_evidence": binding(root / "writer/evidence.json")}
+               if from_captions else {
+                   "mode": "notebooklm_verbatim", "answer": answer,
+                   "provider_evidence": binding(
+                       root / "notebooklm/notebooklm-provider-evidence.json"),
+                   **({"answer_recovery": binding(recovery_path),
+                       "stored_answer": binding(root / "notebooklm/notebooklm-answer.md")}
+                      if recovery_path.exists() else {})}),
             "script": binding(script_path), "source_minutes": int(match[1]),
             "cta_transform": binding(transform_path),
             **({"fact_verifications": binding(fact_path)} if fact_path.exists() else {}),

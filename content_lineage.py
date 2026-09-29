@@ -144,14 +144,32 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
     import content_production_policy as policy
     manifest = read_json(root / 'production_manifest.json')
     origin = manifest.get('content_lineage', {})
-    if origin.get('mode') != 'notebooklm_verbatim' or manifest.get('content_rewrite_applied'):
-        raise LineageError('Shorts requires notebooklm_verbatim; rewritten recovery is not uploadable')
+    mode = origin.get('mode')
+    if mode not in ('notebooklm_verbatim', 'caption_written') or manifest.get('content_rewrite_applied'):
+        raise LineageError('Shorts requires notebooklm_verbatim or caption_written origin')
     source = manifest.get('source_id')
     answer = bound_file(root, origin.get('answer'), 'answer')
     script = bound_file(root, origin.get('script'), 'script')
     interrupted = bool(origin.get('interrupted_response_adoption'))
     recovery = {}
-    if interrupted:
+    if mode == 'caption_written':
+        # NotebookLM 응답 증거가 있던 자리를 자막 원문·지침·생성본의 묶음이 대신한다.
+        # 게이트를 끄는 것이 아니라 무엇에 묶느냐를 바꾼다.
+        transcript = bound_file(root, origin.get('transcript'), 'transcript')
+        writer_path = bound_file(root, origin.get('writer_evidence'), 'writer_evidence')
+        writer = read_json(writer_path)
+        if (writer.get('instruction_sha256') != policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
+                or writer.get('instruction_version') != policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION):
+            raise LineageError('Shorts caption_written requires the current instruction')
+        if writer.get('transcript_sha256') != sha256(transcript):
+            raise LineageError('Writer evidence does not match the saved transcript')
+        if writer.get('answer_sha256') != sha256(answer):
+            raise LineageError('Writer evidence does not match the saved answer')
+        caption_path = bound_file(root, origin.get('caption_evidence'), 'caption_evidence')
+        captions = read_json(caption_path)
+        if captions.get('source_key') != source or captions.get('transcript_sha256') != sha256(transcript):
+            raise LineageError('Caption evidence is not bound to this source')
+    elif interrupted:
         recovery = validate_interrupted_response_adoption(root, source, origin, answer, policy)
     else:
         evidence_path = bound_file(root, origin.get('provider_evidence'), 'provider_evidence')

@@ -46,6 +46,10 @@ SHORTS_NOTEBOOK = {
 FORBIDDEN_NOTEBOOK_PREFIXES = ("그지마케팅_",)
 
 SHORTS_NOTEBOOK_PROMPT = "이 영상으로 숏폼 스크립트 만들어줘."
+# 원고를 어디서 받는가. 2026-09-29에 자막 경로로 옮겼다. NotebookLM은 화면 개편에
+# 멈추고(9/25~9/28 사흘간 제작 0편), 후보당 기회가 한 번뿐이라 실패하면 그 영상을
+# 영영 못 쓰며, 브라우저 하나를 잡아 병렬 제작을 막는다. "notebooklm"으로 되돌릴 수 있다.
+SHORTS_SCRIPT_SOURCE = "captions"
 SHORTS_NOTEBOOK_INSTRUCTION_VERSION = "v23.0"
 SHORTS_NOTEBOOK_INSTRUCTION = """# 유튜브 쇼츠 스크립트 작성 메타프롬프트 v23.0
 
