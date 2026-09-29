@@ -258,10 +258,12 @@ NARRATION = {
 #
 # 2026-09-28: 9.0(약 1.43배)에서 6.3으로 내렸다. 채널 초기에 직접 만든 쇼츠는
 # 자동자막 기준 초당 5.0자로 말하는데 9.0으로 만든 영상은 7.1자였고, 같은 기간
-# 좋아요율이 3.9%에서 0.5%로 떨어졌다. 6.3은 생성된 목소리의 원래 속도라 되감기
-# 배속이 사실상 걸리지 않는다. 9.0은 그 값으로 만든 기존 영상이 계속 검증되도록
-# 승인 목록에 남긴다.
-SHORTS_NARRATION_TARGET_CPS = 6.3
+# 좋아요율이 3.9%에서 0.5%로 떨어졌다.
+# 2026-09-29: 원래 속도(6.3)로 만든 열 편을 듣고 소유자가 1.2배를 지시했다. 7.6은
+# 6.3의 약 1.21배로, 초기 직접 제작분(자동자막 5.0자)과 옛 자동 제작분(7.1자) 사이에
+# 든다. 6.3과 9.0은 그 값으로 만든 기존 영상이 계속 검증되도록 승인 목록에 남긴다.
+SHORTS_NARRATION_TARGET_CPS = 7.6
+SHORTS_NARRATION_NATIVE_TARGET_CPS = 6.3
 SHORTS_NARRATION_FAST_TARGET_CPS = 9.0
 # The pace measured from the pinned reference video, which is an unusually fast
 # talker at 10.51 -- about 1.67x. Every short scheduled on 2026-09-07 was built
@@ -270,6 +272,7 @@ SHORTS_NARRATION_FAST_TARGET_CPS = 9.0
 SHORTS_NARRATION_REFERENCE_TARGET_CPS = 10.513608428446007
 SHORTS_NARRATION_APPROVED_TARGET_CPS = (
     SHORTS_NARRATION_TARGET_CPS,
+    SHORTS_NARRATION_NATIVE_TARGET_CPS,
     SHORTS_NARRATION_FAST_TARGET_CPS,
     SHORTS_NARRATION_REFERENCE_TARGET_CPS,
 )

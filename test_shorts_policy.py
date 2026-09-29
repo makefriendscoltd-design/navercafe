@@ -1704,8 +1704,11 @@ def test_publishing_across_platforms_is_still_caught(sentence):
 
 
 def test_new_shorts_are_built_at_the_owners_narration_pace():
-    """2026-09-28에 9.0(약 1.43배 빨리감기)에서 원래 목소리 속도 6.3으로 내렸다."""
-    assert policy.SHORTS_NARRATION_TARGET_CPS == 6.3
+    """2026-09-29에 6.3(원래 속도)에서 7.6으로 올렸다. 소유자가 1.2배를 지시했다."""
+    assert policy.SHORTS_NARRATION_TARGET_CPS == 7.6
+    assert round(policy.SHORTS_NARRATION_TARGET_CPS
+                 / policy.SHORTS_NARRATION_NATIVE_TARGET_CPS, 2) == 1.21
+    assert policy.validate_narration_target_cps(6.3) == 6.3
     assert shorts_tempo.SHORTS_NARRATION_TARGET_CPS == policy.SHORTS_NARRATION_TARGET_CPS
     # 9.0으로 만든 기존 영상은 계속 검증돼야 한다.
     assert policy.validate_narration_target_cps(9.0) == 9.0
