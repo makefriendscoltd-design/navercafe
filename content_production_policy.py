@@ -365,11 +365,12 @@ CARDNEWS_EDITORIAL = {
 }
 # 2026-09-28: 제작이 하루 10편인데 발행이 2편이라 재고가 매일 8편씩 쌓였다. 예약이
 # 11월까지 밀려서 오늘 고친 설정이 실제로 공개되는 데 한 달 반이 걸리는 상태였다.
-# 발행을 제작에 맞춰 하루 10편으로 올린다. 기존 11시·20시는 그대로 두고 사이를 채운다.
+# 2026-09-29: 제작을 하루 20편으로 올리면서 발행도 20편으로 맞춘다. 기존 11시·20시를
+# 포함해 새벽 4시부터 밤 11시까지 매시간 한 자리씩 쓴다.
 SCHEDULE = {
-    "max_per_day": 10,
+    "max_per_day": 20,
     "minimum_gap_hours": 1,
-    "preferred_hours": (8, 10, 11, 13, 14, 16, 17, 19, 20, 22),
+    "preferred_hours": tuple(range(4, 24)),
     "include_weekends": True,
 }
 KST = ZoneInfo("Asia/Seoul")

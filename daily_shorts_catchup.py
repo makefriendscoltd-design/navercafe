@@ -25,7 +25,7 @@ PYTHON = PROJECT / ".venv312/bin/python"
 PRODUCER = PROJECT / "reference_daily_production.py"
 RUN_LOCK = PROJECT / "outputs/reference-daily-production/run.lock"
 KST = ZoneInfo("Asia/Seoul")
-DAILY_TARGET = 10
+DAILY_TARGET = 20
 
 
 def rendered_today(today: str | None = None, project: Path = PROJECT) -> int:

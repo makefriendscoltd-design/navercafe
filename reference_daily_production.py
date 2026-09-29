@@ -36,7 +36,7 @@ PROJECT = Path(__file__).resolve().parent
 PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
-DAILY_LIMIT = 10
+DAILY_LIMIT = 20
 # 카페·카드뉴스는 발행 큐가 하루 몇 건만 소화한다. 쇼츠만 하루 10개로 올린다.
 CAFE_DAILY_LIMIT = 2
 # 동시에 만들 편수. 렌더가 ffmpeg 을 오래 물고 있어서 이 값이 하루치 소요를 정한다.

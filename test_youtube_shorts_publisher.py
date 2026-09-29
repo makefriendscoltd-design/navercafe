@@ -585,7 +585,7 @@ def test_live_run_replans_when_upload_crosses_the_selected_slot(tmp_path: Path) 
     result = make_runner(provider_port, FakeCrm(), tmp_path, digest, clock=clock).run(manifest_path)
 
     assert result["status"] == "complete"
-    assert result["provider"]["scheduled_at"] == "2026-09-05T13:00:00+09:00"
+    assert result["provider"]["scheduled_at"] == "2026-09-05T12:00:00+09:00"
     journal = json.loads(publisher.load_manifest(manifest_path).journal.read_text(encoding="utf-8"))
     replans = [item for item in journal["history"] if item["event"] == "slot_replanned_before_schedule"]
     assert len(replans) == 1
@@ -616,7 +616,7 @@ def test_live_run_revalidates_slot_when_upload_crosses_kst_date_boundary(tmp_pat
 
     result = make_runner(provider_port, FakeCrm(), tmp_path, digest, clock=clock).run(manifest_path)
 
-    assert result["provider"]["scheduled_at"] == "2026-09-06T08:00:00+09:00"
+    assert result["provider"]["scheduled_at"] == "2026-09-06T04:00:00+09:00"
     journal = json.loads(publisher.load_manifest(manifest_path).journal.read_text(encoding="utf-8"))
     replans = [item for item in journal["history"] if item["event"] == "slot_replanned_before_schedule"]
     assert len(replans) == 1
@@ -726,7 +726,7 @@ def test_public_row_accepts_exact_date_only_evidence_and_plans_next_kst_day(
         parsed, datetime(2026, 9, 5, 9, tzinfo=KST)
     )
     # 오늘 이미 공개된 행이 있으면 다음 날로 넘긴다. 이른 시간대가 8시로 바뀌었다.
-    assert planned == datetime(2026, 9, 6, 8, tzinfo=KST)
+    assert planned == datetime(2026, 9, 6, 4, tzinfo=KST)
 
 
 def test_public_row_without_timestamp_or_date_fails_closed(tmp_path: Path) -> None:
