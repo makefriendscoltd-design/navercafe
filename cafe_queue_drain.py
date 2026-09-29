@@ -100,7 +100,8 @@ def drain(project: Path = PROJECT, *, dry_run: bool = False, timeout: int = 2400
         uncertain = publication_block(project, after, datetime.now(timezone.utc), source)
         if uncertain and uncertain.startswith('reconcile_required:'):
             return finish(uncertain)
-        if entry.get('do_not_retry') or entry.get('status') in {'blocked', 'reconcile_required'}:
+        if (entry.get('status') in {'blocked', 'reconcile_required'}
+                or (entry.get('do_not_retry') and entry.get('status') != 'published')):
             return finish('entry_requires_review')
         if entry.get('status') == 'published':
             from urllib.parse import urlparse

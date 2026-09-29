@@ -25,7 +25,7 @@ def publisher(path, calls, first_fails=False):
         if failed:
             entry.update(status='failed', next_eligible_at=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())
         else:
-            entry.update(status='published', published_url='https://cafe.naver.com/westudyssat/123')
+            entry.update(status='published', do_not_retry=True, published_url='https://cafe.naver.com/westudyssat/123')
         path.write_text(json.dumps(queue))
         return subprocess.CompletedProcess(argv, int(failed), stdout=json.dumps({
             'action': 'publish', 'source_key': entry['source_key'], 'ok': not failed}))
