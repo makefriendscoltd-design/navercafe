@@ -1,6 +1,7 @@
 // Loaded by the official ego-browser runtime; never launches another browser.
 const fs = await import('node:fs/promises');
 const payload = __CAFE_EGO_PAYLOAD__;
+const {publishedLocationReady} = await import(payload.helpersUrl);
 const task = await taskSpace(payload.space.spaceId);
 const page = task.page(payload.stage === 'precheck' ? payload.space.checkPage : payload.space.page);
 const input = payload.input;
@@ -22,7 +23,7 @@ async function state() {
 function verify(s) {
  const meaningful=s.components.filter(c=>c.type!=='text'||norm(c.text));
  const prefix=meaningful.slice(0,input.sequence.length);
- const checks={title:s.title===input.title,category:s.category===input.category,sequence:JSON.stringify(prefix.map(c=>c.type))===JSON.stringify(input.sequence),quotes:JSON.stringify(s.components.filter(c=>c.type==='quote').map(c=>norm(c.quote)))===JSON.stringify(input.quotes.map(norm)),body:input.texts.every(t=>norm(s.paragraphs.join('')).includes(norm(t))),images:s.components.filter(c=>c.type==='image').length===5,imagesLoaded:s.components.filter(c=>c.type==='image').every(c=>c.images.some(x=>x.loaded&&x.src.startsWith('https://cafeptthumb-phinf.pstatic.net/'))),cta:s.paragraphs.some(t=>norm(t)===norm(input.tail.cta_text)),familyRaw:s.paragraphs.includes(input.tail.family_day_url),sourceLabel:s.paragraphs.includes(input.tail.source_label),sourceRaw:s.paragraphs.includes(input.tail.source_url),sourceLongRaw:s.paragraphs.includes(input.tail.source_long_url),og:s.components.filter(c=>c.type==='og').length===1,embed:s.components.filter(c=>c.type==='embed').length===1&&s.components.filter(c=>c.type==='embed')[0].images.some(x=>x.src.includes('/'+input.source_key+'/')),tailOrder:JSON.stringify(meaningful.slice(input.sequence.length).map(c=>c.type))===JSON.stringify(['text','og','text','embed'])};
+ const checks={title:s.title===input.title,category:s.category===input.category,sequence:JSON.stringify(prefix.map(c=>c.type))===JSON.stringify(input.sequence),quotes:JSON.stringify(s.components.filter(c=>c.type==='quote').map(c=>norm(c.quote)))===JSON.stringify(input.quotes.map(norm)),body:input.texts.every(t=>norm(s.paragraphs.join('')).includes(norm(t))),images:s.components.filter(c=>c.type==='image').length===5,imagesLoaded:s.components.filter(c=>c.type==='image').every(c=>c.images.some(x=>x.loaded&&x.src.startsWith('https://cafeptthumb-phinf.pstatic.net/'))),cta:s.paragraphs.some(t=>norm(t)===norm(input.tail.cta_text)),familyRaw:s.paragraphs.includes(input.tail.family_day_url),sourceLabel:s.paragraphs.includes(input.tail.source_label),sourceRaw:s.paragraphs.includes(input.tail.source_url),sourceLongRaw:s.paragraphs.includes(input.tail.source_long_url),og:s.components.filter(c=>c.type==='og').length===1,embed:s.components.filter(c=>c.type==='embed').length===1&&s.components.filter(c=>c.type==='embed')[0].images.some(x=>x.src.includes('/'+input.source_key+'/')),tailOrder:JSON.stringify(meaningful.slice(input.sequence.length-(input.sequence.at(-1)==='text'?1:0)).map(c=>c.type))===JSON.stringify(['text','og','text','embed'])};
  return {status:Object.values(checks).every(Boolean)?'pass':'fail',checks,state:s};
 }
 if(payload.stage==='precheck') {
@@ -69,7 +70,8 @@ if(payload.stage==='precheck') {
   }
   lastKind=token.kind;
  }
- await tail();await page.keyboard.paste(input.tail.cta_text);
+ if(lastKind==='text'){await page.keyboard.press('Enter');await page.keyboard.press('Enter');}else await tail();
+ await page.keyboard.paste(input.tail.cta_text);
  await page.waitForFunction(text=>document.querySelector('.se-components-wrap').textContent.includes(text),input.tail.cta_text,{timeout:10000});
  await page.keyboard.press('Enter');await page.keyboard.press('Enter');
  await page.keyboard.paste(input.tail.family_day_url);await page.keyboard.press('Enter');
@@ -93,7 +95,7 @@ if(payload.stage==='precheck') {
  // Python persists an uncertainty barrier before starting this stage.
  const selector=await page.evaluate(()=>{const e=[...document.querySelectorAll('a.BaseButton--skinGreen,button.btn_register')].filter(e=>e.textContent.trim()==='등록');if(e.length!==1)throw Error('register_not_unique');return e[0].tagName==='A'?'a.BaseButton--skinGreen':'button.btn_register';});
  await page.click(selector);
- await page.waitForFunction(()=>!document.querySelector('textarea[placeholder="제목을 입력해 주세요."]')&&/\/articles\/\d+|\/westudyssat\/\d+/.test(location.href),undefined,{timeout:30000});
+ await page.waitForFunction(publishedLocationReady,undefined,{timeout:30000});
  emit({status:'published',url:await page.url()});
 } else if(payload.stage==='verify_public') {
  await page.goto(payload.url);await page.waitForFunction(()=>!!document.querySelector('.article_viewer,.ArticleContentBox'),undefined,{timeout:25000});

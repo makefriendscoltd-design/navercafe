@@ -47,7 +47,7 @@ def browser(stage: str, data: dict, **kwargs) -> dict:
     command = shutil.which('ego-browser')
     if not command:
         raise RuntimeError('ego-browser is not installed/onboarded')
-    script = (PROJECT / 'cafe_ego_browser.mjs').read_text().replace('__CAFE_EGO_PAYLOAD__', json.dumps({'stage': stage, 'space': space, 'input': data, **kwargs}, ensure_ascii=False))
+    script = (PROJECT / 'cafe_ego_browser.mjs').read_text().replace('__CAFE_EGO_PAYLOAD__', json.dumps({'stage': stage, 'space': space, 'input': data, 'helpersUrl': (PROJECT / 'cafe_ego_url.mjs').as_uri(), **kwargs}, ensure_ascii=False))
     proc = subprocess.run([command, 'nodejs'], input=script,
                           text=True, capture_output=True, timeout=900 if stage == 'fill' else 180)
     if proc.returncode:

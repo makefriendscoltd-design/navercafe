@@ -99,7 +99,7 @@ def check_live_prompt() -> None:
                                cwd=PROJECT, text=True, capture_output=True, check=True, timeout=10).stdout
     if canonical != committed:
         raise RuntimeError('canonical_prompt_has_uncommitted_changes')
-    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', '*.py', 'cafe_ego_browser.mjs', 'SHORTS_SPEC.md', 'AGENTS.md'],
+    subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', '*.py', '*.mjs', 'SHORTS_SPEC.md', 'AGENTS.md'],
                    cwd=PROJECT, capture_output=True, check=True, timeout=10)
     proc = subprocess.run(['orca', 'automations', 'show', AUTOMATION_ID, '--json'],
                           text=True, capture_output=True, check=True, timeout=20)
