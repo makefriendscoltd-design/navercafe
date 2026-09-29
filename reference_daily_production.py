@@ -39,6 +39,9 @@ REPORT_DIR = PROJECT / "outputs/reference-daily-production"
 DAILY_LIMIT = 10
 # 카페·카드뉴스는 발행 큐가 하루 몇 건만 소화한다. 쇼츠만 하루 10개로 올린다.
 CAFE_DAILY_LIMIT = 2
+# 동시에 만들 편수. 렌더가 ffmpeg 을 오래 물고 있어서 이 값이 하루치 소요를 정한다.
+# 이 맥에서 3개까지는 서로 느려지지 않았다.
+PRODUCE_WORKERS = 3
 from youtube_shorts_aside_adapter import CHANNEL_ID, CHANNEL_NAME
 
 EXPECTED_CHANNEL = CHANNEL_NAME
@@ -92,11 +95,15 @@ finally{try{await p.close();}catch(_){}}
     return out
 
 
-def produce(source_key: str, today: str, *, shorts_only: bool = False) -> dict:
+def produce(source_key: str, today: str, *, shorts_only: bool = False,
+            publish_now: bool = True) -> dict:
     """Shorts render, Cafe candidate and card deck for one source.
 
     `shorts_only`면 카페·카드뉴스 단계를 건너뛴다. 쇼츠는 하루 10개를 만들지만
     카페 발행 큐는 그만큼 소화하지 못해서, 다 만들면 후보만 쌓인다.
+
+    `publish_now`가 거짓이면 만들기만 하고 발행은 부르는 쪽에 맡긴다. 제작은 여러 편을
+    동시에 돌릴 수 있지만 발행은 Studio 브라우저 하나를 쓰므로 한 줄로 해야 한다.
     """
     steps: dict[str, str] = {}
     import content_run_state
@@ -119,7 +126,7 @@ def produce(source_key: str, today: str, *, shorts_only: bool = False) -> dict:
     if shorts_only:
         steps["cafe_answer"] = "skip: shorts-only"
         verdict = content_acceptance.audit(root)
-        published = publish(root, verdict)
+        published = publish(root, verdict) if publish_now else {}
         provider = content_run_state.source_state(PROJECT, source_key)
         return {"source_key": source_key, "root": str(root), "steps": steps,
                 "published": published, "provider": provider["channels"],
@@ -153,7 +160,7 @@ def produce(source_key: str, today: str, *, shorts_only: bool = False) -> dict:
     # Exit codes said every one of these runs succeeded while the community body
     # was missing, decks carried no anchor and titles were still sentinels.
     verdict = content_acceptance.audit(root)
-    published = publish(root, verdict)
+    published = publish(root, verdict) if publish_now else {}
     provider = content_run_state.source_state(PROJECT, source_key)
     return {"source_key": source_key, "root": str(root), "steps": steps,
             "published": published, "provider": provider["channels"],
@@ -272,6 +279,8 @@ def publish(root: Path, verdict: dict) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DAILY_LIMIT)
+    parser.add_argument("--workers", type=int, default=PRODUCE_WORKERS,
+                        help="동시에 만들 편수. 발행은 항상 한 줄로 한다")
     parser.add_argument("--cafe-limit", type=int, default=CAFE_DAILY_LIMIT,
                         help="이 개수까지만 카페·카드뉴스도 만든다. 나머지는 쇼츠만.")
     parser.add_argument("--dry-run", action="store_true")
@@ -326,14 +335,40 @@ def main(argv=None) -> int:
     if args.dry_run:
         return 0
 
-    for order, candidate in enumerate(selected):
+    # 제작은 동시에, 발행은 한 줄로. 렌더는 ffmpeg 이 도는 동안 아무것도 안 하고 기다려서
+    # 하루치의 시간 대부분을 먹는다(9/29 실측: 편당 16분인데 편 사이 간격이 30~45분).
+    # 반면 발행은 Studio 브라우저 하나를 쓰므로 겹치면 서로를 끊는다.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def made(order_and_candidate):
+        order, candidate = order_and_candidate
         try:
-            report["results"].append(
-                produce(candidate["id"], today, shorts_only=order >= args.cafe_limit))
+            return produce(candidate["id"], today,
+                           shorts_only=order >= args.cafe_limit, publish_now=False)
         except Exception:
-            report["results"].append({"source_key": candidate["id"], "steps": {},
-                                      "complete": False, "error": traceback.format_exc()[-400:]})
-        print(json.dumps(report["results"][-1], ensure_ascii=False), flush=True)
+            return {"source_key": candidate["id"], "steps": {}, "complete": False,
+                    "error": traceback.format_exc()[-400:]}
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        made_results = list(pool.map(made, enumerate(selected)))
+    for result in made_results:
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+
+    import content_acceptance
+    for result in made_results:
+        root = Path(result.get("root") or "")
+        if not result.get("steps") or not root.is_dir():
+            report["results"].append(result)
+            continue
+        try:
+            verdict = content_acceptance.audit(root)
+            result["published"] = publish(root, verdict)
+            result["acceptance"] = verdict["status"]
+        except Exception:
+            result["published"] = {"error": traceback.format_exc()[-300:]}
+        report["results"].append(result)
+        print(json.dumps({"source_key": result.get("source_key"),
+                          "published": result.get("published")}, ensure_ascii=False), flush=True)
 
     import content_run_state
     seen = content_run_state.read_json(selection.SEEN_PATH).get("videos", {})

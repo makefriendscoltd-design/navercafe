@@ -1,5 +1,7 @@
 import json
 import subprocess
+import time
+from pathlib import Path
 
 import reference_daily_production as daily
 import content_run_state as state
@@ -53,3 +55,48 @@ def test_successful_handoff_is_not_reported_as_a_failed_job(tmp_path, monkeypatc
     assert len(reports) == 2
     assert len((tmp_path / 'reports/runs.jsonl').read_text().splitlines()) == 2
     assert all(not json.loads(p.read_text())['results'][0]['complete'] for p in reports)
+
+
+def test_production_runs_in_parallel_but_publishing_stays_serial(tmp_path, monkeypatch):
+    """렌더는 겹쳐도 되지만 발행은 Studio 브라우저 하나를 쓰므로 한 줄이어야 한다."""
+    import threading
+    import reference_daily_production as daily
+
+    live = []
+    peak = []
+    publish_order = []
+    lock = threading.Lock()
+
+    def fake_produce(key, today, *, shorts_only=False, publish_now=True):
+        assert publish_now is False, "제작 단계에서는 발행하지 않는다"
+        with lock:
+            live.append(key)
+            peak.append(len(live))
+        time.sleep(0.05)
+        with lock:
+            live.remove(key)
+        root = tmp_path / f"{key}-{today}"
+        root.mkdir(parents=True, exist_ok=True)
+        return {"source_key": key, "root": str(root), "steps": {"shorts_render": "ok"}}
+
+    def fake_publish(root, verdict):
+        with lock:
+            publish_order.append(Path(root).name)
+        return {"shorts_publish": "ok"}
+
+    monkeypatch.setattr(daily, "produce", fake_produce)
+    monkeypatch.setattr(daily, "publish", fake_publish)
+    monkeypatch.setattr(daily, "notebook_headroom", lambda: {"cafe": 5, "shorts": 5})
+    monkeypatch.setattr(daily.selection, "select", lambda candidates, limit=None: (
+        [{"id": f"key{i}", "title": "t"} for i in range(4)], []))
+    monkeypatch.setattr(daily.selection, "load_candidates", lambda: [])
+    import content_acceptance
+    monkeypatch.setattr(content_acceptance, "audit", lambda root: {"status": "pass", "channels": {}})
+    monkeypatch.setattr(daily, "REPORT_DIR", tmp_path / "report")
+    from aside_browser import ensure_daemon  # noqa: F401
+    monkeypatch.setattr(daily, "PROJECT", tmp_path)
+    monkeypatch.setattr("aside_browser.ensure_daemon", lambda: True)
+
+    daily.main(["--limit", "4", "--workers", "3"])
+    assert max(peak) > 1, "제작이 한 줄로만 돌았다"
+    assert len(publish_order) == 4 and len(set(publish_order)) == 4
