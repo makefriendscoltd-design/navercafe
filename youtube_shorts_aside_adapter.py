@@ -116,6 +116,13 @@ def _require_exact_channel(manifest: publisher.PublishManifest) -> None:
 def _default_aside_runner() -> AsideRunner:
     """Resolve the approved runner lazily so dry validation has zero access."""
 
+    from youtube_shorts_ego import EgoRuntimeError, backend, provider_runner
+
+    try:
+        if backend() == "ego":
+            return provider_runner()
+    except EgoRuntimeError as exc:
+        raise LiveDependencyError(str(exc)) from exc
     try:
         from aside_browser import (
             JS_COMMON,
@@ -297,7 +304,7 @@ try{p=await openTab(`https://studio.youtube.com/channel/${payload.channel_id}?sh
 SAVE_ATTACHED_METADATA_JS = r"""
 let p=null,saveClicks=0;
 const read=async()=>({title:((await p.locator('#title-textarea #textbox').innerText())||'').trim(),description:((await p.locator('#description-textarea #textbox').innerText())||'').trim()});
-const openExact=async()=>{p=await openTab('https://studio.youtube.com/video/'+payload.id+'/edit');const end=Date.now()+30000;let ready=false;while(Date.now()<end&&!ready){const body=await p.locator('body').innerText();ready=p.url().includes('/video/'+payload.id+'/edit')&&body.includes(payload.channel)&&body.includes('final.mp4')&&await p.locator('#title-textarea #textbox').count()===1&&await p.locator('#description-textarea #textbox').count()===1;if(!ready)await sleep(250);}if(!ready)throw Error('exact-attached-video-binding-failed');};
+const openExact=async()=>{p=await openTab('https://studio.youtube.com/video/'+payload.id+'/edit');const end=Date.now()+30000;let ready=false;while(Date.now()<end&&!ready){const body=await p.locator('body').innerText();ready=p.url().includes('/video/'+payload.id+'/edit')&&(body.includes(payload.channel)||(!!payload.channel_id&&await p.locator('a[href="/channel/'+payload.channel_id+'"]').count()>0))&&body.includes('final.mp4')&&await p.locator('#title-textarea #textbox').count()===1&&await p.locator('#description-textarea #textbox').count()===1;if(!ready)await sleep(250);}if(!ready)throw Error('exact-attached-video-binding-failed');};
 try{await openExact();const before=await read();if(!['final',payload.sentinel,payload.title].includes(before.title)||!['',payload.description.trim()].includes(before.description))throw Error('unexpected-attached-metadata');if(before.title!==payload.title||before.description!==payload.description.trim()){for(const [selector,value] of [['#title-textarea #textbox',payload.title],['#description-textarea #textbox',payload.description]]){const loc=p.locator(selector);if(await loc.count()!==1)throw Error('metadata-cardinality');await loc.click();await p.keyboard.press('Meta+A');await p.keyboard.press('Backspace');await loc.pressSequentially(value,{delay:1});await p.keyboard.press('Tab');if((await loc.innerText()).trim()!==value.trim())throw Error('metadata-entry-mismatch');}const save=p.locator('ytcp-button#save');if(await save.count()!==1||!await save.isEnabled())throw Error('metadata-save-unavailable');saveClicks++;await save.click();const end=Date.now()+30000;while(Date.now()<end&&await save.isEnabled())await sleep(250);if(await save.isEnabled())throw Error('metadata-save-unconfirmed');}await p.close();p=null;await openExact();const after=await read();if(after.title!==payload.title||after.description!==payload.description.trim())throw Error('persisted-metadata-mismatch');emit({status:'pass',provider_id:payload.id,save_clicks:saveClicks,title:after.title,description:after.description,fresh_read_verified:true});}catch(error){emit({status:'blocked',provider_id:payload.id,save_clicks:saveClicks,error:String(error?.message||error)});}finally{try{if(p)await p.close();}catch(_){}}
 """
 
@@ -1141,6 +1148,7 @@ def run_live(manifest_path: str | Path) -> dict[str, Any]:
             receipt = super().attach_once(manifest, draft_sentinel=draft_sentinel)
             metadata = self._run(SAVE_ATTACHED_METADATA_JS, {
                 "id": receipt["provider_id"], "channel": manifest.expected_channel,
+                "channel_id": CHANNEL_ID,
                 "title": manifest.title, "description": manifest.description,
                 "sentinel": draft_sentinel,
             }, cwd=manifest.video.parent, timeout=150)

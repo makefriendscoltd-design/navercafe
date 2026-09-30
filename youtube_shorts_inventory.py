@@ -84,8 +84,12 @@ def capture(root: Path) -> dict:
     payload = {'list_url': STUDIO_SHORTS_URL, 'channel_id': CHANNEL_ID, 'scan_id': uuid.uuid4().hex,
                'channel_switcher_url': 'https://www.youtube.com/channel_switcher',
                'channel_name': '나민수 AI', 'channel_handle': '@naminsoo_aimax'}
-    result = run_repl(JS_COMMON + '\nconst payload=' + _payload_expression(payload) + ';\n' + CAPTURE_JS,
-                      account='u0', timeout=150, cwd=root)
+    from youtube_shorts_ego import backend, run_js
+    if backend() == 'ego':
+        result = run_js(CAPTURE_JS, payload, cwd=root, timeout=150)
+    else:
+        result = run_repl(JS_COMMON + '\nconst payload=' + _payload_expression(payload) + ';\n' + CAPTURE_JS,
+                          account='u0', timeout=150, cwd=root)
     (root / f'inventory-provider-model-{payload["scan_id"]}.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
