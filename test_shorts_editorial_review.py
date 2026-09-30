@@ -92,3 +92,15 @@ def test_fixed_channel_cta_is_not_mistaken_for_source_claim():
     prompt = review._prompt("다섯째, 원문 행동.\n\n12분 짜리 영상 내용을 모두 정리했습니다.\n\n이 자료 궁금하신 분들은 댓글에 조사 남겨주세요.", "source")
     assert "댓글에 조사" not in prompt
     assert "다섯째, 원문 행동." in prompt
+
+
+def test_prompt_uses_canonical_fixed_usd_conversion_rule():
+    from content_production_policy import SHORTS_NOTEBOOK_INSTRUCTION
+
+    canonical = next(line for line in SHORTS_NOTEBOOK_INSTRUCTION.splitlines()
+                     if line.startswith("7. 원본의 금액이 달러면"))
+    prompt = review._prompt("원고", "The source says it cost $0.04.")
+    assert canonical in prompt
+    assert "fixed 1,356 KRW rate" in prompt
+    assert "not a current exchange-rate claim" in prompt
+    assert "source USD amount is absent" in prompt
