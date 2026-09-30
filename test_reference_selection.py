@@ -198,3 +198,16 @@ def test_source_whose_shorts_already_published_is_not_offered(monkeypatch):
 
     state["channels"]["shorts"] = {"status": "missing"}
     assert sel.shorts_done("abcdefghijk") is False
+
+
+def test_still_source_is_rejected_and_detected(tmp_path):
+    import json
+    import reference_selection as sel
+    assert sel.rejection_reason({"still_source": True}) == "원본 화면이 거의 정지"
+    shorts = tmp_path / "outputs" / "6NApXtLJcfc-20260926" / "shorts"
+    shorts.mkdir(parents=True)
+    (shorts / "visual_validation.json").write_text(json.dumps({"status": "rejected_still_source"}))
+    other = tmp_path / "outputs" / "abcdefghijk-20260926" / "shorts"
+    other.mkdir(parents=True)
+    (other / "visual_validation.json").write_text(json.dumps({"status": "pass"}))
+    assert sel.still_source_keys(tmp_path) == {"6NApXtLJcfc"}

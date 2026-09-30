@@ -85,6 +85,8 @@ def rejection_reason(candidate: dict) -> str | None:
         return "쇼츠는 이미 발행 완료"
     if candidate.get("attempt_locked"):
         return "이전 NotebookLM 시도가 잠김"
+    if candidate.get("still_source"):
+        return "원본 화면이 거의 정지"
     if channel in VENDOR_CHANNELS:
         return "벤더·컨퍼런스 발표"
     if channel in COURSE_MILL_CHANNELS:
@@ -194,6 +196,23 @@ def attempt_locked_keys(project: Path = PROJECT) -> set[str]:
     return locked
 
 
+def still_source_keys(project: Path = PROJECT) -> set[str]:
+    """렌더에서 원본 화면이 거의 멈춰 있다고 거부된 원본들.
+
+    다시 뽑아도 같은 화면이라 또 거부된다. 재시도 목록 맨 앞에 계속 남아 그날의 자리를
+    먹지 않도록 후보에서 빼고, 빈 자리는 다음 따라잡기 실행이 다른 레퍼런스로 채운다.
+    """
+    keys: set[str] = set()
+    for path in project.glob("outputs/*/shorts/visual_validation.json"):
+        try:
+            status = json.loads(path.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            continue
+        if status == "rejected_still_source":
+            keys.add(path.parent.parent.name.rsplit("-", 1)[0])
+    return keys
+
+
 def load_candidates(seen_path: Path | None = None) -> list[dict]:
     """Every discovered reference that has no production yet."""
     path = seen_path or SEEN_PATH
@@ -201,6 +220,7 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
     out = []
     attempts = _last_attempts()
     locked = attempt_locked_keys()
+    still = still_source_keys()
     for vid, meta in (seen.get("videos") or {}).items():
         if already_produced(vid):
             continue
@@ -216,6 +236,7 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
             "has_output": bool(list((PROJECT / "outputs").glob(vid + "-20??????"))),
             "last_attempt": attempts.get(vid, ""),
             "attempt_locked": vid in locked,
+            "still_source": vid in still,
             "shorts_done": shorts_done(vid),
         })
     return out

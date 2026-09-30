@@ -176,9 +176,11 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
         evidence_path = bound_file(root, origin.get('provider_evidence'), 'provider_evidence')
         provider = read_json(evidence_path)
         instruction = provider.get('instructionEvidence') or {}
+        # 2026-09-30 사용자 결정: 예전 지침 버전으로 이미 검증된 대본도 쓴다.
+        # 지침 기록이 있는지만 보고, 현재 버전과 같은지는 따지지 않는다.
         if (provider.get('notebookId') != policy.SHORTS_NOTEBOOK['id']
-                or instruction.get('sha256') != policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
-                or instruction.get('version') != policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION
+                or not re.fullmatch(r'[0-9a-f]{64}', str(instruction.get('sha256') or ''))
+                or not str(instruction.get('version') or '').strip()
                 or provider.get('targetOnlyBefore') is not True or provider.get('targetOnlyAfter') is not True):
             raise LineageError('Shorts requires current instruction and exact selected-source evidence')
         recovery_entry = origin.get('answer_recovery')
