@@ -200,6 +200,32 @@ def test_source_whose_shorts_already_published_is_not_offered(monkeypatch):
     assert sel.shorts_done("abcdefghijk") is False
 
 
+def test_validated_review_candidate_is_not_offered_again(tmp_path, monkeypatch):
+    root = tmp_path / "outputs/abcdefghijk-20260930"
+    canonical = root / "shorts/final.mp4"
+    review = root / "shorts-review-20260930/final.mp4"
+    canonical.parent.mkdir(parents=True)
+    review.parent.mkdir(parents=True)
+    canonical.write_bytes(b"bad")
+    review.write_bytes(b"good")
+    monkeypatch.setattr("shorts_daily_production.validated_shorts_root",
+                        lambda candidate, candidate_name="shorts":
+                        candidate_name == "shorts-review-20260930")
+    assert sel.local_shorts_done("abcdefghijk", tmp_path) is True
+    assert sel.rejection_reason({"local_shorts_done": True, "minutes": 20}) == \
+        "검증된 쇼츠 산출물 있음"
+
+
+def test_previous_delivery_manifest_excludes_every_source(tmp_path):
+    delivery = tmp_path / "outputs/shorts-delivery-20260930/delivery.json"
+    delivery.parent.mkdir(parents=True)
+    delivery.write_text(json.dumps({"items": [
+        {"source_key": "abcdefghijk"}, {"source_key": "zyxwvutsrqp"}]}))
+    assert sel.delivered_source_keys(tmp_path) == {"abcdefghijk", "zyxwvutsrqp"}
+    assert sel.rejection_reason({"delivered_before": True, "minutes": 20}) == \
+        "이전 쇼츠 납품에 포함"
+
+
 def test_still_source_is_rejected_and_detected(tmp_path):
     import json
     import reference_selection as sel

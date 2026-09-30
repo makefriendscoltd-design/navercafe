@@ -227,10 +227,24 @@ def _write_from_captions(source_key: str, root: Path, media: Path | None = None)
         return None
 
 
+def _refuse_duplicate_canonical(source_key: str, candidate_name: str) -> None:
+    """Never rebuild canonical when delivery already exists; review candidates are explicit repairs."""
+    if candidate_name != "shorts":
+        return
+    import reference_selection
+    if source_key in reference_selection.delivered_source_keys(PROJECT):
+        raise RuntimeError("이전 쇼츠 납품에 포함되어 canonical 재준비를 거부합니다.")
+    if reference_selection.shorts_done(source_key):
+        raise RuntimeError("쇼츠가 이미 발행 완료되어 canonical 재준비를 거부합니다.")
+    if reference_selection.local_shorts_done(source_key):
+        raise RuntimeError("검증된 canonical/review 쇼츠가 있어 canonical 재준비를 거부합니다.")
+
+
 def prepare(source_key: str, *, candidate_name: str = "shorts") -> dict:
     if not re.fullmatch(r"shorts(?:-[a-zA-Z0-9_-]+)?", candidate_name):
         raise ValueError("후보 이름은 shorts 또는 shorts-로 시작하는 단일 폴더명이어야 합니다.")
     source_root = _source_root(source_key)
+    _refuse_duplicate_canonical(source_key, candidate_name)
     root = source_root / candidate_name
     if (root / "final.mp4").exists():
         raise RuntimeError("이미 렌더된 후보가 있습니다. 새로 만들지 말고 그것을 검토·복구하세요.")

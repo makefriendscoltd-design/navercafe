@@ -83,6 +83,10 @@ def rejection_reason(candidate: dict) -> str | None:
     minutes = candidate.get("minutes")
     if candidate.get("shorts_done"):
         return "쇼츠는 이미 발행 완료"
+    if candidate.get("delivered_before"):
+        return "이전 쇼츠 납품에 포함"
+    if candidate.get("local_shorts_done"):
+        return "검증된 쇼츠 산출물 있음"
     if candidate.get("attempt_locked"):
         return "이전 NotebookLM 시도가 잠김"
     if candidate.get("still_source"):
@@ -144,6 +148,36 @@ def shorts_done(source_key: str) -> bool:
     if isinstance(shorts, str):  # 옛 형식
         return shorts == "complete"
     return shorts.get("status") == "complete"
+
+
+def local_shorts_done(source_key: str, project: Path | None = None) -> bool:
+    """True when any canonical or review candidate already passes delivery gates."""
+    from shorts_daily_production import validated_shorts_root
+
+    project = project or PROJECT
+    for root in project.glob(f"outputs/{source_key}-20??????"):
+        for final in root.glob("shorts*/final.mp4"):
+            name = final.parent.name
+            if name != "shorts" and not name.startswith("shorts-review-"):
+                continue
+            if validated_shorts_root(root, candidate_name=name):
+                return True
+    return False
+
+
+def delivered_source_keys(project: Path = PROJECT) -> set[str]:
+    """Source IDs frozen into an earlier delivery manifest must never be rebuilt."""
+    keys: set[str] = set()
+    for path in project.glob("outputs/shorts-delivery-*/delivery.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for item in payload.get("items") or []:
+            key = str(item.get("source_key") or "") if isinstance(item, dict) else ""
+            if key:
+                keys.add(key)
+    return keys
 
 
 def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
@@ -221,6 +255,7 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
     attempts = _last_attempts()
     locked = attempt_locked_keys()
     still = still_source_keys()
+    delivered = delivered_source_keys(PROJECT)
     for vid, meta in (seen.get("videos") or {}).items():
         if already_produced(vid):
             continue
@@ -238,6 +273,8 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
             "attempt_locked": vid in locked,
             "still_source": vid in still,
             "shorts_done": shorts_done(vid),
+            "local_shorts_done": local_shorts_done(vid, PROJECT),
+            "delivered_before": vid in delivered,
         })
     return out
 
