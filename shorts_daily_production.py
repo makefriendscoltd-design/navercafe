@@ -36,16 +36,20 @@ def _read(path: Path) -> dict:
         return {}
 
 
-def validation_problems(root: Path) -> list[str]:
+def validation_problems(root: Path, *, candidate_name: str = "shorts") -> list[str]:
     """Return every reason this root cannot be counted as a finished Short."""
     import content_acceptance
     from content_production_policy import validate_shorts_render_bundle
 
-    problems = list(content_acceptance.check_shorts(root))
-    review = root / "shorts/editorial_review.json"
+    shorts = root / candidate_name
+    problems = list(content_acceptance.check_shorts(root) if candidate_name == "shorts" else
+                    content_acceptance.check_shorts(root, candidate_name=candidate_name))
+    review = shorts / "editorial_review.json"
+    if candidate_name != "shorts" and not review.is_file():
+        problems.append("수정 후보의 원문 편집 검토 증거 없음")
     if review.exists():
         evidence = _read(review)
-        script = root / "shorts/07_script_final.txt"
+        script = shorts / "07_script_final.txt"
         if not evidence:
             problems.append("편집 검토 증거가 비었거나 손상됨")
         elif evidence.get("status") != "pass":
@@ -57,18 +61,18 @@ def validation_problems(root: Path) -> list[str]:
             bound = evidence.get("script_sha256") or evidence.get("scriptSha256")
             if bound != digest:
                 problems.append("편집 검토가 현재 대본 해시에 결속되지 않음")
-            transcript = root / "shorts/captions/transcript.txt"
+            transcript = shorts / "captions/transcript.txt"
             transcript_bound = evidence.get("transcript_sha256") or evidence.get("transcriptSha256")
             if not transcript.is_file():
                 problems.append("편집 검토의 로컬 전사문 없음")
             elif transcript_bound != hashlib.sha256(transcript.read_bytes()).hexdigest():
                 problems.append("편집 검토가 현재 전사문 해시에 결속되지 않음")
             if evidence.get("headcopy_sha256"):
-                headcopy = root / "shorts/06_headcopy_candidates.txt"
+                headcopy = shorts / "06_headcopy_candidates.txt"
                 if (not headcopy.is_file() or evidence["headcopy_sha256"] !=
                         hashlib.sha256(headcopy.read_bytes()).hexdigest()):
                     problems.append("편집 검토가 현재 헤드카피 해시에 결속되지 않음")
-    final = root / "shorts/final.mp4"
+    final = shorts / "final.mp4"
     if not problems:
         try:
             validate_shorts_render_bundle(final)
@@ -77,8 +81,8 @@ def validation_problems(root: Path) -> list[str]:
     return problems
 
 
-def validated_shorts_root(root: Path) -> bool:
-    return not validation_problems(Path(root))
+def validated_shorts_root(root: Path, *, candidate_name: str = "shorts") -> bool:
+    return not validation_problems(Path(root), candidate_name=candidate_name)
 
 
 def prepared_shorts_root(root: Path) -> bool:
@@ -96,10 +100,15 @@ def prepared_shorts_root(root: Path) -> bool:
 
 def validated_today(today: str, project: Path = PROJECT) -> set[str]:
     keys: set[str] = set()
-    for final in project.glob("outputs/*/shorts/final.mp4"):
+    for final in project.glob("outputs/*/shorts*/final.mp4"):
         made = datetime.fromtimestamp(final.stat().st_mtime, KST).strftime("%Y-%m-%d")
         root = final.parent.parent
-        if made == today and validated_shorts_root(root):
+        name = final.parent.name
+        if name != "shorts" and not name.startswith("shorts-review-"):
+            continue
+        valid = (validated_shorts_root(root) if name == "shorts" else
+                 validated_shorts_root(root, candidate_name=name)) if made == today else False
+        if valid:
             keys.add(root.name.rsplit("-", 1)[0])
     return keys
 

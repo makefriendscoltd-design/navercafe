@@ -3,10 +3,25 @@ from __future__ import annotations
 import json
 import hashlib
 import threading
+import os
 from pathlib import Path
 from datetime import datetime, timedelta
 
 import shorts_daily_production as daily
+
+
+def test_reviewed_variants_count_once_for_the_same_source(tmp_path, monkeypatch):
+    root = tmp_path / "outputs/abcdefghijk-20260930"
+    for name in ("shorts", "shorts-review-one", "shorts-review-two"):
+        folder = root / name
+        folder.mkdir(parents=True)
+        final = folder / "final.mp4"
+        final.write_bytes(b"video")
+        stamp = datetime(2026, 9, 30, 12, tzinfo=daily.KST).timestamp()
+        os.utime(final, (stamp, stamp))
+    monkeypatch.setattr(daily, "validated_shorts_root",
+                        lambda root, candidate_name="shorts": candidate_name != "shorts")
+    assert daily.validated_today("2026-09-30", tmp_path) == {"abcdefghijk"}
 
 
 def test_validation_requires_acceptance_and_upload_bundle(tmp_path, monkeypatch):
