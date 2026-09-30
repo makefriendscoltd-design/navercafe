@@ -83,3 +83,9 @@ def test_headcopy_and_multiple_source_passages_are_checked(tmp_path, monkeypatch
     result = review.review(shorts)
     assert result["status"] == "fail"
     assert result["failed_sections"] == ["headcopy"]
+
+
+def test_fixed_channel_cta_is_not_mistaken_for_source_claim():
+    prompt = review._prompt("다섯째, 원문 행동.\n\n12분 짜리 영상 내용을 모두 정리했습니다.\n\n이 자료 궁금하신 분들은 댓글에 조사 남겨주세요.", "source")
+    assert "댓글에 조사" not in prompt
+    assert "다섯째, 원문 행동." in prompt
