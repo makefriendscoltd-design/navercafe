@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -67,6 +68,31 @@ def test_runner_replaces_failures_until_target_is_met(tmp_path, monkeypatch):
     assert {row["source_key"] for row in attempts} == {row["id"] for row in candidates}
     assert rows[-1]["summary"]["validated_today"] == 2
     assert rows[-1]["summary"]["attempted"] == 3
+    assert rows[0]["run"]["selected_source_keys"] == [row["id"] for row in candidates]
+
+
+def test_runner_refills_idle_slot_before_slow_peer_finishes(tmp_path, monkeypatch):
+    candidates = [{"id": key, "title": key}
+                  for key in ("failure0001", "slowpass001", "replacement")]
+    monkeypatch.setattr(daily, "PROJECT", tmp_path)
+    monkeypatch.setattr(daily, "REPORT_DIR", tmp_path / "reports")
+    monkeypatch.setattr(daily, "SHARED_LOCK", tmp_path / "shared.lock")
+    monkeypatch.setattr(daily, "validated_today", lambda today: set())
+    monkeypatch.setattr(daily.selection, "load_candidates", lambda: candidates)
+    monkeypatch.setattr(daily.selection, "select", lambda rows, limit=None: (rows, []))
+    replacement_started = threading.Event()
+
+    def fake_produce(key, today):
+        if key == "failure0001":
+            return {"source_key": key, "status": "failed", "steps": {}}
+        if key == "slowpass001":
+            assert replacement_started.wait(1), "빈 슬롯에 대체 후보가 즉시 들어오지 않았다"
+        if key == "replacement":
+            replacement_started.set()
+        return {"source_key": key, "status": "pass", "steps": {}}
+
+    monkeypatch.setattr(daily, "produce_one", fake_produce)
+    assert daily.main(["--target", "2", "--workers", "2"]) == 0
 
 
 def test_dry_run_needs_no_browser_or_shared_lock(tmp_path, monkeypatch):

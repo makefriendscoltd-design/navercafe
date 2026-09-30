@@ -12,35 +12,38 @@ def _root(tmp_path):
     (shorts / "07_script_final.txt").write_text(
         "도입\n\n첫째 본문\n\n둘째 본문\n\n셋째 본문\n\n넷째 본문\n\n다섯째 본문",
         encoding="utf-8")
-    transcript = "Alpha exact evidence. Beta exact evidence. Gamma exact evidence."
+    transcript = "Alpha exact evidence.\nBeta exact evidence.\nGamma exact evidence."
     (shorts / "captions/transcript.txt").write_text(transcript, encoding="utf-8")
     return shorts, transcript
 
 
-def _answer(quote):
-    return {"sections": [{"section": name, "supported": True, "source_quote": quote,
+def _answer(line_range=(1, 1)):
+    return {"sections": [{"section": name, "supported": True,
+                           "source_line_ranges": [list(line_range)],
                            "explanation": "actor, task, modality, numbers match"}
                           for name in review.SECTIONS], "summary": "checked"}
 
 
-def test_hallucinated_source_quote_rejects_every_section(tmp_path, monkeypatch):
+def test_invalid_source_line_range_rejects_every_section(tmp_path, monkeypatch):
     shorts, _ = _root(tmp_path)
-    monkeypatch.setattr("subscription_agent.run_json", lambda *args, **kwargs: _answer("invented quote"))
+    monkeypatch.setattr("subscription_agent.run_json", lambda *args, **kwargs: _answer((99, 100)))
     report = review.review(shorts)
     assert report["status"] == "fail"
     assert report["failed_sections"] == list(review.SECTIONS)
     assert all(row["quote_exact"] is False for row in report["sections"])
 
 
-def test_exact_quotes_pass_and_bind_script_and_transcript(tmp_path, monkeypatch):
+def test_valid_line_ranges_extract_exact_quotes_and_bind_inputs(tmp_path, monkeypatch):
     shorts, transcript = _root(tmp_path)
     monkeypatch.setattr("subscription_agent.run_json",
-                        lambda *args, **kwargs: _answer("Alpha   exact evidence."))
+                        lambda *args, **kwargs: _answer((1, 2)))
     report = review.review(shorts)
     assert report["status"] == "pass"
     assert report["script_sha256"] == hashlib.sha256(
         (shorts / "07_script_final.txt").read_bytes()).hexdigest()
     assert report["transcript_sha256"] == hashlib.sha256(transcript.encode()).hexdigest()
+    assert report["sections"][0]["source_quotes"] == [
+        "Alpha exact evidence.\nBeta exact evidence."]
     assert json.loads((shorts / "editorial_review.json").read_text())["status"] == "pass"
 
 
@@ -48,13 +51,13 @@ def test_failed_review_is_not_reused_but_matching_pass_is(tmp_path, monkeypatch)
     shorts, _ = _root(tmp_path)
     calls = []
     monkeypatch.setattr("subscription_agent.run_json",
-                        lambda *args, **kwargs: (calls.append(1) or _answer("invented")))
+                        lambda *args, **kwargs: (calls.append(1) or _answer((0, 1))))
     assert review.review(shorts)["status"] == "fail"
     assert review.review(shorts)["status"] == "fail"
     assert len(calls) == 2
 
     monkeypatch.setattr("subscription_agent.run_json",
-                        lambda *args, **kwargs: (calls.append(1) or _answer("Alpha exact evidence.")))
+                        lambda *args, **kwargs: (calls.append(1) or _answer((1, 1))))
     assert review.review(shorts)["status"] == "pass"
     assert review.review(shorts)["status"] == "pass"
     assert len(calls) == 3
@@ -73,13 +76,13 @@ def test_missing_transcript_writes_pending_without_agent_call(tmp_path, monkeypa
 def test_headcopy_and_multiple_source_passages_are_checked(tmp_path, monkeypatch):
     shorts, _ = _root(tmp_path)
     (shorts / "06_headcopy_candidates.txt").write_text("검토할 헤드카피")
-    answer = _answer("Alpha exact evidence.")
+    answer = _answer((1, 1))
     answer["sections"].append({"section": "headcopy", "supported": True,
-                               "source_quotes": ["Alpha exact evidence.", "Gamma exact evidence."]})
+                               "source_line_ranges": [[1, 1], [3, 3]]})
     monkeypatch.setattr("subscription_agent.run_json", lambda *args, **kwargs: answer)
     assert review.review(shorts)["status"] == "pass"
     (shorts / "06_headcopy_candidates.txt").write_text("새로운 근거 없는 수치")
-    answer["sections"][-1]["source_quotes"] = ["invented number"]
+    answer["sections"][-1]["source_line_ranges"] = [[30, 30]]
     result = review.review(shorts)
     assert result["status"] == "fail"
     assert result["failed_sections"] == ["headcopy"]

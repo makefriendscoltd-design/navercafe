@@ -7,7 +7,7 @@ pass the same upload gates used by the Shorts publisher.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 import fcntl
 import hashlib
@@ -236,24 +236,34 @@ def main(argv=None) -> int:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now(KST).strftime("%Y%m%dT%H%M%S.%f%z")
     journal = REPORT_DIR / f"{run_id}.jsonl"
+    append_result(journal, {"run": {"status": "started", "run_id": run_id,
+                                     "target": args.target,
+                                     "validated_at_start": sorted(already),
+                                     "selected_source_keys": [row["id"] for row in candidates]}})
     attempted: set[str] = set()
     successes = set(already)
     cursor = 0
-    while len(successes) < args.target and cursor < len(candidates):
-        remaining = args.target - len(successes)
-        batch = []
-        while cursor < len(candidates) and len(batch) < min(args.workers, remaining):
-            candidate = candidates[cursor]
-            cursor += 1
-            if candidate["id"] not in attempted:
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {}
+
+        def refill() -> None:
+            nonlocal cursor
+            # Never launch more work than can still contribute to the target.
+            while (cursor < len(candidates) and len(futures) < args.workers
+                   and len(successes) + len(futures) < args.target):
+                candidate = candidates[cursor]
+                cursor += 1
+                if candidate["id"] in attempted:
+                    continue
                 attempted.add(candidate["id"])
-                batch.append(candidate)
-        if not batch:
-            break
-        with ThreadPoolExecutor(max_workers=min(args.workers, len(batch))) as pool:
-            futures = {pool.submit(produce_one, row["id"], today.replace("-", "")): row
-                       for row in batch}
-            for future in as_completed(futures):
+                future = pool.submit(produce_one, candidate["id"], today.replace("-", ""))
+                futures[future] = candidate
+
+        refill()
+        while futures:
+            completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in completed:
+                futures.pop(future)
                 result = future.result()
                 recorded_at = datetime.now(KST)
                 result["recorded_at"] = recorded_at.isoformat()
@@ -263,6 +273,7 @@ def main(argv=None) -> int:
                 if result["status"] == "pass":
                     successes.add(result["source_key"])
                 print(json.dumps(result, ensure_ascii=False), flush=True)
+            refill()
 
     summary = {"status": "complete" if len(successes) >= args.target else "exhausted",
                "target": args.target, "validated_today": len(successes),
