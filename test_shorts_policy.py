@@ -1925,3 +1925,8 @@ def test_spoken_units_do_not_reject_idea_word():
     shorts.validate_spoken_wording("필요한 스킬이나 아이디어만 골라 적용하세요.")
     with pytest.raises(RuntimeError, match="이디"):
         shorts.validate_spoken_wording("이디로 만든 화면을 확인하세요.")
+
+
+def test_comment_keyword_excludes_temporal_particle():
+    assert shorts.derive_comment_keyword("삼십 초 만에 작업을 끝냅니다.", "30초 만에") != "만에"
+    assert shorts.derive_comment_keyword("메일을 메일로 정리하세요.", "메일 정리") == "메일"
