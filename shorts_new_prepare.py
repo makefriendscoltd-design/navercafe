@@ -334,7 +334,10 @@ def prepare(source_key: str, *, candidate_name: str = "shorts") -> dict:
     heads = [to_digits(head) for head in _headcopy_order(heads, script)]
     # 노트북 후보 셋은 틀에 박혀 나온다. 대본을 근거로 직접 쓴 것이 있으면 그것을 쓰고,
     # 에이전트가 막히거나 검사를 못 넘기면 노트북 후보로 돌아간다.
-    written = _written_headcopy(script)
+    # Caption writer already generated and validated these three candidates.
+    # Rewriting them here wastes another model call and invalidates an editorial
+    # review of the answer without changing the reviewed source script.
+    written = [] if from_captions else _written_headcopy(script)
     if written:
         # 화면에 그려지는 것은 1안뿐이다. 직접 쓴 것을 앞에 두고 나머지 자리는 기존
         # 후보로 채운다. 렌더는 후보 셋을 요구하고 셋 다 형식 검사를 받는다.
