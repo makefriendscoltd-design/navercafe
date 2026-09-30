@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -394,6 +395,9 @@ def prepare(source_key: str, *, candidate_name: str = "shorts") -> dict:
 
 
 def main(argv=None) -> int:
+    # Shorts production belongs to Codex; do not silently start Claude workers.
+    os.environ.setdefault("CONTENT_AGENT_ONLY", "codex")
+    os.environ.setdefault("LOOPGUARD_CODEX_MODEL", "gpt-5.6-sol")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_key")
     parser.add_argument("--candidate-name", default="shorts",
