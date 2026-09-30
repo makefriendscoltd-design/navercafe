@@ -1919,3 +1919,9 @@ def test_caption_source_prefers_local_transcription(monkeypatch, tmp_path):
     evidence = captions.fetch("abcdefghijk", tmp_path, media=tmp_path / "video.mp4")
     assert calls == ["asr"], "로컬 받아쓰기가 되면 유튜브에 묻지 않는다"
     assert evidence["language"] == "asr:en" and evidence["segment_count"] == 30
+
+
+def test_spoken_units_do_not_reject_idea_word():
+    shorts.validate_spoken_wording("필요한 스킬이나 아이디어만 골라 적용하세요.")
+    with pytest.raises(RuntimeError, match="이디"):
+        shorts.validate_spoken_wording("이디로 만든 화면을 확인하세요.")

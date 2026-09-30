@@ -632,7 +632,8 @@ def validate_spoken_wording(script: str) -> None:
             f"대본 본문에 분석용 호칭이 있습니다: {found.group(1)}. 이름을 쓰거나 주어를 뺀다."
         )
     for wrong, right in MISREAD_UNITS.items():
-        if wrong in script:
+        # Do not match a syllable sequence inside another Korean word (아이디어).
+        if re.search(r"(?<![가-힣A-Za-z0-9])" + re.escape(wrong), script):
             raise RuntimeError(f"대본에 잘못 읽히는 표기가 있습니다: {wrong} → {right}")
 
 
