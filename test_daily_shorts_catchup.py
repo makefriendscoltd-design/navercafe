@@ -20,16 +20,18 @@ def _short(project: Path, name: str, *, days_ago: int = 0) -> Path:
     return path
 
 
-def test_counts_unique_validated_renders_by_creation_day(tmp_path: Path, monkeypatch):
-    """후보 폴더 이름은 원본을 집어온 날짜다. 며칠 전 폴더를 오늘 완성하는 일이 흔하다."""
-    _short(tmp_path, "aaa-20260101")
-    _short(tmp_path, "aaa-20260102")
-    _short(tmp_path, "bbb-20260101")
-    _short(tmp_path, "ccc-20260101", days_ago=3)
+def test_counts_canonical_and_review_variants_from_production_source_of_truth(tmp_path: Path,
+                                                                              monkeypatch):
+    """Catchup은 수정 후보까지 세는 제작기 정본과 별도 집계 규칙을 갖지 않는다."""
     import shorts_daily_production
-    monkeypatch.setattr(shorts_daily_production, "validated_shorts_root",
-                        lambda root: root.name.startswith("aaa-"))
-    assert catchup.rendered_today(project=tmp_path) == 1
+    calls = []
+    monkeypatch.setattr(shorts_daily_production, "validated_today",
+                        lambda today, project: calls.append((today, project)) or
+                        {"canonical-source", "review-variant-source"})
+    assert catchup.validated_today("2026-09-30", tmp_path) == [
+        "canonical-source", "review-variant-source"]
+    assert calls == [("2026-09-30", tmp_path)]
+    assert catchup.rendered_today("2026-09-30", tmp_path) == 2
 
 
 def test_plan_asks_only_for_the_shortfall(monkeypatch):

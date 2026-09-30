@@ -30,20 +30,11 @@ DAILY_TARGET = 20
 
 
 def validated_today(today: str | None = None, project: Path = PROJECT) -> list[str]:
-    """오늘 만들어졌고 현재 쇼츠 머신 게이트도 통과하는 원본 ID 목록.
-
-    후보 폴더 이름은 원본을 처음 집어온 날짜라서, 며칠 전 폴더를 오늘 완성하는 일이
-    흔하다. 오늘 한 일을 세려면 결과물이 생긴 시각을 봐야 한다.
-    """
+    """오늘 검증을 통과한 canonical/수정 후보의 고유 원본 ID 목록."""
     today = today or datetime.now(KST).strftime("%Y-%m-%d")
-    from shorts_daily_production import validated_shorts_root
+    from shorts_daily_production import validated_today as production_validated_today
 
-    source_keys: set[str] = set()
-    for path in project.glob("outputs/*/shorts/final.mp4"):
-        made = datetime.fromtimestamp(path.stat().st_mtime, KST).strftime("%Y-%m-%d")
-        if made == today and validated_shorts_root(path.parent.parent):
-            source_keys.add(path.parent.parent.name.rsplit("-", 1)[0])
-    return sorted(source_keys)
+    return sorted(production_validated_today(today, project))
 
 
 def rendered_today(today: str | None = None, project: Path = PROJECT) -> int:
