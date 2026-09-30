@@ -147,3 +147,29 @@ def provider_runner():
         return run_js(body, final_payload, cwd=cwd, timeout=timeout)
 
     return run
+
+
+def run_youtube_program(
+    body: str,
+    payload: Mapping[str, Any],
+    *,
+    timeout: int,
+    cwd: Path | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Run one Aside-style YouTube program on the selected browser backend.
+
+    ``body`` is the program without ``JS_COMMON``/payload preamble; both
+    backends supply those.  Used by the Community scheduler and verifier.
+    """
+
+    if backend() == "ego":
+        workdir = Path(cwd) if cwd else PROJECT / "outputs" / "shorts-ego-runtime"
+        workdir.mkdir(parents=True, exist_ok=True)
+        return run_js(body, payload, cwd=workdir, timeout=timeout)
+    from aside_browser import JS_COMMON, _payload_expression, run_repl
+
+    code = JS_COMMON + f"\nconst payload={_payload_expression(dict(payload))};\n" + body
+    if cwd is None:
+        return run_repl(code, timeout=timeout, account=account)
+    return run_repl(code, cwd=cwd, timeout=timeout, account=account)

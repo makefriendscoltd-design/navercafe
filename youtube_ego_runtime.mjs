@@ -102,7 +102,7 @@ class __Locator {
   // one call, one click, with a definite result.
   async click() {
     await this._one();
-    await this._eval('(els)=>{els[0].scrollIntoView({block:"center",inline:"center"});els[0].click();return true;}');
+    await this._eval('(els)=>{const e=els[0];e.scrollIntoView({block:"center",inline:"center"});e.click();if(e.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(e.tagName))e.focus();return true;}');
     await this.owner._refresh();
   }
   async focus() { const sel = await this._target(); await this.owner.raw.focus(sel); }
@@ -119,10 +119,21 @@ class __Locator {
   }
   async type(text) { return this.pressSequentially(text); }
   async setInputFiles(files) {
-    const list = (Array.isArray(files) ? files : [files]).map(file => {
-      if (typeof file !== 'string') throw new Error('ego runtime supports file paths only');
-      return __path.isAbsolute(file) ? file : __path.resolve(__egoConfig.cwd, file);
-    });
+    const fs = await import('node:fs/promises');
+    const list = [];
+    for (const file of (Array.isArray(files) ? files : [files])) {
+      if (typeof file === 'string') {
+        list.push(__path.isAbsolute(file) ? file : __path.resolve(__egoConfig.cwd, file));
+      } else if (file && typeof file.name === 'string' && file.buffer) {
+        const dir = __path.join(__egoConfig.cwd, 'ego-upload-' + Date.now().toString(36));
+        await fs.mkdir(dir, { recursive: true });
+        const target = __path.join(dir, __path.basename(file.name));
+        await fs.writeFile(target, file.buffer);
+        list.push(target);
+      } else {
+        throw new Error('unsupported setInputFiles entry');
+      }
+    }
     const sel = await this._target();
     await this.owner.raw.setInputFiles(sel, list);
   }
@@ -149,7 +160,52 @@ class __Page {
   async goto(url) { await this.raw.goto(url); await this._refresh(); }
   async reload() { await this.raw.reload(); await this._refresh(); }
   async close() { await this.raw.close(); }
-  async screenshot(options) { return this.raw.screenshot(options); }
+  // Playwright returns the PNG bytes; ego-browser writes a file.
+  async screenshot(options = {}) {
+    const fs = await import('node:fs/promises');
+    const target = options.path || __path.join(__egoConfig.cwd, `ego-shot-${Date.now().toString(36)}.png`);
+    await this.raw.screenshot({ path: target });
+    const bytes = await fs.readFile(target);
+    if (!options.path) await fs.rm(target, { force: true });
+    return bytes;
+  }
+}
+
+// Aside JS_COMMON helpers.  ego-browser resolves frames itself, so the page is
+// the only context.
+const visible = el => {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  const s = getComputedStyle(el);
+  return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+};
+async function contextsFor(p) { return [p]; }
+async function findContext(p, selector) {
+  try {
+    const loc = p.locator(selector);
+    const count = await loc.count();
+    for (let i = 0; i < count; i++) {
+      const item = loc.nth(i);
+      if (await item.isVisible()) return { ctx: p, loc: item };
+    }
+  } catch (_) {}
+  return null;
+}
+async function findAnyContext(p, selector) {
+  try {
+    const loc = p.locator(selector);
+    if (await loc.count()) return { ctx: p, loc: loc.nth(0) };
+  } catch (_) {}
+  return null;
+}
+async function waitForContext(p, selector, timeoutMs = 20000) {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    const found = await findContext(p, selector);
+    if (found) return found;
+    await sleep(500);
+  }
+  return null;
 }
 
 const openTab = async url => {
