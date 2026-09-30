@@ -205,7 +205,7 @@ def _recent_headcopy_openers(limit: int = 6, project: Path = PROJECT) -> set[str
 
 
 def _write_from_captions(source_key: str, root: Path, media: Path | None = None) -> dict | None:
-    """자막을 받아 원고를 쓴다. 막히면 None을 돌려주고 NotebookLM 경로로 간다.
+    """자막을 받아 원고를 쓴다. 막히면 None을 돌려주고 호출부가 이 원본을 실패로 둔다.
 
     NotebookLM은 화면이 개편되면 멈추고, 후보당 기회가 한 번뿐이라 실패하면 그 영상을
     영영 못 쓰고, 브라우저 하나를 잡고 있어서 병렬 제작을 막는다. 자막은 그 셋이 모두
@@ -219,7 +219,7 @@ def _write_from_captions(source_key: str, root: Path, media: Path | None = None)
     try:
         captions = shorts_caption_source.fetch(source_key, root / "captions", media=media)
         return shorts_script_writer.write_to(root / "writer", captions)
-    except Exception as exc:  # noqa: BLE001 - 자막이 없거나 구독이 막히면 기존 경로로 간다
+    except Exception as exc:  # noqa: BLE001 - 자막이 없거나 구독이 막히면 이유를 남기고 실패로 둔다
         (root / "captions_fallback.txt").write_text(
             f"{datetime.now().astimezone().isoformat(timespec='seconds')} {exc}\n",
             encoding="utf-8")
@@ -278,8 +278,13 @@ def prepare(source_key: str) -> dict:
             "--preserve-authorized-wording",
         ]
         written = _write_from_captions(source_key, root, media=source_video)
-        if written:
-            command += ["--answer-file", written["answer"]]
+        if not written:
+            # 2026-09-30 사용자 결정: NotebookLM 예비 경로를 쓰지 않는다. 자막 원고가
+            # 안 되면 이 원본은 실패로 두고 그날 자리는 다른 레퍼런스가 채운다.
+            reason = (root / "captions_fallback.txt")
+            detail = reason.read_text(encoding="utf-8").strip()[-200:] if reason.is_file() else ""
+            raise RuntimeError(f"자막 원고 작성 실패(NotebookLM 예비 경로 없음): {detail}")
+        command += ["--answer-file", written["answer"]]
         subprocess.run(command, check=True)
 
     script = script_path.read_text(encoding="utf-8").strip()

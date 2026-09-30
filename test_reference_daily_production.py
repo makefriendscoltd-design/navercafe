@@ -42,7 +42,6 @@ def test_timeout_is_a_channel_failure_not_an_exception(monkeypatch):
 
 def test_successful_handoff_is_not_reported_as_a_failed_job(tmp_path, monkeypatch):
     monkeypatch.setattr("aside_browser.ensure_daemon", lambda: True)
-    monkeypatch.setattr(daily, "notebook_headroom", lambda: {"cafe": 0, "shorts": 0})
     monkeypatch.setattr(daily, 'PROJECT', tmp_path)
     monkeypatch.setattr(daily, 'REPORT_DIR', tmp_path / 'reports')
     monkeypatch.setattr(daily.selection, 'SEEN_PATH', tmp_path / 'seen.json')
@@ -88,7 +87,6 @@ def test_production_runs_in_parallel_but_publishing_stays_serial(tmp_path, monke
 
     monkeypatch.setattr(daily, "produce", fake_produce)
     monkeypatch.setattr(daily, "publish", fake_publish)
-    monkeypatch.setattr(daily, "notebook_headroom", lambda: {"cafe": 5, "shorts": 5})
     monkeypatch.setattr(daily.selection, "select", lambda candidates, limit=None: (
         [{"id": f"key{i}", "title": "t"} for i in range(4)], []))
     monkeypatch.setattr(daily.selection, "load_candidates", lambda: [])

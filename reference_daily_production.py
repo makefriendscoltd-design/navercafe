@@ -62,39 +62,6 @@ def _run(args: list[str], *, timeout: int = 3600) -> tuple[bool, str]:
     return completed.returncode == 0, (tail[0] if tail else "")[:300]
 
 
-# The notebooks fill up because each run adds a source and the removal
-# afterwards sometimes fails. At the 50-source cap NotebookLM refuses new ones
-# and every manuscript stops being written -- which is how Cafe production went
-# five days without anyone noticing.
-NOTEBOOK_SOURCE_CEILING = 40
-
-
-def notebook_headroom() -> dict:
-    """How close each pinned notebook is to the cap, read before producing."""
-    from aside_browser import JS_COMMON, _payload_expression, run_repl
-    from content_production_policy import CAFE_NOTEBOOK, SHORTS_NOTEBOOK
-
-    script = """
-const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&h=${Date.now()}`);
-try{
- await sleep(10000);
- const n=await p.evaluate(()=>document.querySelectorAll('.single-source-container').length);
- emit({status:'ok',sources:n});
-}catch(e){emit({status:'error',message:String(e?.message||e)});}
-finally{try{await p.close();}catch(_){}}
-"""
-    out = {}
-    for label, notebook in (("cafe", CAFE_NOTEBOOK), ("shorts", SHORTS_NOTEBOOK)):
-        try:
-            result = run_repl(JS_COMMON + "\nconst payload="
-                              + _payload_expression({"notebookId": notebook["id"]}) + ";\n" + script,
-                              account="u0", timeout=240)
-            out[label] = int(result.get("sources") or 0)
-        except Exception as exc:
-            out[label] = f"확인 실패: {str(exc)[:80]}"
-    return out
-
-
 def produce(source_key: str, today: str, *, shorts_only: bool = False,
             publish_now: bool = True) -> dict:
     """Shorts render, Cafe candidate and card deck for one source.
@@ -311,29 +278,8 @@ def main(argv=None) -> int:
         print(json.dumps({"status": "abort", "reason": "aside_daemon_down"},
                          ensure_ascii=False), flush=True)
         return 3
-    headroom = notebook_headroom()
-    full = {name: count for name, count in headroom.items()
-            if isinstance(count, int) and count >= NOTEBOOK_SOURCE_CEILING}
-    if full:
-        import notebook_source_trim
-
-        for name in full:
-            try:
-                trimmed = notebook_source_trim.trim(name, keep=10, apply=True)
-            except Exception as exc:
-                trimmed = {"notebook": name, "error": str(exc)[:160]}
-            print(json.dumps({"status": "trimmed_notebook", **trimmed},
-                             ensure_ascii=False), flush=True)
-        headroom = notebook_headroom()
-        still_full = {name: count for name, count in headroom.items()
-                      if isinstance(count, int) and count >= NOTEBOOK_SOURCE_CEILING}
-        if still_full:
-            # Producing into a full notebook writes no manuscript at all, so
-            # stop and say so rather than spend a day failing quietly.
-            print(json.dumps({"status": "abort", "reason": "notebook_sources_near_cap",
-                              "notebooks": headroom, "ceiling": NOTEBOOK_SOURCE_CEILING},
-                             ensure_ascii=False), flush=True)
-            return 4
+    # 2026-09-30: 원고를 자막으로 쓰므로 NotebookLM 노트북 소스 수는 더 보지 않는다.
+    # 노트북 화면이 막혀도 그날 제작 전체가 멈추지 않게 한다.
     now = datetime.now(KST)
     today = now.strftime("%Y%m%d")
     selected, rejected = selection.select(selection.load_candidates(), limit=args.limit)
