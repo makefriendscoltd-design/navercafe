@@ -57,6 +57,17 @@ def validation_problems(root: Path) -> list[str]:
             bound = evidence.get("script_sha256") or evidence.get("scriptSha256")
             if bound != digest:
                 problems.append("편집 검토가 현재 대본 해시에 결속되지 않음")
+            transcript = root / "shorts/captions/transcript.txt"
+            transcript_bound = evidence.get("transcript_sha256") or evidence.get("transcriptSha256")
+            if not transcript.is_file():
+                problems.append("편집 검토의 로컬 전사문 없음")
+            elif transcript_bound != hashlib.sha256(transcript.read_bytes()).hexdigest():
+                problems.append("편집 검토가 현재 전사문 해시에 결속되지 않음")
+            if evidence.get("headcopy_sha256"):
+                headcopy = root / "shorts/06_headcopy_candidates.txt"
+                if (not headcopy.is_file() or evidence["headcopy_sha256"] !=
+                        hashlib.sha256(headcopy.read_bytes()).hexdigest()):
+                    problems.append("편집 검토가 현재 헤드카피 해시에 결속되지 않음")
     final = root / "shorts/final.mp4"
     if not problems:
         try:
@@ -128,6 +139,14 @@ def produce_one(source_key: str, today: str) -> dict:
             if not ok:
                 result["problems"] = [note]
                 return result
+        import shorts_editorial_review
+        editorial = shorts_editorial_review.review(root / "shorts")
+        result["steps"]["editorial_review"] = editorial.get("status", "missing")
+        if editorial.get("status") != "pass":
+            result["problems"] = [f"편집 검토 status={editorial.get('status') or 'missing'}",
+                                  *[f"근거 불충분: {name}"
+                                    for name in editorial.get("failed_sections") or []]]
+            return result
         ok, note = _run(["shorts_v7_builder.py", "--root", str(root / "shorts"), "--render"])
         result["steps"]["render"] = "ok" if ok else f"fail: {note}"
         problems = validation_problems(root)

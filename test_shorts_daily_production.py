@@ -26,6 +26,9 @@ def test_optional_editorial_review_fails_closed_and_binds_current_script(tmp_pat
     shorts.mkdir(parents=True)
     script = shorts / "07_script_final.txt"
     script.write_text("현재 대본", encoding="utf-8")
+    transcript = shorts / "captions/transcript.txt"
+    transcript.parent.mkdir()
+    transcript.write_text("현재 전사문", encoding="utf-8")
     review = shorts / "editorial_review.json"
     monkeypatch.setattr("content_acceptance.check_shorts", lambda candidate: [])
     monkeypatch.setattr("content_production_policy.validate_shorts_render_bundle",
@@ -37,8 +40,9 @@ def test_optional_editorial_review_fails_closed_and_binds_current_script(tmp_pat
     assert not daily.validated_shorts_root(root)
     review.write_text(json.dumps({"status": "pass", "script_sha256": "stale"}))
     assert not daily.validated_shorts_root(root)
-    review.write_text(json.dumps({"status": "pass", "script_sha256": hashlib.sha256(
-        script.read_bytes()).hexdigest()}))
+    review.write_text(json.dumps({"status": "pass",
+        "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript.read_bytes()).hexdigest()}))
     assert daily.validated_shorts_root(root)
 
 
@@ -80,6 +84,7 @@ def test_prepared_current_inputs_render_without_prepare(tmp_path, monkeypatch):
     monkeypatch.setattr("content_run_state.resumable_root", lambda *args: root)
     monkeypatch.setattr(daily, "prepared_shorts_root", lambda candidate: True)
     monkeypatch.setattr(daily, "validation_problems", lambda candidate: [])
+    monkeypatch.setattr("shorts_editorial_review.review", lambda candidate: {"status": "pass"})
     calls = []
     monkeypatch.setattr(daily, "_run", lambda args, timeout=3600: (calls.append(args) or (True, "ok")))
     result = daily.produce_one("abcdefghijk", "20260930")
