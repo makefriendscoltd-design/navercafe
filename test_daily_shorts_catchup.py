@@ -13,6 +13,7 @@ def _short(project: Path, name: str, *, days_ago: int = 0) -> Path:
     path = project / "outputs" / name / "shorts" / "final.mp4"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"0")
+    (path.parent / "editorial_review.json").write_text('{"status":"pass"}')
     if days_ago:
         when = (datetime.now() - timedelta(days=days_ago)).timestamp()
         os.utime(path, (when, when))

@@ -17,6 +17,7 @@ def test_reviewed_variants_count_once_for_the_same_source(tmp_path, monkeypatch)
         folder.mkdir(parents=True)
         final = folder / "final.mp4"
         final.write_bytes(b"video")
+        (folder / "editorial_review.json").write_text('{"status":"pass"}')
         stamp = datetime(2026, 9, 30, 12, tzinfo=daily.KST).timestamp()
         os.utime(final, (stamp, stamp))
     monkeypatch.setattr(daily, "validated_shorts_root",

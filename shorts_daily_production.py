@@ -106,6 +106,8 @@ def validated_today(today: str, project: Path = PROJECT) -> set[str]:
         name = final.parent.name
         if name != "shorts" and not name.startswith("shorts-review-"):
             continue
+        if _read(final.parent / "editorial_review.json").get("status") != "pass":
+            continue
         valid = (validated_shorts_root(root) if name == "shorts" else
                  validated_shorts_root(root, candidate_name=name)) if made == today else False
         if valid:
