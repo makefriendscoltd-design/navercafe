@@ -226,9 +226,11 @@ def _write_from_captions(source_key: str, root: Path, media: Path | None = None)
         return None
 
 
-def prepare(source_key: str) -> dict:
+def prepare(source_key: str, *, candidate_name: str = "shorts") -> dict:
+    if not re.fullmatch(r"shorts(?:-[a-zA-Z0-9_-]+)?", candidate_name):
+        raise ValueError("후보 이름은 shorts 또는 shorts-로 시작하는 단일 폴더명이어야 합니다.")
     source_root = _source_root(source_key)
-    root = source_root / "shorts"
+    root = source_root / candidate_name
     if (root / "final.mp4").exists():
         raise RuntimeError("이미 렌더된 후보가 있습니다. 새로 만들지 말고 그것을 검토·복구하세요.")
     root.mkdir(parents=True, exist_ok=True)
@@ -391,8 +393,10 @@ def prepare(source_key: str) -> dict:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_key")
+    parser.add_argument("--candidate-name", default="shorts",
+                        help="검토용 별도 후보 폴더. 기존 원고·영상·발행 증거를 보존한다")
     args = parser.parse_args(argv)
-    print(json.dumps(prepare(args.source_key), ensure_ascii=False))
+    print(json.dumps(prepare(args.source_key, candidate_name=args.candidate_name), ensure_ascii=False))
     return 0
 
 

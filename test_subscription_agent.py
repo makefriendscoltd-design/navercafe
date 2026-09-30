@@ -45,6 +45,17 @@ def test_empty_answer_raises(monkeypatch):
         agent.run("프롬프트")
 
 
+def test_engine_constraint_is_forwarded_without_fallback(monkeypatch):
+    seen = []
+    monkeypatch.setenv("CONTENT_AGENT_ONLY", "codex")
+    monkeypatch.setattr(pathlib.Path, "is_file", lambda self: True)
+    monkeypatch.setattr(subprocess, "run", lambda command, **kwargs:
+                        seen.extend(command) or _completed(stdout="결과"))
+    assert agent.run("원고", prefer="claude") == "결과"
+    assert seen[seen.index("--only") + 1] == "codex"
+    assert "--prefer" not in seen
+
+
 @pytest.mark.parametrize("stdout", [
     '{"titles":["가","나"]}',
     '설명이 앞에 붙습니다.\n{"titles":["가","나"]}\n뒤에도 붙습니다.',

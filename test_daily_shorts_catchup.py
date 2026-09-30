@@ -19,12 +19,16 @@ def _short(project: Path, name: str, *, days_ago: int = 0) -> Path:
     return path
 
 
-def test_counts_by_when_the_file_was_made_not_the_folder_date(tmp_path: Path):
+def test_counts_unique_validated_renders_by_creation_day(tmp_path: Path, monkeypatch):
     """후보 폴더 이름은 원본을 집어온 날짜다. 며칠 전 폴더를 오늘 완성하는 일이 흔하다."""
     _short(tmp_path, "aaa-20260101")
+    _short(tmp_path, "aaa-20260102")
     _short(tmp_path, "bbb-20260101")
     _short(tmp_path, "ccc-20260101", days_ago=3)
-    assert catchup.rendered_today(project=tmp_path) == 2
+    import shorts_daily_production
+    monkeypatch.setattr(shorts_daily_production, "validated_shorts_root",
+                        lambda root: root.name.startswith("aaa-"))
+    assert catchup.rendered_today(project=tmp_path) == 1
 
 
 def test_plan_asks_only_for_the_shortfall(monkeypatch):
@@ -56,3 +60,14 @@ def test_dry_run_never_starts_the_producer(monkeypatch, capsys):
     monkeypatch.setattr(catchup.subprocess, "run", explode)
     assert catchup.main(["--dry-run"]) == 0
     assert '"action": "run"' in capsys.readouterr().out
+
+
+def test_catchup_calls_shorts_only_target_runner(monkeypatch):
+    monkeypatch.setattr(catchup, "rendered_today", lambda: 3)
+    monkeypatch.setattr(catchup, "producer_running", lambda: False)
+    calls = []
+    monkeypatch.setattr(catchup.subprocess, "run", lambda args, cwd=None: (
+        calls.append((args, cwd)) or type("Done", (), {"returncode": 0})()))
+    assert catchup.main(["--target", "20"]) == 0
+    assert calls[0][0][-2:] == ["--target", "20"]
+    assert calls[0][0][2].endswith("shorts_daily_production.py")

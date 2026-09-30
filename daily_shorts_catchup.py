@@ -1,4 +1,4 @@
-"""오늘 몫의 쇼츠가 모자라면 모자란 만큼만 더 만든다.
+"""오늘 검증을 통과한 쇼츠가 모자라면 모자란 만큼만 더 만든다.
 
 정기 제작은 하루 한 번만 돌았다. 그 시각에 맥이 꺼져 있거나 브라우저가 막혀 있으면
 그날은 0편으로 끝났고, 실제로 2026-09-25부터 사흘 동안 그렇게 비었다. 그래서 제작을
@@ -22,31 +22,42 @@ from zoneinfo import ZoneInfo
 
 PROJECT = Path(__file__).resolve().parent
 PYTHON = PROJECT / ".venv312/bin/python"
-PRODUCER = PROJECT / "reference_daily_production.py"
+PRODUCER = PROJECT / "shorts_daily_production.py"
+LEGACY_PRODUCER = PROJECT / "reference_daily_production.py"
 RUN_LOCK = PROJECT / "outputs/reference-daily-production/run.lock"
 KST = ZoneInfo("Asia/Seoul")
 DAILY_TARGET = 20
 
 
-def rendered_today(today: str | None = None, project: Path = PROJECT) -> int:
-    """오늘 렌더까지 끝난 쇼츠 수. 폴더 이름의 날짜가 아니라 파일이 생긴 날로 센다.
+def validated_today(today: str | None = None, project: Path = PROJECT) -> list[str]:
+    """오늘 만들어졌고 현재 쇼츠 머신 게이트도 통과하는 원본 ID 목록.
 
     후보 폴더 이름은 원본을 처음 집어온 날짜라서, 며칠 전 폴더를 오늘 완성하는 일이
     흔하다. 오늘 한 일을 세려면 결과물이 생긴 시각을 봐야 한다.
     """
     today = today or datetime.now(KST).strftime("%Y-%m-%d")
-    count = 0
+    from shorts_daily_production import validated_shorts_root
+
+    source_keys: set[str] = set()
     for path in project.glob("outputs/*/shorts/final.mp4"):
         made = datetime.fromtimestamp(path.stat().st_mtime, KST).strftime("%Y-%m-%d")
-        if made == today:
-            count += 1
-    return count
+        if made == today and validated_shorts_root(path.parent.parent):
+            source_keys.add(path.parent.parent.name.rsplit("-", 1)[0])
+    return sorted(source_keys)
+
+
+def rendered_today(today: str | None = None, project: Path = PROJECT) -> int:
+    """호환 이름. 파일 존재가 아니라 검증 통과한 고유 원본 수를 돌려준다."""
+    return len(validated_today(today, project))
 
 
 def producer_running() -> bool:
     """제작기가 아직 돌고 있는지 본다. 잠금 파일은 제작기가 쥔다."""
-    found = subprocess.run(["pgrep", "-f", str(PRODUCER)], capture_output=True, text=True)
-    return found.returncode == 0
+    for producer in (PRODUCER, LEGACY_PRODUCER):
+        found = subprocess.run(["pgrep", "-f", str(producer)], capture_output=True, text=True)
+        if found.returncode == 0:
+            return True
+    return False
 
 
 def plan(target: int = DAILY_TARGET) -> dict:
@@ -72,7 +83,7 @@ def main(argv=None) -> int:
         return 0
 
     completed = subprocess.run(
-        [str(PYTHON), "-u", str(PRODUCER), "--limit", str(decision["missing"])],
+        [str(PYTHON), "-u", str(PRODUCER), "--target", str(args.target)],
         cwd=PROJECT,
     )
     return completed.returncode

@@ -2,13 +2,19 @@
 
 이 문서와 `content_production_policy.py`가 유튜브 링크 재가공의 정본이다. 문서와 코드가 다르면 더 엄격한 조건을 적용하고 발행을 중단한다.
 
+## 2026-09-30 숏폼 제작 실행 기준
+
+- 숏폼 제작 요청은 `shorts_daily_production.py`로 처리한다. 카페·카드뉴스·공급자 발행을 제작 성공 조건이나 시작 조건으로 묶지 않는다.
+- 하루 목표는 `daily_shorts_catchup.py`의 목표값을 쓰고, 서로 다른 source_key의 실제 MP4가 원문 계보·화면·음성·자막·렌더 번들 검증을 통과한 건만 센다. 후보 선정·파일 존재·실패 파일은 성공 건수가 아니다.
+- 제작과 발행 상태는 별도로 기록한다. 제작 실패는 이유를 보존하고 대체 후보로 목표를 채우며, 불확실한 예약 상태는 제작 재시도로 재업로드하지 않는다.
+
 ## 원고 생성과 기존 NotebookLM 원고
 
 - 브라우저는 Aside CLI headless, 계정 별칭은 `u0`만 쓴다. Chrome 쿠키, Selenium, Playwright, `notebooklm-py`, 새 임시 노트북은 쓰지 않는다.
 - 2026-09-29 사용자 지시: 신규 카페 원고는 같은 source_key의 원본 영상 전사문에 `content_production_policy.CAFE_NOTEBOOK_PROMPT`를 적용해 생성한다. 숏폼의 `captions/evidence.json`과 전사문을 우선 재사용하고, 없으면 자막을 확보한다. NotebookLM 호출·노트북 인증은 필수 조건이 아니다. 전사문이 없으면 실패로 남기며 NotebookLM으로 우회하지 않는다.
 - 기존 NotebookLM 원고와 승인·게시 증거는 보존한다. 해당 원고의 레거시 검증에만 기존 `민수대표님_카페글` 증거를 사용한다.
-- 쇼츠 대본은 기존 `민수대표님_숏폼`(`ed70fc3b-474b-423a-9ca8-d19934703f27`)만 쓴다.
-- 쇼츠 노트북 맞춤 지침은 `content_production_policy.py`의 v17.0 정본만 쓴다. 정규화 SHA-256은 `7bf0525cfd9cb089dd3c8bedc92385cfffa4c70acd74564e47a2c03862ae1613`이며, Aside는 소스를 추가하기 전에 로컬 v17 금지·문단 형식 계약, 지침 해시, `맞춤`/`길게` 상태를 확인한다. 하나라도 다르면 소스 추가·프롬프트 제출을 중단한다.
+- 신규 쇼츠 대본은 `content_production_policy.SHORTS_SCRIPT_SOURCE=captions` 경로로 원본 영상의 전사문에서 생성한다. NotebookLM 시작 검사와 예비 호출을 하지 않는다. 아래 NotebookLM 노트북·시도 제한은 보존된 기존 원고의 이력 검증에만 적용한다.
+- 신규 원고 지침 버전·해시는 `content_production_policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION`과 `SHORTS_NOTEBOOK_INSTRUCTION_SHA256`을 정본으로 삼는다. 현재 v24.0이며, 생성 증거에 전사문·지침·원고 해시를 묶는다. 기존 원고의 지침 버전과 증거는 덮어쓰지 않는다.
 - `그지마케팅_카페글`, `그지마케팅_숏폼스크립트` 등 다른 노트북 응답은 폐기한다.
 - 대상 YouTube 소스 하나만 체크된 DOM을 제출 직전과 응답 후 확인하고, 노트북 제목·ID·선택 소스·프롬프트·응답·스크린샷을 증거로 남긴다.
 - 영상에 없는 숫자·성과는 만들지 않는다. 수익·성과는 `영상 제작자 주장`으로 표시하고, 변동 가능하거나 중요한 주장은 타임스탬프와 공식 1차 자료로 교차 확인한다.
@@ -92,17 +98,17 @@ OO분 짜리 영상 내용을 모두 정리했습니다.
 - ElevenLabs Voice ID `34bevfaPHev7LXnjGAlA`, 모델 `eleven_multilingual_v2`만 쓴다.
 - 음성 설정은 stability 0.65, similarity_boost 0.90, style 0, speaker boost 켜짐으로 고정한다. 다른 음성이나 시스템 TTS로 폴백하지 않는다.
 - 2026-09-06 사용자 수정 지시: 기존 레퍼런스처럼 도입부터 고정 CTA까지 전체 원고를 하나의 음성으로 생성한다. 도입·첫째~다섯째·CTA는 검증용 논리 구간 7개이며 별도 음성을 합치는 경계가 아니다. 단일 생성 음성과 원고 해시를 연결하고, silence -35dB, minimum 0.08초, retained gap 0.06초의 기존 꼬리물기를 적용한다. 이전 분할 생성본과 request-stitch 후보는 새 예약 교체의 합격 근거로 쓰지 않는다.
-- 2026-09-07 사용자 지시: 단일 생성 음성의 무음 제거 후 템포는 `content_production_policy.SHORTS_NARRATION_TARGET_CPS`(현재 9.0 글자/초)에 맞춘다. 생성 음성이 약 6.3 글자/초이므로 약 1.43배 가속이다. 이전에는 레퍼런스 자막 `outputs/20260822-shorts-correction-audit/rebaseline/remade-v7-reference-restored/TZO3_2Krsqk/captions.srt`에서 계산한 10.5136(약 1.67배)을 썼고, 2026-09-07에 교체·예약된 쇼츠 21개가 그 값으로 만들어졌다. 그 값은 승인값으로 남겨 기존 산출물이 계속 재검증되게 하고, 이후 신규 제작은 9.0을 쓴다. 레퍼런스 자막은 계보 증거로 해시를 계속 기록한다. 필요하면 같은 음성에 피치를 바꾸지 않는 atempo 편집을 적용하며, 원고·CTA·자막 토큰은 바꾸지 않는다. 원본/편집 음성 해시와 구간별 시간 변환, 사용한 목표 속도를 기록한다. 승인되지 않은 목표 속도로 만든 산출물은 게이트에서 중단한다.
+- 2026-09-29 사용자 지시: 신규 단일 생성 음성의 무음 제거 후 템포는 `content_production_policy.SHORTS_NARRATION_TARGET_CPS`인 7.6 글자/초로 맞춘다. 원래 약 6.3 글자/초 대비 약 1.2배이며 피치는 유지한다. 이전 승인 속도는 기존 산출물 재검증에만 인정하고 신규 제작 목표로 사용하지 않는다. 원고·CTA·자막 토큰을 바꾸지 않고 원본/편집 음성 해시와 구간별 시간 변환·목표 속도를 기록한다.
 - 최종 자막 정렬값으로 초반·중반·후반의 실제 발화 문자/초를 계산한다. 문자 수는 한국어 최종 자막으로 계산하며 발음 정렬기의 로마자 표기를 세지 않는다. `후반 문자/초 ÷ 초반 문자/초`가 1.10을 넘으면 후반 가속 실패로 보고 생성·업로드를 중단한다.
 - 자막은 발음 정렬값에 맞춘 한 어절/토큰 단위다. 이웃 어절을 합치거나 토큰 중간을 자르지 않는다. `Instantly`, `Microsoft 365` 같은 영문 제품명과 긴 한글 어절도 통째로 표시한다.
 - 자막 양끝의 마침표·쉼표·물음표·느낌표·콜론·세미콜론·따옴표·괄호·말줄임표 등 문장부호는 모두 제거한다. 단, `fal.ai`, `Kling 2.6`처럼 제품명·도메인·버전 표기의 내부 점은 보존한다.
 - 자막은 59px, x=540, y=940, 1줄, merge 비활성으로 고정하고 MP4에 굽는 동시에 SRT/ASS를 보존한다.
-- 음성 -16 LUFS±0.5, 음성 true peak ≤-2dBTP, 음성-BGM ≥14LU, 음성 peak-SFX peak ≥8dB, 최종 -14 LUFS±0.5, 최종 true peak ≤-1.8dBTP를 모두 통과해야 한다.
+- 음량 기준은 `content_production_policy.AUDIO_GATES`가 정본이다. 현재 음성 -16 LUFS±0.5, 음성 true peak ≤-2dBTP, 음성-BGM ≥6.5LU, 음성 peak-SFX peak ≥2.5dB, 최종 -14 LUFS±0.5, 최종 true peak ≤-1.8dBTP다. 배경음·효과음 증량 이전의 더 작은 소리는 기존 승인본 검증에만 인정한다.
 
 ## 검증·예약·교체
 
 - 업로드 전에 `render_config.json`, `machine_validation.json`, `narration_alignment.json`, `02_exact_runtime_gate.json`, 최종 MP4를 같은 폴더에 둔다. `content_production_policy.validate_shorts_bundle_for_upload()` 통과 전에는 Aside가 Studio를 열지 않는다.
 - 접촉 시트와 대표 구간 스크린샷으로 헤드카피, 원본 화면, 민수 원형 PIP, 자막, 워터마크를 직접 확인한다.
-- 쇼츠와 카드뉴스 예약은 토요일·일요일을 포함해 매일 진행한다. 채널별 하루 최대 2개, 최소 5시간 간격이며 기본 시간은 Asia/Seoul 11:00와 20:00다. 예약 직전 공급자의 전체 예약 목록을 다시 읽어 중복 시각과 충돌을 검사한다.
+- 쇼츠·커뮤니티의 신규 예약 시간대·상한·간격은 `content_production_policy.SCHEDULE`를 정본으로 사용한다. 현재 매일 Asia/Seoul 04:00~23:00 정시 20개 슬롯, 최소 1시간 간격이다. 예약 직전 공급자의 전체 예약 목록을 읽어 중복 시각과 충돌을 검사한다. 기존 예약은 자동 이동하지 않는다.
 - 잘못된 기존 예약을 교체할 때는 `새 영상 provider 저장/예약 확인 → 기존 예약 취소 또는 숨김 → 기존 항목 삭제 → CRM sent 1건` 순서를 지킨다. 새 URL/상태 확인 전 기존 것을 지우거나 CRM을 기록하지 않는다.
 - 작업 중간 파일은 새 결과와 provider 상태를 확인한 뒤에만 정리한다. 진행 중 세션·자동화·누적 증거는 삭제하지 않는다.

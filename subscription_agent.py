@@ -11,6 +11,7 @@ Codex 구독으로, Codex가 막히면 Claude로 넘긴다. 크론·루프가 �
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,9 +30,14 @@ def run(prompt: str, *, timeout: int = DEFAULT_TIMEOUT, tools: str | None = None
     if not AGENT_RUN.is_file():
         raise SubscriptionAgentError(f"agent-run을 찾지 못했습니다: {AGENT_RUN}")
     command = [str(AGENT_RUN), "--timeout", str(timeout)]
+    only = os.environ.get("CONTENT_AGENT_ONLY", "").strip()
+    if only:
+        if only not in {"codex", "claude"}:
+            raise SubscriptionAgentError("CONTENT_AGENT_ONLY는 codex 또는 claude여야 합니다.")
+        command += ["--only", only]
     if tools:
         command += ["--tools", tools]
-    if prefer:
+    if prefer and not only:
         command += ["--prefer", prefer]
     try:
         # 프롬프트는 stdin 으로 넘긴다. 명령줄 인자는 길이 상한에 걸린다.
