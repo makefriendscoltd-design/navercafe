@@ -1,0 +1,19 @@
+{
+  "canonical_repository": "https://github.com/makefriendscoltd-design/navercafe",
+  "source_commit": "df4f18159049ca591519aa6a1b95d63fe8d2a781",
+  "instruction_version": "v25.0",
+  "sources": {
+    "outputs/uX6zwf4b8sM-20260829/shorts/renderer/aimax_video_pipeline.py": "733372d9cb10f32b9bcc140ff6a3e7512997cfa931d5c7159776e007da5b09f5",
+    "outputs/20260822-shorts-correction-audit/rebaseline/remade-v7-reference-restored/TZO3_2Krsqk/render_config.json": "e6f791bc077ab0f13e1e2ed8cf193fbb5ae29f96d8481096d52bc256e4750644",
+    "SHORTS_SPEC.md": "b628697a064d3bbb6ff07397328451158505d532a6e7df082d343d583040c427",
+    "content_production_policy.py": "310e99ab2b92995b99c8e587ac4dc499297dc454fbacf42c0768a1d09acacfe1",
+    "build_tailbite_audio.py": "d6554cc65e3468db63fea90baa907abbd64198345b7cac1d2f22e1f2fdc3ebc6",
+    "shorts_narration_tempo.py": "f19b9d2355c5dd8050fddcdbccc6412c4058dc4f04ea4f88d2a019c5a8b3b33d"
+  },
+  "adaptations": [
+    "Runtime paths, source title/credit, source-specific effect times and production provenance removed from reference config.",
+    "Policy is an allowlisted literal extraction; excludes presenter identity/hashes, voice ID, credentials, channel/scheduler settings.",
+    "Tempo import changed to exported style_policy; renderer and tailbite script are byte-identical."
+  ],
+  "scope": "Style components only. Not the production uploader, scheduler, acceptance pipeline or a media bundle."
+}

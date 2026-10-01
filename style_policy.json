@@ -1,0 +1,72 @@
+{
+  "TAILBITE": {
+    "threshold_db": -35.0,
+    "minimum": 0.08,
+    "retained_gap": 0.06
+  },
+  "NARRATION": {
+    "generation_mode": "single_take_reference_restoration",
+    "section_count": 7,
+    "section_gap_seconds": 0.0,
+    "last_to_first_pace_ratio_max": 1.1
+  },
+  "SHORTS_NARRATION_TARGET_CPS": 7.6,
+  "VIDEO": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30
+  },
+  "HEADLINE": {
+    "font_size": 90,
+    "x": 540,
+    "y": 440,
+    "line_spacing": 20
+  },
+  "HEADLINE_SAFE_WIDTH_PX": 920,
+  "HEADLINE_SAFE_PROXY_CHAR_LIMIT": 13,
+  "SUBTITLE": {
+    "font_size": 59,
+    "x": 540,
+    "y": 940,
+    "max_lines": 1,
+    "merge_enabled": false,
+    "rule": "one full token; no Latin/mixed-token slicing"
+  },
+  "PRESENTER": {
+    "x": 325,
+    "y": 1298,
+    "width": 430,
+    "height": 430,
+    "shape": "circle"
+  },
+  "SOURCE_SCREEN": {
+    "x": 0,
+    "y": 664,
+    "width": 1080,
+    "height": 608,
+    "speed": 2.0
+  },
+  "WATERMARK": {
+    "text": "@aimax",
+    "x": 540,
+    "y": 1768,
+    "font_size": 44
+  },
+  "AUDIO_GATES": {
+    "voice_integrated_lufs": -16.0,
+    "voice_integrated_tolerance": 0.5,
+    "voice_true_peak_max_dbtp": -2.0,
+    "voice_minus_bgm_min_lu": 6.5,
+    "voice_peak_minus_sfx_peak_min_db": 2.5,
+    "final_integrated_lufs": -14.0,
+    "final_integrated_tolerance": 0.5,
+    "final_true_peak_max_dbtp": -1.8
+  },
+  "MINSOO_MODEL_ID": "eleven_multilingual_v2",
+  "MINSOO_VOICE_SETTINGS": {
+    "stability": 0.65,
+    "similarity_boost": 0.9,
+    "style": 0.0,
+    "use_speaker_boost": true
+  }
+}
