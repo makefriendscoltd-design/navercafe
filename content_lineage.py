@@ -108,8 +108,8 @@ def validate_interrupted_response_adoption(root, source, origin, answer, policy)
     matches = [x for x in ledger.get('attempts', []) if x.get('source_key') == source
                and x.get('updated_at') == adoption.get('newest_attempt_at')
                and x.get('attempt_status') == 'unknown_after_provider_start'
-               and x.get('instruction_version') == policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION
-               and x.get('instruction_sha256') == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256]
+               and policy.shorts_instruction_pin_registered(
+                   x.get('instruction_version'), x.get('instruction_sha256'))]
     if ledger.get('sourceKey') != source or len(matches) != 1:
         raise LineageError('Interrupted adoption has no exact unknown attempt')
     recovered_at = str(adoption.get('recovered_at') or '')
@@ -159,9 +159,10 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
         transcript = bound_file(root, origin.get('transcript'), 'transcript')
         writer_path = bound_file(root, origin.get('writer_evidence'), 'writer_evidence')
         writer = read_json(writer_path)
-        if (writer.get('instruction_sha256') != policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
-                or writer.get('instruction_version') != policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION):
-            raise LineageError('Shorts caption_written requires the current instruction')
+        # 등록된 (버전, 해시) 쌍이면 v24.0으로 만든 기존 쇼츠도 계속 검증된다.
+        if not policy.shorts_instruction_pin_registered(
+                writer.get('instruction_version'), writer.get('instruction_sha256')):
+            raise LineageError('Shorts caption_written requires a registered instruction')
         if writer.get('transcript_sha256') != sha256(transcript):
             raise LineageError('Writer evidence does not match the saved transcript')
         if writer.get('answer_sha256') != sha256(answer):

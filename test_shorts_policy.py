@@ -342,10 +342,12 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v24.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v25.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION.splitlines()[0].endswith("v25.0")
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "35516a23da58099e1b3b6171e6d7048b4b996eca0857b95871660ff17f111671"
+        policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
     )
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256 != policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
         marker in policy.SHORTS_NOTEBOOK_INSTRUCTION
@@ -1852,7 +1854,7 @@ def test_live_channel_policy_is_readable_and_names_the_introduction_video():
 def test_v19_requires_source_backed_authority_in_the_headline_and_hook():
     """초기 직접 제작분은 후킹에 원본의 수치·권위를 넣었고, v18은 그걸 금지하고 있었다."""
     text = policy.SHORTS_NOTEBOOK_INSTRUCTION
-    assert "둘째 줄에 그중 하나를 반드시 넣는다" in text
+    assert "첫 줄에 그중 하나를 반드시 넣는다" in text
     assert "세 후보의 첫 줄은 서로 달라야 하며" in text
     assert "`팁`, `방법`, `정리`, `노하우`처럼 내용이 없는 명사로 끝내지 않는다" in text
     assert "`~정의입니다`, `~개선입니다`, `~활용입니다`처럼 명사로 끝내지 않는다" in text
@@ -1930,3 +1932,57 @@ def test_spoken_units_do_not_reject_idea_word():
 def test_comment_keyword_excludes_temporal_particle():
     assert shorts.derive_comment_keyword("삼십 초 만에 작업을 끝냅니다.", "30초 만에") != "만에"
     assert shorts.derive_comment_keyword("메일을 메일로 정리하세요.", "메일 정리") == "메일"
+
+
+def test_v25_instruction_encodes_the_approved_script_style_and_v2_headcopy_width():
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    profile = policy.shorts_style_profile(policy.SHORTS_STYLE_V2)
+    assert profile["headline_font_size_1080"] == 112
+    assert "112px, 가로 92% 기준 실측 폭 1000px 이하" in text
+    assert f"한글 기준 {policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT_V2}자 이하" in text
+    assert policy.HEADLINE_SAFE_WIDTH_PX_V2 == 1000
+    for stale in ("90px", "920px", "13자"):
+        assert stale not in text
+    # v24는 90px/920px 문구를 그대로 보존한다.
+    assert "90px 실측 폭 920px 이하" in policy.SHORTS_NOTEBOOK_INSTRUCTION_V24
+    assert "벌었다는" in text and "화자 이름을 주어로 하는 단정문" in text
+    assert "공백 포함 70~85자 안팎" in text
+    # 기존 안전 규칙과 CTA/Repurpose 경계 문장은 v24와 글자 그대로 같다.
+    for sentence in (
+        "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
+        "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
+        "CTA 반영은 영상 제작자의 시연 사례입니다.",
+        "결과는 보장되지 않습니다.",
+    ):
+        assert sentence in text and sentence in policy.SHORTS_NOTEBOOK_INSTRUCTION_V24
+
+
+def test_instruction_registry_accepts_only_registered_version_hash_pairs():
+    registry = policy.SHORTS_NOTEBOOK_INSTRUCTIONS
+    assert set(registry) == {"v24.0", "v25.0"}
+    for version, (text, digest) in registry.items():
+        assert policy.notebook_instruction_sha256(text) == digest
+        assert policy.shorts_instruction_pin_registered(version, digest)
+    assert policy.shorts_instruction_pin_registered("v24.0", "35516a23da58099e1b3b6171e6d7048b4b996eca0857b95871660ff17f111671")
+    assert not policy.shorts_instruction_pin_registered("v24.0", registry["v25.0"][1])
+    assert not policy.shorts_instruction_pin_registered("v25.0", registry["v24.0"][1])
+    assert not policy.shorts_instruction_pin_registered("v24.0", "0" * 64)
+    assert not policy.shorts_instruction_pin_registered("v23.0", registry["v24.0"][1])
+    assert not policy.shorts_instruction_pin_registered("", "")
+    assert not policy.shorts_instruction_pin_registered(None, None)
+    # 새 지침 검증(소스 추가 전 게이트)은 현행 v25만 받는다.
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_notebook_instruction(policy.SHORTS_NOTEBOOK_INSTRUCTION_V24)
+    assert policy.validate_shorts_notebook_instruction(
+        policy.SHORTS_NOTEBOOK_INSTRUCTION)["version"] == "v25.0"
+
+
+def test_retry_gate_pins_each_instruction_version_separately():
+    v24 = {"source_key": "iOwKylW8c5Q", "attempt_status": "substantive_failed",
+           "substantive_failure": True, "instruction_version": "v24.0",
+           "instruction_sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256}
+    assert policy.validate_shorts_notebook_retry("iOwKylW8c5Q", [v24])["status"] == "pass"
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_notebook_retry(
+            "iOwKylW8c5Q", [v24], instruction_version="v24.0",
+            instruction_sha256=policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256)

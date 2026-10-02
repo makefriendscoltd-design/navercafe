@@ -325,13 +325,17 @@ def head_copy_lines(value: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
+def validate_head_copy(
+    value: str, *, measure_pixels: bool = True, style_version: str | None = None
+) -> str:
     """Require the owner's spoken two-line first-screen copy shape.
 
     ``measure_pixels`` is the render constraint rather than the copy contract:
     only the adopted candidate is burned into the video, so only it has to fit
     the 90px safe width.  An alternative that is never rendered is still held to
-    every structural rule.
+    every structural rule.  ``style_version`` is None for the legacy v1 width
+    (90px, 920px); a new build passes its style so the v2 width (112px at 92%,
+    1000px) is measured instead.  v2 passes imply v1 passes.
     """
     first, second = head_copy_lines(value)
     if any(len(line) > 18 for line in (first, second)):
@@ -346,7 +350,7 @@ def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
         )
     if measure_pixels:
         try:
-            validate_headline_pixel_width((first, second))
+            validate_headline_pixel_width((first, second), style_version)
         except Exception as exc:
             raise RuntimeError(str(exc)) from exc
     return f"{first}\n{second}"

@@ -27,8 +27,17 @@ from content_production_policy import (
     MINSOO_MODEL_ID,
     MINSOO_VOICE_ID,
     MINSOO_VOICE_SETTINGS,
+    AUDIO_GATES,
+    HEADLINE_V2,
+    MIX_V2,
     NARRATION,
+    SHORTS_STYLE_ACTIVE,
+    SHORTS_STYLE_V1,
+    SHORTS_STYLE_V2,
+    SOURCE_SCREEN_V2,
+    SUBTITLE_V2,
     TAILBITE,
+    WATERMARK_V2,
     strip_subtitle_edge_punctuation,
     validate_narration_target_cps,
     validate_presenter_asset,
@@ -54,6 +63,11 @@ BGM = ASSET_ROOT / "bgm/DSGNBass-Millitary_Action_Tri-Elevenlabs.mp3"
 SFX = ASSET_ROOT / "sfx/WHSH-Whoosh_Short_Clean-Elevenlabs.mp3"
 TITLE_FONT = ASSET_ROOT / "fonts/BMHANNA_11yrs_ttf.ttf"
 BODY_FONT = ASSET_ROOT / "fonts/Cafe24Ohsquare.ttf"
+# 새로 만드는 쇼츠의 스타일. production_manifest의 render_inputs.style_version이 없으면 현행
+# 정본(SHORTS_STYLE_ACTIVE)이다. 이미 렌더된 쇼츠는 render_config.json의 style_version으로
+# 판단하므로(없으면 v1) 이 값은 새 렌더에만 쓰인다.
+STYLE_VERSION = SHORTS_STYLE_ACTIVE
+STYLE_V2_MODULE = PROJECT / "shorts_style_v2.py"
 NARRATION_GENERATION_PROTOCOL = "single_take_reference_restoration_v1"
 NARRATION_PAIR_PREFLIGHT_MAX = 1.08
 NARRATION_PAIR_MAX_ATTEMPTS = 6
@@ -930,9 +944,12 @@ def build_config(markers: list[float]) -> dict:
         raise RuntimeError("exactly three two-line headcopy candidates required")
     for index, candidate in enumerate(candidate_lines):
         # Only the first candidate is drawn, so only it is held to the 90px width.
-        validate_head_copy(candidate, measure_pixels=index == 0)
+        validate_head_copy(
+            candidate, measure_pixels=index == 0,
+            style_version=STYLE_VERSION if STYLE_VERSION != SHORTS_STYLE_V1 else None)
     validate_head_copy_connection(candidate_lines[0], SCRIPT.read_text(encoding="utf-8"))
     presenter = validate_presenter_asset(PRESENTER)
+    v2 = STYLE_VERSION == SHORTS_STYLE_V2
     cfg["title"].update({
         "text": candidate_lines[0], "font_path": str(TITLE_FONT),
         "font_size": 90, "x": 540, "y": 440, "line_spacing": 20,
@@ -942,16 +959,27 @@ def build_config(markers: list[float]) -> dict:
         "x": 540, "y": 940, "max_lines": 1,
         "merge_enabled": False, "mode": "eojel", "max_chars_per_line": 30,
     })
+    if v2:
+        cfg["style_version"] = SHORTS_STYLE_V2
+        cfg["title"].update(HEADLINE_V2)
+        cfg["subtitle"].update({k: v for k, v in SUBTITLE_V2.items() if k != "rule"})
+        # 승인 렌더러가 읽는 italic·bold는 위 update로 들어갔고, 기울기는 ASS의 fax 태그가 맡는다.
+        cfg["title"].pop("shear", None)
     cfg["presenter"] = {
         "x": 325, "y": 1298, "width": 430, "height": 430, "shape": "circle",
         "crop": "", "color_filter": "eq=brightness=0.025:contrast=1.14:saturation=1.06,colorbalance=bs=0.035:gs=0.01",
         "left_light": {"color": "00C8FF", "alpha": 0.38, "width": 260},
     }
     cfg["screen"] = {"fit": "cover", "x": 0, "y": 664, "width": 1080, "height": 608, "start_at": SOURCE_START_AT, "speed": 2.0}
+    if v2:
+        cfg["screen"]["color_filter"] = SOURCE_SCREEN_V2["color_filter"]
     cfg["watermark"].update({
         "text": "@aimax", "font_path": str(TITLE_FONT),
         "x": 540, "y": 1768, "font_size": 44,
     })
+    if v2:
+        cfg["watermark"].update({"italic": WATERMARK_V2["italic"], "fax": WATERMARK_V2["fax"]})
+        cfg["watermark"].pop("shear", None)
     cfg["source"].update({"text": SOURCE_CREDIT, "x": 540, "y": 1270, "font_size": 27, "duration": 3.0})
     cfg["audio"] = {
         "voice_volume": 1.0, "master_lufs": -14.0, "master_lra": 3.0,
@@ -983,6 +1011,12 @@ def build_config(markers: list[float]) -> dict:
             "reference": "LW8KLS9j2_E_shorts_1080x1920_APPROVED_BALANCED.mp4",
         },
     }
+    if v2:
+        restoration = cfg["render_provenance"]["v7_reference_restoration"]
+        restoration["headline_font_size_1080"] = HEADLINE_V2["font_size"]
+        restoration["style_version"] = SHORTS_STYLE_V2
+        cfg["render_provenance"]["style_overlay_path"] = str(STYLE_V2_MODULE)
+        cfg["render_provenance"]["style_overlay_sha256"] = sha(STYLE_V2_MODULE)
     return cfg
 
 
@@ -1000,6 +1034,8 @@ def build_sfx_stem(markers: list[float], dur: float) -> Path:
     chains.append(f"{''.join(labels)}amix=inputs={len(labels)}:duration=longest:normalize=0,apad,atrim=0:{dur:.3f}[out]")
     args += ["-filter_complex", ";".join(chains), "-map", "[out]", "-c:a", "pcm_s24le", raw]
     run(args)
+    if STYLE_VERSION == SHORTS_STYLE_V2:
+        return raw
     raw_metrics = loudness(raw)
     voice_peak = loudness(ROOT / "voice_stem.wav")["true_peak_dbtp"]
     desired_peak = min(-8.0, voice_peak - 3.0)
@@ -1013,6 +1049,89 @@ def build_sfx_stem(markers: list[float], dur: float) -> Path:
     return stem
 
 
+def _decode_mono(path: Path):
+    import numpy as np
+    data = subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", "48000", "-f", "f32le", "-"],
+        capture_output=True, check=True).stdout
+    return np.frombuffer(data, dtype=np.float32).astype(np.float64)
+
+
+def measure_gain_vs_asset(final: Path, voice: Path, bgm_raw: Path, sfx_raw: Path) -> dict:
+    """Least-squares gain of each raw component inside the final mix.
+
+    final = a*voice_stem + b*bgm_raw + c*sfx_raw.  bgm_raw and sfx_raw are the
+    untouched assets (looped / placed at the five cues), so b and c are the
+    gain versus the original asset that the reference analysis reports.
+    """
+    import numpy as np
+    parts = [_decode_mono(p) for p in (final, voice, bgm_raw, sfx_raw)]
+    n = min(len(x) for x in parts)
+    y, *basis = (x[:n] for x in parts)
+    coef, *_ = np.linalg.lstsq(np.stack(basis, axis=1), y, rcond=None)
+    residual = float(np.sqrt(np.mean((y - np.stack(basis, axis=1) @ coef) ** 2)) / np.sqrt(np.mean(y ** 2)))
+    return {"voice": round(float(coef[0]), 4), "bgm": round(float(coef[1]), 4),
+            "sfx": round(float(coef[2]), 4), "relative_residual": round(residual, 4)}
+
+
+def build_mix_v2(voice_stem: Path, sfx_raw: Path, dur: float,
+                 bgm_stem: Path, sfx_stem: Path, premaster: Path) -> dict:
+    """Linear voice + BGM + SFX mix with BGM/SFX as loud as the audio gates allow.
+
+    The reference mix puts BGM at about 0.35 and the whoosh at about 0.9 of the
+    original asset gain in the final -14 LUFS mix.  Both stem gates are measured
+    on the stems, and one final gain moves stems and voice together, so the gates
+    cap the gains independently of that final gain:
+      BGM stem LUFS <= voice LUFS - 6.5 LU,   SFX stem peak <= voice peak - 2.5 dB.
+    Gains are the demo target divided by the final gain, clamped to those caps.
+    """
+    margin = MIX_V2["gate_margin_db"]
+    bgm_raw = ROOT / "bgm_raw.wav"
+    run(["ffmpeg", "-hide_banner", "-y", "-stream_loop", "-1", "-i", BGM, "-t", f"{dur:.3f}",
+         "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", bgm_raw])
+    voice = loudness(voice_stem)
+    bgm_lufs = loudness(bgm_raw)["integrated_lufs"]
+    sfx_peak = loudness(sfx_raw)["true_peak_dbtp"]
+    bgm_cap = 10 ** ((voice["integrated_lufs"] - AUDIO_GATES["voice_minus_bgm_min_lu"] - margin - bgm_lufs) / 20)
+    sfx_cap = 10 ** ((voice["true_peak_dbtp"] - AUDIO_GATES["voice_peak_minus_sfx_peak_min_db"] - margin - sfx_peak) / 20)
+
+    def mix(bgm_gain: float, sfx_gain: float) -> float:
+        run(["ffmpeg", "-hide_banner", "-y", "-i", voice_stem, "-i", bgm_raw, "-i", sfx_raw,
+             "-filter_complex",
+             f"[1:a]volume={bgm_gain:.6f}[b];[2:a]volume={sfx_gain:.6f}[s];"
+             f"[0:a][b][s]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,atrim=0:{dur:.3f}[out]",
+             "-map", "[out]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", premaster])
+        return 10 ** ((AUDIO_GATES["final_integrated_lufs"] - loudness(premaster)["integrated_lufs"]) / 20)
+
+    final_gain = 1.4
+    for _ in range(6):
+        bgm_gain = min(MIX_V2["target_bgm_gain_vs_asset"] / final_gain, bgm_cap)
+        sfx_gain = min(MIX_V2["target_sfx_gain_vs_asset"] / final_gain, sfx_cap)
+        new_final = mix(bgm_gain, sfx_gain)
+        converged = abs(new_final / final_gain - 1) < 0.005
+        final_gain = new_final
+        if converged:
+            break
+    bgm_gain = min(MIX_V2["target_bgm_gain_vs_asset"] / final_gain, bgm_cap)
+    sfx_gain = min(MIX_V2["target_sfx_gain_vs_asset"] / final_gain, sfx_cap)
+    mix(bgm_gain, sfx_gain)
+    for raw, stem, gain in ((bgm_raw, bgm_stem, bgm_gain), (sfx_raw, sfx_stem, sfx_gain)):
+        run(["ffmpeg", "-hide_banner", "-y", "-i", raw, "-af", f"volume={gain:.6f}",
+             "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", stem])
+    return {
+        "style_version": SHORTS_STYLE_V2,
+        "targets_gain_vs_asset": {"bgm": MIX_V2["target_bgm_gain_vs_asset"],
+                                  "sfx": MIX_V2["target_sfx_gain_vs_asset"]},
+        "stem_gain_vs_asset": {"bgm": round(bgm_gain, 5), "sfx": round(sfx_gain, 5)},
+        "gate_caps_stem_gain": {"bgm": round(bgm_cap, 5), "sfx": round(sfx_cap, 5)},
+        "limited_by_gate": {"bgm": bgm_gain >= bgm_cap - 1e-9, "sfx": sfx_gain >= sfx_cap - 1e-9},
+        "estimated_final_gain": round(final_gain, 4),
+        "asset": {"bgm_lufs": bgm_lufs, "sfx_true_peak_dbtp": sfx_peak},
+        "voice": {"lufs": voice["integrated_lufs"], "true_peak_dbtp": voice["true_peak_dbtp"]},
+        "gate_margin_db": margin,
+    }
+
+
 # The source panel sits between the head copy and the Minsoo PIP. Captions are
 # drawn inside it and differ per checkpoint, so comparing this band understates
 # how static a source is -- a source that trips the check is genuinely dead.
@@ -1022,6 +1141,8 @@ SOURCE_PANEL_BOX = (0, 664, 1080, 1272)
 PRESENTER_BOX = (325, 1298, 755, 1728)
 WATERMARK_BOX = (400, 1740, 680, 1800)
 HEADLINE_BOX = (0, 180, 1080, 560)
+# v2 두 줄은 y=385·513 중심의 112px 글자라 아래 줄이 560을 넘는다. 원본 화면(y=664) 위까지만 본다.
+HEADLINE_BOX_V2 = (0, 180, 1080, 640)
 # Two checkpoints landing on the same shot is ordinary; the median short does it.
 # Half the checkpoints showing one still is a 50-minute webinar holding a slide.
 STILL_FRAME_TOLERANCE = 6.0
@@ -1051,7 +1172,7 @@ def still_source_group(frames: list[Path]) -> dict:
             "limit": MAX_IDENTICAL_CHECKPOINTS}
 
 
-def measure_layout(frames: list[Path]) -> dict:
+def measure_layout(frames: list[Path], headline_box: tuple = HEADLINE_BOX) -> dict:
     """Measure the layout the eight-frame human check was looking for.
 
     These four were recorded as ``True`` without anything ever looking, which is
@@ -1079,7 +1200,7 @@ def measure_layout(frames: list[Path]) -> dict:
         centre = pip[2 * middle:3 * middle, 2 * middle:3 * middle]
         return float(centre.std()), float(max(c.std() for c in corners))
 
-    headline = min(ink(HEADLINE_BOX, f) for f in frames)
+    headline = min(ink(headline_box, f) for f in frames)
     panel = min(ink(SOURCE_PANEL_BOX, f) for f in frames)
     watermark = min(ink(WATERMARK_BOX, f) for f in frames)
     pip = [corner_vs_centre(f) for f in frames]
@@ -1170,20 +1291,36 @@ def render() -> int:
     ass = ROOT / "captions.ass"
     renderer.srt_to_ass(srt, ass, cfg)
     visual = ROOT / "visual_with_temp_audio.mp4"
+    v2 = STYLE_VERSION == SHORTS_STYLE_V2
+    if v2:
+        import shorts_style_v2
+        shorts_style_v2.apply_style_v2_to_ass(ass, cfg)
     if not visual.exists():
-        renderer.render_final(PRESENTER, ass, visual, cfg, SOURCE, voice_stem)
+        if v2:
+            shorts_style_v2.render_final_v2(renderer, PRESENTER, ass, visual, cfg, SOURCE, voice_stem)
+        else:
+            renderer.render_final(PRESENTER, ass, visual, cfg, SOURCE, voice_stem)
 
     bgm_stem = ROOT / "bgm_stem.wav"
-    normalize_loudness(BGM, bgm_stem, -23.0, -9.0, dur)
-    sfx_stem = build_sfx_stem(markers, dur)
     premaster = ROOT / "premaster_mix.wav"
-    run([
-        "ffmpeg", "-hide_banner", "-y", "-i", voice_stem, "-i", bgm_stem, "-i", sfx_stem,
-        "-filter_complex", f"[0:a][1:a][2:a]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,atrim=0:{dur:.3f}[out]",
-        "-map", "[out]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", premaster,
-    ])
+    if v2:
+        sfx_raw = build_sfx_stem(markers, dur)
+        mix_profile = build_mix_v2(voice_stem, sfx_raw, dur, bgm_stem, ROOT / "sfx_stem.wav", premaster)
+        sfx_stem = ROOT / "sfx_stem.wav"
+    else:
+        normalize_loudness(BGM, bgm_stem, -23.0, -9.0, dur)
+        sfx_stem = build_sfx_stem(markers, dur)
+        run([
+            "ffmpeg", "-hide_banner", "-y", "-i", voice_stem, "-i", bgm_stem, "-i", sfx_stem,
+            "-filter_complex", f"[0:a][1:a][2:a]amix=inputs=3:duration=first:dropout_transition=0:normalize=0,atrim=0:{dur:.3f}[out]",
+            "-map", "[out]", "-ar", "48000", "-ac", "2", "-c:a", "pcm_s24le", premaster,
+        ])
     final_master = ROOT / "final_master.wav"
     normalize_loudness(premaster, final_master, -14.0, -3.0)
+    if v2:
+        mix_profile["achieved_gain_vs_asset"] = measure_gain_vs_asset(
+            final_master, voice_stem, ROOT / "bgm_raw.wav", sfx_raw)
+        dump(ROOT / "mix_profile.json", mix_profile)
     final_m4a = ROOT / "final_master.m4a"
     run([
         "ffmpeg", "-hide_banner", "-y", "-i", final_master,
@@ -1315,10 +1452,12 @@ def validate_existing_render() -> int:
     stillness = still_source_group(frames)
     still = stillness["largest_identical_group"] > MAX_IDENTICAL_CHECKPOINTS
     # These five used to be written as True with nothing having looked at them.
-    layout = measure_layout(frames)
-    layout["checks"]["headline_90px_two_lines"] = (
+    style = cfg.get("style_version") or SHORTS_STYLE_V1
+    headline_size = HEADLINE_V2["font_size"] if style == SHORTS_STYLE_V2 else 90
+    layout = measure_layout(frames, HEADLINE_BOX_V2 if style == SHORTS_STYLE_V2 else HEADLINE_BOX)
+    layout["checks"][f"headline_{headline_size}px_two_lines"] = (
         layout["checks"].pop("headline_present")
-        and cfg["render_provenance"]["v7_reference_restoration"]["headline_font_size_1080"] == 90
+        and cfg["render_provenance"]["v7_reference_restoration"]["headline_font_size_1080"] == headline_size
         and len(str(cfg["title"].get("text") or "").splitlines()) == 2)
     # One full token per cue is a machine gate already; carry its verdict here.
     layout["checks"]["single_token_subtitles"] = bool(gates.get("full_token_subtitles"))
@@ -1362,10 +1501,30 @@ def validate_existing_render() -> int:
     return 0
 
 
+def resolve_style_version(root: Path, render_inputs: dict) -> str:
+    """Which look this directory is built (or was built) with.
+
+    A manifest that names a style wins.  Otherwise a directory that already has a
+    render_config.json keeps the style it was rendered with (no key means v1, the
+    90px/59px look that queued and published shorts were validated against), and
+    only a directory with nothing rendered yet gets the active style.
+    """
+    named = render_inputs.get("style_version")
+    if named is None:
+        rendered = root / "render_config.json"
+        if rendered.is_file():
+            named = json.loads(rendered.read_text(encoding="utf-8")).get("style_version") or SHORTS_STYLE_V1
+        else:
+            named = SHORTS_STYLE_ACTIVE
+    if named not in (SHORTS_STYLE_V1, SHORTS_STYLE_V2):
+        raise RuntimeError(f"unknown shorts style version: {named}")
+    return named
+
+
 def configure(root: Path) -> None:
     global ROOT, SOURCE_ID, SOURCE_URL, SOURCE, PRESENTER, SCRIPT, HEADCOPY, FINAL
     global SOURCE_MINUTES, SCENE_JOBS, SCENE_SENTINELS, UPLOAD_TITLE, SOURCE_CREDIT
-    global SOURCE_START_AT, COMMENT_KEYWORD
+    global SOURCE_START_AT, COMMENT_KEYWORD, STYLE_VERSION
     from content_lineage import bound_file, validate_shorts_origin
     ROOT = root.resolve()
     origin = validate_shorts_origin(ROOT)
@@ -1381,6 +1540,7 @@ def configure(root: Path) -> None:
         raise RuntimeError("comment CTA transform contract is invalid")
     COMMENT_KEYWORD = validate_comment_keyword(str(transform.get("comment_keyword") or ""))
     data = manifest["render_inputs"]
+    STYLE_VERSION = resolve_style_version(ROOT, data)
     SOURCE_ID = origin["source_key"]
     SOURCE_URL = f"https://youtu.be/{SOURCE_ID}"
     SOURCE = bound_file(ROOT, data["source"], "source video")

@@ -142,7 +142,10 @@ def _headcopy_order(heads: list[str], script: str) -> list[str]:
         # 후보 추출 단계는 첫 후보만 90px 폭을 실측한다. 순서를 바꾸면 실측을 안 거친
         # 후보가 화면에 올라가 3줄로 접힐 수 있으므로, 바꿔 넣을 후보를 여기서 실측한다.
         try:
-            scripts.validate_head_copy(candidate, measure_pixels=True)
+            # 새로 만드는 쇼츠는 v2(112px, 가로 92%) 폭으로 잰다. 노트북 지침은 90px 920px
+            # 기준이라 후보가 v1은 통과해도 v2에서 넘칠 수 있다.
+            scripts.validate_head_copy(
+                candidate, measure_pixels=True, style_version=policy.SHORTS_STYLE_ACTIVE)
         except RuntimeError:
             return False
         return True
@@ -394,6 +397,7 @@ def prepare(source_key: str, *, candidate_name: str = "shorts") -> dict:
             "source": binding(source_video), "presenter": presenter_binding,
             "headcopy": binding(root / "06_headcopy_candidates.txt"),
             "source_credit": credit, "upload_title": title,
+            "style_version": policy.SHORTS_STYLE_ACTIVE,
             "scene_jobs": [section.split(".")[0] for section in sections[:6]],
             "scene_sentinels": [[section.split(".")[0]] for section in sections[1:6]]},
     }

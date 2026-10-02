@@ -196,3 +196,47 @@ def test_v7_section_split_uses_bound_comment_keyword_and_rejects_old_cta(monkeyp
     with pytest.raises(RuntimeError, match='source-duration CTA missing'):
         builder.split_seven_sections(body + '\n\n12분 짜리 영상 내용을 모두 정리했습니다.\n\n'
                                      '이 자료 궁금하신 분들은 채널을 구독후 프로필 링크를 확인하세요.')
+
+
+def _caption_written_root(tmp_path, version, sha):
+    import content_production_policy as policy
+    raw = ('### 헤드카피라이팅\n1. 영상 개요가 대박?! / 소스 기반 제작법\n'
+           '2. 영상 만들기 어렵죠? / 개요 생성 순서\n3. 이 기능 놓치면 손해 / 영상 개요 활용법\n\n### 스크립트\n'
+           '이 프로그램 대박입니다. 영상 개요의 소스 기반 제작법입니다. 영상 제작 5가지 방법, 저장하고 끝까지 보세요!\n\n'
+           '첫째, 사용할 소스를 추가하세요.\n\n둘째, 소스 내용을 확인하세요.\n\n셋째, 필요한 형식을 고르세요.\n\n'
+           '넷째, 영상 개요를 확인하세요.\n\n다섯째, 결과를 확인하세요.')
+    answer, script, transcript, writer, transform = [
+        tmp_path / n for n in ('answer.md', 'script.txt', 'transcript.txt', 'writer.json', 'cta-transform.json')]
+    answer.write_text(raw)
+    transcript.write_text('자막 원문')
+    parsed, _ = shorts.extract_script(raw)
+    script.write_text(shorts.finalize_script(parsed, 12, '자료'))
+    transform.write_text(json.dumps(shorts.cta_only_transform_report(
+        parsed, script.read_text(), 12, keyword='자료', provider_answer=raw)))
+    writer.write_text(json.dumps({
+        'writer': 'subscription_agent', 'instruction_version': version, 'instruction_sha256': sha,
+        'transcript_sha256': lineage.sha256(transcript), 'answer_sha256': lineage.sha256(answer)}))
+    captions = tmp_path / 'captions.json'
+    captions.write_text(json.dumps({'source_key': 'sampleKey01', 'transcript_sha256': lineage.sha256(transcript)}))
+    bind = lambda p: {'path': p.name, 'sha256': lineage.sha256(p)}
+    (tmp_path / 'production_manifest.json').write_text(json.dumps({'source_id': 'sampleKey01', 'content_lineage': {
+        'caption_evidence': bind(captions), 'mode': 'caption_written', 'answer': bind(answer), 'transcript': bind(transcript),
+        'writer_evidence': bind(writer), 'script': bind(script), 'cta_transform': bind(transform),
+        'source_minutes': 12}}))
+
+
+def test_caption_written_origin_accepts_registered_instruction_versions_only(tmp_path):
+    import content_production_policy as policy
+    reg = policy.SHORTS_NOTEBOOK_INSTRUCTIONS
+    for version in ('v24.0', 'v25.0'):
+        root = tmp_path / version
+        root.mkdir()
+        _caption_written_root(root, version, reg[version][1])
+        assert lineage.validate_shorts_origin(root)['source_key'] == 'sampleKey01'
+    for name, version, sha in (('wrong24', 'v24.0', reg['v25.0'][1]), ('wrong25', 'v25.0', reg['v24.0'][1]),
+                               ('zeros', 'v25.0', '0' * 64), ('unknown', 'v23.0', reg['v24.0'][1])):
+        root = tmp_path / name
+        root.mkdir()
+        _caption_written_root(root, version, sha)
+        with pytest.raises(lineage.LineageError, match='registered instruction'):
+            lineage.validate_shorts_origin(root)

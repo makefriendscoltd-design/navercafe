@@ -182,6 +182,15 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         and policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
         and policy.SHORTS_TITLE_FONT_PATH.is_file()
     )
+    checks["shorts_style_v2_profile"] = (
+        policy.SHORTS_STYLE_ACTIVE == policy.SHORTS_STYLE_V2
+        and policy.HEADLINE_V2["font_size"] == 112
+        and policy.HEADLINE_V2["scale_x"] == 92
+        and policy.HEADLINE_SAFE_WIDTH_PX_V2 == 1000
+        and policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT_V2 == 10
+        and policy.SUBTITLE_V2["font_size"] == 82
+        and (project / "shorts_style_v2.py").is_file()
+    )
     shorts_runtime_source = (project / "notebooklm_shorts.py").read_text(encoding="utf-8")
     checks["shorts_attempt_ledger_fail_closed"] = (
         "shorts-notebook-attempt-ledger/v1" in shorts_runtime_source
