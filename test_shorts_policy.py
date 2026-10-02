@@ -88,15 +88,17 @@ def test_all_four_downloaded_minsoo_assets_have_locked_hashes():
         assert policy.validate_presenter_asset(downloads / name)["sha256"]
 
 
-def test_schedule_allows_two_per_day_with_five_hour_gap():
+def test_schedule_allows_twenty_per_day_with_one_hour_gap():
+    """제작이 하루 20편이라 발행도 20편으로 맞췄다(2026-09-29)."""
     zone = ZoneInfo("Asia/Seoul")
-    slots = [
-        datetime(2026, 8, 24, 11, tzinfo=zone),
-        datetime(2026, 8, 24, 20, tzinfo=zone),
-    ]
+    slots = [datetime(2026, 8, 24, hour, tzinfo=zone)
+             for hour in policy.SCHEDULE["preferred_hours"]]
+    assert len(slots) == 20
     assert policy.validate_schedule(slots) == slots
-    with pytest.raises(policy.ProductionPolicyError, match="최소 5시간"):
-        policy.validate_schedule([slots[0], slots[0] + timedelta(hours=4)])
+    with pytest.raises(policy.ProductionPolicyError, match="최소 1시간"):
+        policy.validate_schedule([slots[0], slots[0] + timedelta(minutes=30)])
+    with pytest.raises(policy.ProductionPolicyError, match="하루 최대 20개"):
+        policy.validate_schedule(slots + [datetime(2026, 8, 24, 3, tzinfo=zone)])
 
 
 def test_schedule_includes_saturday_and_sunday():
@@ -119,19 +121,25 @@ def test_schedule_rejects_fixed_offset_and_naive_datetimes():
         policy.validate_schedule([datetime(2026, 9, 17, 11)])
 
 
-def test_plan_shorts_schedule_is_append_only_and_gap_safe():
+def test_plan_shorts_schedule_fills_the_earliest_free_slot():
+    """예전에는 마지막 예약 뒤에만 붙였다. 앞날짜가 비어 있는데도 새 영상이 밀렸다."""
     zone = ZoneInfo("Asia/Seoul")
     now = datetime(2026, 9, 5, 0, 30, tzinfo=zone)
-    assert policy.plan_shorts_schedule([], now) == datetime(2026, 9, 5, 11, tzinfo=zone)
+    assert policy.plan_shorts_schedule([], now) == datetime(2026, 9, 5, 4, tzinfo=zone)
+    # 먼 날짜가 이미 잡혀 있어도 오늘 비어 있는 자리를 쓴다.
     assert policy.plan_shorts_schedule(
         [datetime(2026, 9, 16, 11, tzinfo=zone)], now
-    ) == datetime(2026, 9, 16, 20, tzinfo=zone)
-    assert policy.plan_shorts_schedule(
-        [datetime(2026, 9, 16, 20, tzinfo=zone)], now
-    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
-    assert policy.plan_shorts_schedule(
-        [datetime(2026, 9, 16, 18, tzinfo=zone)], now
-    ) == datetime(2026, 9, 17, 11, tzinfo=zone)
+    ) == datetime(2026, 9, 5, 4, tzinfo=zone)
+    # 그날 앞자리가 차 있으면 다음 빈 자리로 간다.
+    taken = [datetime(2026, 9, 5, hour, tzinfo=zone) for hour in (4, 5, 6)]
+    assert policy.plan_shorts_schedule(taken, now) == datetime(2026, 9, 5, 7, tzinfo=zone)
+    # 지난 시각은 절대 쓰지 않는다.
+    late = datetime(2026, 9, 5, 18, 30, tzinfo=zone)
+    assert policy.plan_shorts_schedule([], late) == datetime(2026, 9, 5, 19, tzinfo=zone)
+    # 하루가 다 차면 다음 날 첫 자리로 넘어간다.
+    full = [datetime(2026, 9, 5, hour, tzinfo=zone)
+            for hour in policy.SCHEDULE["preferred_hours"]]
+    assert policy.plan_shorts_schedule(full, now) == datetime(2026, 9, 6, 4, tzinfo=zone)
 
 
 def test_replacement_sequence_is_fail_closed():
@@ -334,10 +342,12 @@ def test_shorts_uses_the_simple_notebooklm_request():
 
 
 def test_shorts_notebook_instruction_v16_is_hash_pinned_and_fail_closed():
-    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v18.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION == "v25.0"
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION.splitlines()[0].endswith("v25.0")
     assert policy.notebook_instruction_sha256(policy.SHORTS_NOTEBOOK_INSTRUCTION) == (
-        "82ee6b06f966cd4a136542f5ea3957befd91de9c2f8d42c6993a4f9730d9127d"
+        policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
     )
+    assert policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256 != policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256
     assert policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
     assert all(
         marker in policy.SHORTS_NOTEBOOK_INSTRUCTION
@@ -1299,9 +1309,14 @@ def test_plural_person_hook_and_same_line_body_are_accepted():
     assert shorts.require_strong_hook(script) == "이 남자들 미쳤습니다."
 
 
-def test_generic_noun_head_copy_is_rejected():
-    with pytest.raises(RuntimeError, match="구어체"):
-        shorts.validate_head_copy("클로드 디자인 / 모션그래픽 5가지")
+def test_head_copy_cut_mid_phrase_is_rejected():
+    """끝맺음의 종류는 막지 않는다. 조회수 1만2천 편이 `100명 직원 다 짜름`이었다."""
+    shorts.validate_head_copy("클로드 디자인 / 모션그래픽 5가지", measure_pixels=False)
+    shorts.validate_head_copy("100명 직원 다 짜름 / 2026년 값진 스킬", measure_pixels=False)
+    with pytest.raises(RuntimeError, match="끊겨"):
+        shorts.validate_head_copy("제안서를 쓰는 / 클로드로 하는", measure_pixels=False)
+    with pytest.raises(RuntimeError, match="끊겨"):
+        shorts.validate_head_copy("클로드 그리고 / 업무 자동화", measure_pixels=False)
 
 
 def test_head_copy_must_connect_to_the_script_opening():
@@ -1696,8 +1711,14 @@ def test_publishing_across_platforms_is_still_caught(sentence):
 
 
 def test_new_shorts_are_built_at_the_owners_narration_pace():
-    assert policy.SHORTS_NARRATION_TARGET_CPS == 9.0
+    """2026-09-29에 6.3(원래 속도)에서 7.6으로 올렸다. 소유자가 1.2배를 지시했다."""
+    assert policy.SHORTS_NARRATION_TARGET_CPS == 7.6
+    assert round(policy.SHORTS_NARRATION_TARGET_CPS
+                 / policy.SHORTS_NARRATION_NATIVE_TARGET_CPS, 2) == 1.21
+    assert policy.validate_narration_target_cps(6.3) == 6.3
     assert shorts_tempo.SHORTS_NARRATION_TARGET_CPS == policy.SHORTS_NARRATION_TARGET_CPS
+    # 9.0으로 만든 기존 영상은 계속 검증돼야 한다.
+    assert policy.validate_narration_target_cps(9.0) == 9.0
 
 
 def test_shorts_already_scheduled_at_the_reference_pace_still_validate():
@@ -1761,7 +1782,8 @@ def test_a_missing_boundary_sentence_is_cleared_against_the_line_that_needed_it(
         narration, fact_verifications=entries)["status"] == "pass"
 
 
-def test_append_planner_preserves_actual_conflicting_inventory_and_adds_seven_safe_slots():
+def test_planner_preserves_conflicting_inventory_and_fills_the_gaps_between_it():
+    """옛 예약(11시·20시)은 그대로 두고, 그 사이 빈 시간대를 새 영상이 채운다."""
     kst=ZoneInfo('Asia/Seoul')
     raw=['2026-09-15T11:00:37+09:00','2026-09-15T11:44:11+09:00','2026-09-15T20:00:00+09:00',
          '2026-09-16T11:00:00+09:00','2026-09-16T20:00:00+09:00','2026-09-16T20:00:00+09:00']
@@ -1773,19 +1795,20 @@ def test_append_planner_preserves_actual_conflicting_inventory_and_adds_seven_sa
         policy.validate_new_schedule_candidate(existing,slot)
         existing.append(slot); added.append(slot.isoformat())
     assert original==existing[:len(original)]
-    assert added==['2026-09-24T11:00:00+09:00','2026-09-24T20:00:00+09:00',
-                   '2026-09-25T11:00:00+09:00','2026-09-25T20:00:00+09:00',
-                   '2026-09-26T11:00:00+09:00','2026-09-26T20:00:00+09:00',
-                   '2026-09-27T11:00:00+09:00']
+    # 9/15는 11시대가 이미 두 건이라 13시부터 그날 남은 자리를 먼저 쓴다.
+    assert added[0]=='2026-09-15T13:00:00+09:00'
+    assert all(a > now.isoformat() for a in added)
+    assert len(set(added))==len(added)
     with pytest.raises(policy.ProductionPolicyError): policy.validate_schedule(original)
 
 
 def test_new_candidate_validation_keeps_timezone_daily_cap_and_gap_strict():
     kst=ZoneInfo('Asia/Seoul'); day=datetime(2026,9,24,11,tzinfo=kst)
-    with pytest.raises(policy.ProductionPolicyError,match='5시간'):
-        policy.validate_new_schedule_candidate([day],day+timedelta(hours=3))
-    with pytest.raises(policy.ProductionPolicyError,match='최대 2개'):
-        policy.validate_new_schedule_candidate([day,day+timedelta(hours=9)],day.replace(hour=2))
+    with pytest.raises(policy.ProductionPolicyError,match='1시간'):
+        policy.validate_new_schedule_candidate([day],day+timedelta(minutes=20))
+    full=[datetime(2026,9,24,hour,tzinfo=kst) for hour in policy.SCHEDULE["preferred_hours"]]
+    with pytest.raises(policy.ProductionPolicyError,match='최대 20개'):
+        policy.validate_new_schedule_candidate(full,datetime(2026,9,24,3,tzinfo=kst))
     with pytest.raises(policy.ProductionPolicyError,match='Asia/Seoul'):
         policy.plan_shorts_schedule([datetime(2026,9,23,20,tzinfo=timezone.utc)],day)
 
@@ -1824,4 +1847,142 @@ def test_live_channel_policy_is_readable_and_names_the_introduction_video():
     pol = policy.load_channel_policy()
     assert pol["channel_id"] == policy.NAMINSOO_CHANNEL_ID
     assert "aixschool.kr" in pol["cta_block"] and "pf.kakao.com" in pol["cta_block"]
-    assert pol["introduction_video_id"] == "Y1k44op1ZLk"
+    # 소개 영상은 2026-09-23에 "제가 교장입니다"로 승인 교체됐다(정본 approved_by_user_on).
+    assert pol["introduction_video_id"] == "e2Jp0D3jwOU"
+
+
+def test_v19_requires_source_backed_authority_in_the_headline_and_hook():
+    """초기 직접 제작분은 후킹에 원본의 수치·권위를 넣었고, v18은 그걸 금지하고 있었다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "첫 줄에 그중 하나를 반드시 넣는다" in text
+    assert "세 후보의 첫 줄은 서로 달라야 하며" in text
+    assert "`팁`, `방법`, `정리`, `노하우`처럼 내용이 없는 명사로 끝내지 않는다" in text
+    assert "`~정의입니다`, `~개선입니다`, `~활용입니다`처럼 명사로 끝내지 않는다" in text
+    # 지어내기 금지는 그대로 남아 있어야 한다.
+    assert "원본에 없는 수익·성과·연봉·신분·인과·숫자를 넣지 않는다" in text
+
+
+def test_v20_converts_dollar_amounts_to_won():
+    """달러 금액은 한국 시청자가 크기를 체감하지 못한다. 원화로 바꿔 말해야 한다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "1달러를 1,356원으로 계산하고" in text
+    assert "`약 사백억 원`처럼 한글로 쓴다" in text
+    assert "달러 표기를 괄호로도 함께 남기지 않는다" in text
+    assert "원본에 없는 금액을 만들지 않는다" in text
+
+
+def test_v21_keeps_the_spoken_opener_off_the_screen():
+    """음성이 "이 남자 미쳤습니다"를 말하는데 화면에도 같은 문장을 띄우면 자리가 낭비된다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "헤드카피 첫 줄에 `미쳤습니다`, `대박입니다`, `천재입니다`를 쓰지 않는다" in text
+    assert "도입 첫 문장을 그대로 옮긴 후보는 하나도 없어야 한다" in text
+    # 도입 공식 자체는 음성에서 그대로 유지한다. 조회수 상위권이 전부 그 공식으로 연다.
+    assert "첫 문장은 `이 남자 미쳤습니다.` 또는 `이 프로그램 대박입니다.`로 시작한다" in text
+
+
+def test_v22_puts_the_before_and_after_contrast_on_screen():
+    """대본이 "세 시간 걸리던 일을 이 분에"라고 말하는데 화면은 "세 시간 절약"만 남겼다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "전후 대비가 있으면 그 대비를 첫 줄에 그대로 쓴다" in text
+    assert "3시간을 2분으로 / 클로드 업무 자동화" in text
+    assert "숫자 하나만 떼어내" in text
+    assert "질문형(`아직도 ~하나요?`)은 세 후보 중 최대 하나만" in text
+    assert "숫자와 명사를 붙여만 놓지 말고 읽어서 말이 되는 구로 쓴다" in text
+
+
+def test_v23_puts_digits_on_screen_and_hangul_in_the_voice():
+    """화면은 눈으로 읽는다. "세 시간"보다 "3시간"이 한 눈에 들어온다."""
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    assert "헤드카피의 숫자는 아라비아 숫자로 쓴다" in text
+    assert "`세 시간`, `이 분`, `일천삼백만 원`처럼 한글로 풀어 쓰지 않는다" in text
+    # 음성은 TTS가 읽으므로 대본은 한글 그대로다.
+    assert "스크립트 본문은 음성이 읽으므로 지금처럼 한글로 쓴다" in text
+
+
+def test_report_words_and_misread_units_are_rejected_in_the_spoken_script():
+    """음성이 읽을 본문이다. "화자는"은 사람이 안 쓰는 말이고 "사케이"는 4K의 잘못된 발음이다."""
+    shorts.validate_spoken_wording("리버사이드를 쓰다가 텔라로 바꿨는데 포케이 영상도 나옵니다.")
+    with pytest.raises(RuntimeError, match="분석용 호칭"):
+        shorts.validate_spoken_wording("화자는 리버사이드를 쓰다가 텔라로 바꿨습니다.")
+    with pytest.raises(RuntimeError, match="잘못 읽히는 표기"):
+        shorts.validate_spoken_wording("폰으로 찍어도 사케이 영상을 만들 수 있습니다.")
+
+
+def test_caption_source_prefers_local_transcription(monkeypatch, tmp_path):
+    """유튜브에 자막을 따로 물으면 IP가 막힌다. 이미 받은 영상에서 먼저 받아쓴다."""
+    import shorts_caption_source as captions
+
+    calls = []
+    monkeypatch.setattr(captions, "_from_local_asr",
+                        lambda media: calls.append("asr") or ("asr:en", [
+                            {"start": i, "end": i + 1, "text": f"line {i}"} for i in range(30)]))
+    monkeypatch.setattr(captions, "_from_api", lambda key: calls.append("api") or None)
+    monkeypatch.setattr(captions, "_from_ytdlp", lambda key, out: calls.append("ytdlp") or None)
+    evidence = captions.fetch("abcdefghijk", tmp_path, media=tmp_path / "video.mp4")
+    assert calls == ["asr"], "로컬 받아쓰기가 되면 유튜브에 묻지 않는다"
+    assert evidence["language"] == "asr:en" and evidence["segment_count"] == 30
+
+
+def test_spoken_units_do_not_reject_idea_word():
+    shorts.validate_spoken_wording("필요한 스킬이나 아이디어만 골라 적용하세요.")
+    with pytest.raises(RuntimeError, match="이디"):
+        shorts.validate_spoken_wording("이디로 만든 화면을 확인하세요.")
+
+
+def test_comment_keyword_excludes_temporal_particle():
+    assert shorts.derive_comment_keyword("삼십 초 만에 작업을 끝냅니다.", "30초 만에") != "만에"
+    assert shorts.derive_comment_keyword("메일을 메일로 정리하세요.", "메일 정리") == "메일"
+
+
+def test_v25_instruction_encodes_the_approved_script_style_and_v2_headcopy_width():
+    text = policy.SHORTS_NOTEBOOK_INSTRUCTION
+    profile = policy.shorts_style_profile(policy.SHORTS_STYLE_V2)
+    assert profile["headline_font_size_1080"] == 112
+    assert "112px, 가로 92% 기준 실측 폭 1000px 이하" in text
+    assert f"한글 기준 {policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT_V2}자 이하" in text
+    assert policy.HEADLINE_SAFE_WIDTH_PX_V2 == 1000
+    for stale in ("90px", "920px", "13자"):
+        assert stale not in text
+    # v24는 90px/920px 문구를 그대로 보존한다.
+    assert "90px 실측 폭 920px 이하" in policy.SHORTS_NOTEBOOK_INSTRUCTION_V24
+    assert "벌었다는" in text and "화자 이름을 주어로 하는 단정문" in text
+    assert "공백 포함 70~85자 안팎" in text
+    # 기존 안전 규칙과 CTA/Repurpose 경계 문장은 v24와 글자 그대로 같다.
+    for sentence in (
+        "Repurpose는 NotebookLM과 별개의 외부 워크플로우입니다.",
+        "별도 연결 설정과 각 플랫폼 공급자 지원이 확인된 채널에만 배포할 수 있습니다.",
+        "CTA 반영은 영상 제작자의 시연 사례입니다.",
+        "결과는 보장되지 않습니다.",
+    ):
+        assert sentence in text and sentence in policy.SHORTS_NOTEBOOK_INSTRUCTION_V24
+
+
+def test_instruction_registry_accepts_only_registered_version_hash_pairs():
+    registry = policy.SHORTS_NOTEBOOK_INSTRUCTIONS
+    assert set(registry) == {"v24.0", "v25.0"}
+    for version, (text, digest) in registry.items():
+        assert policy.notebook_instruction_sha256(text) == digest
+        assert policy.shorts_instruction_pin_registered(version, digest)
+    assert policy.shorts_instruction_pin_registered("v24.0", "35516a23da58099e1b3b6171e6d7048b4b996eca0857b95871660ff17f111671")
+    assert not policy.shorts_instruction_pin_registered("v24.0", registry["v25.0"][1])
+    assert not policy.shorts_instruction_pin_registered("v25.0", registry["v24.0"][1])
+    assert not policy.shorts_instruction_pin_registered("v24.0", "0" * 64)
+    assert not policy.shorts_instruction_pin_registered("v23.0", registry["v24.0"][1])
+    assert not policy.shorts_instruction_pin_registered("", "")
+    assert not policy.shorts_instruction_pin_registered(None, None)
+    # 새 지침 검증(소스 추가 전 게이트)은 현행 v25만 받는다.
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_notebook_instruction(policy.SHORTS_NOTEBOOK_INSTRUCTION_V24)
+    assert policy.validate_shorts_notebook_instruction(
+        policy.SHORTS_NOTEBOOK_INSTRUCTION)["version"] == "v25.0"
+
+
+def test_retry_gate_pins_each_instruction_version_separately():
+    v24 = {"source_key": "iOwKylW8c5Q", "attempt_status": "substantive_failed",
+           "substantive_failure": True, "instruction_version": "v24.0",
+           "instruction_sha256": policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256}
+    assert policy.validate_shorts_notebook_retry("iOwKylW8c5Q", [v24])["status"] == "pass"
+    with pytest.raises(policy.ProductionPolicyError):
+        policy.validate_shorts_notebook_retry(
+            "iOwKylW8c5Q", [v24], instruction_version="v24.0",
+            instruction_sha256=policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256)

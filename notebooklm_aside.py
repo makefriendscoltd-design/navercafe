@@ -115,6 +115,9 @@ try{
     const configButton=p.locator('button[aria-label="노트북 구성"]').first();
     if(!(await configButton.count()))throw new Error('Shorts NotebookLM 노트북 구성 버튼을 찾지 못했습니다.');
     await configButton.click();await sleep(800);
+    // Gemini Notebook 개편 뒤 이 버튼은 메뉴를 연다. 예전엔 바로 채팅 설정 창이 떴다.
+    const chatSettings=p.locator('[role="menuitem"]').filter({hasText:'채팅 설정'}).first();
+    if(await chatSettings.count()){await chatSettings.click();await sleep(1500);}
     const config=await p.evaluate(()=>{
       const dialog=[...document.querySelectorAll('[role="dialog"]')].find(e=>/채팅 설정/.test((e.innerText||e.textContent||'')));
       if(!dialog)return {found:false};

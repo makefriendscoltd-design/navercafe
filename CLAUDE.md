@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**쇼츠 대본·편집 기준(2026-10-03 사용자 승인):** 새 쇼츠의 대본 구조와 편집 방식은 `SHORTS_REFERENCE_STYLE.md`를 따른다. Codex 세션도 `AGENTS.md`에서 같은 문서를 가리킨다. 그 문서의 "현행 게이트와 충돌" 항목은 코드·`SHORTS_SPEC.md`가 아직 바뀌지 않았다는 뜻이다.
+
 ## Project Overview
 
 네이버 카페 자동 포스팅 도구. 유튜브 영상/뉴스기사/직접 텍스트를 Gemini AI로 블로그 칼럼으로 변환한 뒤 네이버 카페에 자동 발행한다. macOS에서는 Aside CLI와 Aside 브라우저 로그인 상태가 기본이며, Windows의 기존 Selenium 경로는 fallback으로 유지한다.

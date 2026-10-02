@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+from youtube_shorts_ego import run_youtube_program
 from aside_browser import JS_COMMON, run_repl, _payload_expression
 
 
@@ -10,7 +11,7 @@ def inspect_posts(text: str, image_count: int, source_key: str, expected_channel
                   *, community_url: str = "", account: str | None = None) -> dict:
     payload = dict(text=text.strip(), count=image_count, source=source_key,
                    expected=expected_channel, url=community_url)
-    code = JS_COMMON + f"\nconst payload={_payload_expression(payload)};\n" + r'''
+    body = r'''
 let p=await openTab(payload.url||'https://studio.youtube.com/');
 try {
   let channel='', currentUrl='';
@@ -74,4 +75,4 @@ try {
     related_count:related.length,exact_count:exact.length,scanned:rows.size,exhausted});
 } finally {await p.close();}
 '''
-    return run_repl(code, timeout=120, account=account)
+    return run_youtube_program(body, payload, timeout=120, account=account)

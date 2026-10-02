@@ -5,8 +5,59 @@ import json
 from pathlib import Path
 
 import pytest
+from unittest.mock import Mock
 
 import cafe_manifest_publisher as publisher
+
+
+def test_draft_survives_failed_registration_and_reuses_only_unchanged_inputs(tmp_path, monkeypatch):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    args = publisher.resolve_manifest(str(manifest_path))
+    monkeypatch.setattr(publisher, "LOCK", tmp_path / "provider.lock")
+    monkeypatch.setattr(publisher, "validate_cafe_eligibility", lambda *a: {"status": "pass"})
+    monkeypatch.setattr(publisher, "enforce_cafe_publish_window", lambda **k: None)
+    monkeypatch.setattr(publisher, "run_repl", lambda *a, **k: {"status": "ok", "matches": []})
+    save = Mock(return_value={"status": "draft_saved", "sequence": ["quote", "text"],
+                              "quote_texts": ["소제목 1"]})
+    register = Mock(side_effect=RuntimeError("provider registration unavailable"))
+    crm = Mock()
+    monkeypatch.setattr(publisher, "post_to_naver_cafe", save)
+    monkeypatch.setattr(publisher, "publish_saved_naver_cafe_draft", register)
+    monkeypatch.setattr(publisher, "crm_emit", crm)
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="provider registration unavailable"):
+            publisher.publish(*args)
+    assert save.call_count == 1
+    assert save.call_args.kwargs["save_draft"] is True
+    assert save.call_args.kwargs["publish"] is False
+    assert register.call_count == 2
+    assert (args[3] / "11_verified_draft.json").is_file()
+    crm.assert_not_called()
+    (manifest_path.parent / "body.txt").write_text("changed body", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="inputs changed"):
+        publisher.publish(*args)
+    assert register.call_count == 2
+
+
+def test_prepare_only_saves_without_registering_or_emitting_crm(tmp_path, monkeypatch):
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    args = publisher.resolve_manifest(str(manifest_path))
+    monkeypatch.setattr(publisher, "LOCK", tmp_path / "provider.lock")
+    monkeypatch.setattr(publisher, "validate_cafe_eligibility", lambda *a: {"status": "pass"})
+    window = Mock(side_effect=AssertionError("drafts must not consume a public slot"))
+    monkeypatch.setattr(publisher, "enforce_cafe_publish_window", window)
+    monkeypatch.setattr(publisher, "run_repl", lambda *a, **k: {"status": "ok", "matches": []})
+    save = Mock(return_value={"status": "draft_saved", "sequence": [], "quote_texts": []})
+    register, crm = Mock(), Mock()
+    monkeypatch.setattr(publisher, "post_to_naver_cafe", save)
+    monkeypatch.setattr(publisher, "publish_saved_naver_cafe_draft", register)
+    monkeypatch.setattr(publisher, "crm_emit", crm)
+    publisher.publish(*args, prepare_only=True)
+    assert save.call_args.kwargs["save_draft"] is True
+    register.assert_not_called()
+    crm.assert_not_called()
+    window.assert_not_called()
+    assert (args[3] / "11_verified_draft.json").is_file()
 
 
 def write_json(path: Path, payload: dict) -> None:
@@ -336,3 +387,36 @@ def test_a_verified_answer_publishes_even_if_notebook_cleanup_failed(tmp_path, m
     evidence_path.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
     refused = publisher.validate_cafe_eligibility(manifest_path, provider, receipts)
     assert "notebooklm_provider_evidence_exact" in refused["failures"]
+
+
+def test_caption_gate_uses_bound_manuscript_and_rejects_bad_provenance(tmp_path, monkeypatch):
+    import cafe_caption_source
+
+    manifest_path = make_bundle(tmp_path, monkeypatch)
+    manifest = json.loads(manifest_path.read_text())
+    answer = manifest_path.parent / 'caption-manuscript.md'
+    answer.write_text((manifest_path.parent / 'notebooklm/notebooklm-answer.md').read_text())
+    (manifest_path.parent / 'notebooklm/notebooklm-answer.md').unlink()
+    (manifest_path.parent / 'notebooklm/notebooklm-provider-evidence.json').unlink()
+    manifest.update(manuscript_source='captions', manuscript_answer=str(answer),
+                    manuscript_evidence='caption-evidence.json')
+    write_json(manifest_path, manifest)
+    _, _, provider, evidence = publisher.resolve_manifest(str(manifest_path))
+    for filename in ('07_approval_validation.json', '08_launch_consistency_gate.json',
+                     '09_cafe_only_local_gate.json'):
+        gate_path = provider / filename
+        gate = json.loads(gate_path.read_text())
+        gate['manifestSha256'] = publisher.sha256(manifest_path)
+        write_json(gate_path, gate)
+    provenance = {'answer_present': True, 'provider_evidence_exact': True}
+    monkeypatch.setattr(cafe_caption_source, 'validate_provenance', lambda *args: dict(provenance))
+    monkeypatch.setattr(publisher, 'validate_notebooklm_cafe_provenance',
+                        Mock(side_effect=AssertionError('caption path must not require NotebookLM')))
+    result = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
+    assert result['status'] == 'pass'
+    assert result['checks']['manuscript_actual_body_preserved']
+    assert not any(key.startswith('notebooklm_') for key in result['checks'])
+    provenance['provider_evidence_exact'] = False
+    refused = publisher.validate_cafe_eligibility(manifest_path, provider, evidence)
+    assert refused['status'] == 'fail'
+    assert 'manuscript_provider_evidence_exact' in refused['failures']

@@ -37,7 +37,10 @@ class CafePublishWindowClosed(RuntimeError):
         self.reason = reason
 sys.path.insert(0, str(PROJECT))
 
-from aside_browser import JS_COMMON, _payload_expression, post_to_naver_cafe, run_repl
+from aside_browser import (
+    JS_COMMON, _payload_expression, post_to_naver_cafe,
+    publish_saved_naver_cafe_draft, run_mcp_repl as run_repl,
+)
 from content_production_policy import ProductionPolicyError, validate_longform_source
 
 
@@ -77,10 +80,22 @@ def canonical_cafe_article_url(raw_url: str) -> tuple[str, str]:
 
 
 def enforce_cafe_publish_window(now: datetime | None = None, *, source_key: str | None = None) -> None:
-    """Enforce the queue's daily cap and gap again inside the provider lock."""
+    """Recheck the active queue policy again inside the provider lock."""
     queue = read_json(PROJECT / QUEUE_POLICY_PATH)
     timezone = ZoneInfo(queue["timezone"])
     current = (now or datetime.now(timezone)).astimezone(timezone)
+    from cafe_publication_policy import is_immediate, publication_block
+    if is_immediate(queue):
+        reason = publication_block(PROJECT, queue, current, source_key)
+        if reason:
+            raise CafePublishWindowClosed(reason, f'Cafe request blocked: {reason}')
+        return
+    from cafe_shorts_alignment import is_shorts_aligned, alignment_block
+    if is_shorts_aligned(queue):
+        reason = alignment_block(PROJECT, queue, current, source_key)
+        if reason:
+            raise CafePublishWindowClosed(reason, f'Cafe Shorts alignment blocked: {reason}')
+        return
     verified_by_source: dict[str, datetime] = {}
     for entry in queue.get("entries", []):
         evidence_source_key = entry.get("source_key")
@@ -240,6 +255,24 @@ def measure_source_video(source_key: str) -> dict:
             "height": int(info.get("height") or 0), "title": str(info.get("title") or "")}
 
 
+def quote_contract(manifest_path: Path, manifest: dict) -> bool:
+    count = manifest.get('expected_quotes')
+    texts = manifest.get('expected_quote_texts', [])
+    if not isinstance(count, int) or not isinstance(texts, list) or len(texts) != count:
+        return False
+    if count == 5:
+        return True  # The separate provenance gate still checks the receipt.
+    if manifest.get('manuscript_source') == 'captions':
+        from cafe_caption_source import evidence_version
+        try:
+            receipt = read_json(manifest_path.parent / manifest['manuscript_evidence'])
+            if evidence_version(receipt) == 'cafe-business-column/v2':
+                return 4 <= count <= 8
+        except (KeyError, ValueError, OSError, TypeError):
+            return False
+    return count == 5
+
+
 def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Path) -> dict:
     manifest = read_json(manifest_path)
     cafe_local = read_json(manifest_path.parent / "11_local_validation.json")
@@ -250,15 +283,22 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
     source_url = f"https://youtu.be/{source_key}"
     source_long_url = f"https://www.youtube.com/watch?v={source_key}"
     tail = manifest.get("tail", {})
-    notebooklm = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
+    from_captions = manifest.get("manuscript_source") == "captions"
+    if from_captions:
+        from cafe_caption_source import validate_provenance, answer_path as caption_answer_path
+        manuscript = validate_provenance(manifest_path, manifest)
+    else:
+        manuscript = validate_notebooklm_cafe_provenance(manifest_path, manifest, cafe_local)
     from content_lineage import cafe_body_lineage
     answer_path = _resolve_cafe_relative(
         manifest_path, manifest.get("notebook_answer") or manifest.get("notebooklm_answer")
         or (manifest.get("notebooklm") or {}).get("answer") or "notebooklm/notebooklm-answer.md"
     )
+    if from_captions:
+        answer_path = caption_answer_path(manifest_path, manifest)
     body_path = _resolve_cafe_relative(manifest_path, manifest.get("body_file"))
     try:
-        lineage = cafe_body_lineage(answer_path, body_path) if body_path else {}
+        lineage = cafe_body_lineage(answer_path, body_path, **({"content_origin": "captions_cafe"} if from_captions else {})) if body_path else {}
         body_preserved = lineage.get("body_preserved") is True
     except (OSError, ValueError):
         body_preserved = False
@@ -274,16 +314,18 @@ def validate_cafe_eligibility(manifest_path: Path, provider: Path, evidence: Pat
         "cta_text_exact": tail.get("cta_text") == EXPECTED_CTA_TEXT,
         "cta_url_exact": tail.get("family_day_url") == EXPECTED_CTA_URL,
         "source_label_exact": tail.get("source_label") == EXPECTED_SOURCE_LABEL,
-        "quote_count_exact": manifest.get("expected_quotes") == 5 and len(manifest.get("expected_quote_texts", [])) == 5,
+        "quote_count_exact": quote_contract(manifest_path, manifest),
         "image_count_exact": manifest.get("expected_images") == 5 and len(manifest.get("images", [])) == 5,
         "image_files_present": len(manifest.get("images", [])) == 5 and all(
             isinstance(relative, str) and (manifest_path.parent / relative).is_file()
             for relative in manifest.get("images", [])
         ),
         "cafe_local_validation_pass": cafe_local.get("status") == "pass" and cafe_local.get("source_key") == source_key,
-        "notebooklm_answer_present": notebooklm["answer_present"],
-        "notebooklm_provider_evidence_exact": notebooklm["provider_evidence_exact"],
-        "notebooklm_actual_body_preserved": body_preserved,
+        **{("manuscript_" if from_captions else "notebooklm_") + key: value for key, value in {
+            "answer_present": manuscript["answer_present"],
+            "provider_evidence_exact": manuscript["provider_evidence_exact"],
+            "actual_body_preserved": body_preserved,
+        }.items()},
         "approval_gate_pass": approval.get("status") == "pass" and not approval.get("failures"),
         "launch_consistency_pass": launch.get("status") == "pass" and launch.get("summary", {}).get("issues") == 0,
         "launch_manifest_sha256": launch.get("manifestSha256") == sha256(manifest_path),
@@ -347,7 +389,13 @@ def crm_emit(source_key: str, evidence_path: Path) -> dict:
     }
 
 
-def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path) -> None:
+def publish(manifest_path: Path, base: Path, provider: Path, evidence: Path, *, prepare_only: bool = False) -> None:
+    backend = read_json(PROJECT / QUEUE_POLICY_PATH).get('provider_backend', 'aside')
+    if backend == 'ego':
+        from cafe_ego_publisher import publish as ego_publish
+        return ego_publish(manifest_path, base, provider, evidence, prepare_only=prepare_only)
+    if backend != 'aside':
+        raise RuntimeError(f'Unknown Cafe provider backend: {backend}')
     eligibility = validate_cafe_eligibility(manifest_path, provider, evidence)
     if eligibility["status"] != "pass":
         raise RuntimeError({"cafe_eligibility_gate_failed": eligibility})
@@ -386,18 +434,54 @@ const board=await openTab(`${payload.boardUrl}&cafe_mutation_precheck=${Date.now
 '''
     with LOCK.open("a+") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        enforce_cafe_publish_window(source_key=source_key)
+        if not prepare_only:
+            enforce_cafe_publish_window(source_key=source_key)
         precheck = run_repl(precheck_code, cwd=base, timeout=220, account="u0")
         if precheck.get("status") != "ok" or precheck.get("matches"):
             raise RuntimeError({"cafe_precommit_blocked": precheck})
-        result = post_to_naver_cafe(
-            manifest["title"], body, images,
+        draft_path = evidence / "11_verified_draft.json"
+        input_hashes = {
+            "manifest": sha256(manifest_path),
+            "body": sha256(manifest_path.parent / manifest["body_file"]),
+            "images": [sha256(path) for path in images],
+        }
+        if draft_path.exists():
+            receipt = read_json(draft_path)
+            if receipt.get("inputHashes") != input_hashes:
+                raise RuntimeError("Saved Cafe draft inputs changed; refusing stale draft publication")
+            draft = receipt["draft"]
+        else:
+            draft = post_to_naver_cafe(
+                manifest["title"], body, images,
+                cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
+                cta_text=manifest["tail"]["cta_text"], cta_link_url=manifest["tail"]["family_day_url"],
+                source_label=manifest["tail"]["source_label"], source_url=manifest["tail"]["source_url"],
+                source_long_url=manifest["tail"]["source_long_url"],
+                board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
+                publish=False, save_draft=True, account="u0",
+            )
+            if draft.get("status") != "draft_saved":
+                raise RuntimeError({"cafe_draft_not_saved": draft})
+            draft_path.write_text(json.dumps({
+                "inputHashes": input_hashes, "draft": draft,
+                "savedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        if draft.get("status") != "draft_saved":
+            raise RuntimeError("Cafe saved draft receipt is invalid")
+        if prepare_only:
+            print(json.dumps({"status": "draft_saved", "sourceKey": source_key,
+                              "evidence": str(draft_path), "savedAt": draft.get("saved_time")},
+                             ensure_ascii=False))
+            return
+        result = publish_saved_naver_cafe_draft(
+            manifest["title"],
             cafe_url="https://cafe.naver.com/f-e/cafes/26321967/menus/163?viewType=L",
-            cta_text=manifest["tail"]["cta_text"], cta_link_url=manifest["tail"]["family_day_url"],
-            source_label=manifest["tail"]["source_label"], source_url=manifest["tail"]["source_url"],
-            source_long_url=manifest["tail"]["source_long_url"],
-            board_name=manifest["category"], bold_enabled=True, highlight_enabled=False,
-            publish=True, save_draft=False, account="u0",
+            board_name=manifest["category"], expected_images=len(images),
+            expected_quotes=len(manifest["expected_quote_texts"]),
+            expected_sequence=draft["sequence"],
+            expected_quote_texts=draft["quote_texts"],
+            cta_link_url=manifest["tail"]["family_day_url"],
+            source_url=manifest["tail"]["source_url"], account="u0",
         )
         if result.get("status") != "published" or "cafe.naver.com" not in result.get("url", ""):
             (evidence / "provider_uncertain_do_not_retry.json").write_text(
@@ -456,14 +540,16 @@ const p=await openTab(`${payload.url}${payload.url.includes('?')?'&':'?'}provide
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", required=True)
-    parser.add_argument("--validate-only", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--validate-only", action="store_true")
+    mode.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     manifest_path, base, provider, evidence = resolve_manifest(args.manifest)
     if args.validate_only:
         result = validate_cafe_eligibility(manifest_path, provider, evidence)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result["status"] == "pass" else 1)
-    publish(manifest_path, base, provider, evidence)
+    publish(manifest_path, base, provider, evidence, prepare_only=args.prepare_only)
 
 
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ def test_occupancy_retains_existing_duplicate_slots_for_append_only_planning(tmp
     parsed=parse_inventory(raw,manifest,now=datetime(2026,9,15,12,10,tzinfo=KST))
     occupancy=parsed.occupancy_slots(datetime(2026,9,15,12,10,tzinfo=KST))
     assert [x.isoformat() for x in occupancy]==['2026-09-16T20:00:00+09:00']*2
-    assert publisher.policy.plan_shorts_schedule(occupancy,datetime(2026,9,15,12,10,tzinfo=KST)).isoformat()=='2026-09-17T11:00:00+09:00'
+    assert publisher.policy.plan_shorts_schedule(occupancy,datetime(2026,9,15,12,10,tzinfo=KST)).isoformat()=='2026-09-15T13:00:00+09:00'
 
 
 class FakeProvider:
@@ -585,7 +585,7 @@ def test_live_run_replans_when_upload_crosses_the_selected_slot(tmp_path: Path) 
     result = make_runner(provider_port, FakeCrm(), tmp_path, digest, clock=clock).run(manifest_path)
 
     assert result["status"] == "complete"
-    assert result["provider"]["scheduled_at"] == "2026-09-05T20:00:00+09:00"
+    assert result["provider"]["scheduled_at"] == "2026-09-05T12:00:00+09:00"
     journal = json.loads(publisher.load_manifest(manifest_path).journal.read_text(encoding="utf-8"))
     replans = [item for item in journal["history"] if item["event"] == "slot_replanned_before_schedule"]
     assert len(replans) == 1
@@ -616,7 +616,7 @@ def test_live_run_revalidates_slot_when_upload_crosses_kst_date_boundary(tmp_pat
 
     result = make_runner(provider_port, FakeCrm(), tmp_path, digest, clock=clock).run(manifest_path)
 
-    assert result["provider"]["scheduled_at"] == "2026-09-06T11:00:00+09:00"
+    assert result["provider"]["scheduled_at"] == "2026-09-06T04:00:00+09:00"
     journal = json.loads(publisher.load_manifest(manifest_path).journal.read_text(encoding="utf-8"))
     replans = [item for item in journal["history"] if item["event"] == "slot_replanned_before_schedule"]
     assert len(replans) == 1
@@ -652,17 +652,17 @@ def test_slot_planner_includes_weekends_and_enforces_two_per_day_and_five_hours(
         ),
         manifest,
     )
-    assert runner._plan(saturday_full, datetime(2026, 9, 4, 10, tzinfo=KST)) == datetime(2026, 9, 6, 11, tzinfo=KST)
+    assert runner._plan(saturday_full, datetime(2026, 9, 4, 10, tzinfo=KST)) == datetime(2026, 9, 4, 11, tzinfo=KST)
     sunday_one = parse_inventory(
         inventory([row("sun-11", status="scheduled", provider_id="sunVID00001", scheduled_at="2026-09-06T11:00:00+09:00")]),
         manifest,
     )
-    assert runner._plan(sunday_one, datetime(2026, 9, 6, 9, tzinfo=KST)) == datetime(2026, 9, 6, 20, tzinfo=KST)
+    assert runner._plan(sunday_one, datetime(2026, 9, 6, 9, tzinfo=KST)) == datetime(2026, 9, 6, 10, tzinfo=KST)
     eighteen = parse_inventory(
         inventory([row("sun-18", status="scheduled", provider_id="sunVID00002", scheduled_at="2026-09-06T18:00:00+09:00")]),
         manifest,
     )
-    assert runner._plan(eighteen, datetime(2026, 9, 6, 9, tzinfo=KST)) == datetime(2026, 9, 7, 11, tzinfo=KST)
+    assert runner._plan(eighteen, datetime(2026, 9, 6, 9, tzinfo=KST)) == datetime(2026, 9, 6, 10, tzinfo=KST)
 
 
 def test_planner_counts_today_public_releases_and_ignores_old_public_history(tmp_path: Path) -> None:
@@ -681,7 +681,7 @@ def test_planner_counts_today_public_releases_and_ignores_old_public_history(tmp
         manifest,
         now=now,
     )
-    assert runner._plan(occupied, now) == datetime(2026, 9, 5, 20, tzinfo=KST)
+    assert runner._plan(occupied, now) == datetime(2026, 9, 5, 10, tzinfo=KST)
     full = parse_inventory(
         inventory(
             [
@@ -692,7 +692,7 @@ def test_planner_counts_today_public_releases_and_ignores_old_public_history(tmp
         manifest,
         now=now,
     )
-    assert runner._plan(full, now) == datetime(2026, 9, 6, 11, tzinfo=KST)
+    assert runner._plan(full, now) == datetime(2026, 9, 5, 10, tzinfo=KST)
 
 
 @pytest.mark.parametrize(
@@ -725,7 +725,8 @@ def test_public_row_accepts_exact_date_only_evidence_and_plans_next_kst_day(
     planned = make_runner(FakeProvider(), FakeCrm(), tmp_path, digest)._plan(
         parsed, datetime(2026, 9, 5, 9, tzinfo=KST)
     )
-    assert planned == datetime(2026, 9, 6, 11, tzinfo=KST)
+    # 오늘 이미 공개된 행이 있으면 다음 날로 넘긴다. 이른 시간대가 8시로 바뀌었다.
+    assert planned == datetime(2026, 9, 6, 4, tzinfo=KST)
 
 
 def test_public_row_without_timestamp_or_date_fails_closed(tmp_path: Path) -> None:
@@ -1546,7 +1547,7 @@ def test_zero_action_retry_accepts_only_proven_same_batch_delta_and_replans_slot
         "event": "attachment_retry1_slot_replanned",
         "at": replans[0]["at"],
         "previous_slot": "2026-09-06T11:00:00+09:00",
-        "fresh_slot": "2026-09-06T20:00:00+09:00",
+        "fresh_slot": "2026-09-05T10:00:00+09:00",
     }]
 
 

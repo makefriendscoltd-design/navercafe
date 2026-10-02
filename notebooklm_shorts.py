@@ -75,10 +75,32 @@ STRONG_HOOK_RE = re.compile(
     r"미쳤습니다|대박입니다|천재입니다|신입니다|고수입니다|벌었습니다|만들었습니다)\.?$"
 )
 HEAD_COPY_ITEM_RE = re.compile(r"^\s*(?:[1-3]\s*[.)、:]|[①②③])\s*(.+?)\s*$")
-HEAD_COPY_SPOKEN_RE = re.compile(
-    r"(?:[?!]|(?:습니다|니다|있다|된다|바뀐다|끝이다|가능하다|임|함|잖아|네|죠)[.!]?$|"
-    r"(?:손해|충분|끝|가능)[.!]?$)"
+# 첫 줄은 말이 끊기지 않은 채로 끝나야 한다. 예전에는 허용 어미를 좁게 나열했는데,
+# 그 목록이 채널 최고 성과 문구(`100명 직원 다 짜름`, `포브스 선정 사업가의`)를 모두
+# 거부해서 `아직도 ~하나요?` 같은 문장만 살아남았다(2026-09-29). 이제 조사나 연결어미로
+# 끊긴 조각만 막는다.
+HEAD_COPY_DANGLING_RE = re.compile(
+    r"(?:그리고|그래서|그런데|하지만|그러면|또는|및)$|"
+    r"(?:은|는|이|가|을|를|에|에게|에서|와|과|하고|이나|거나|면서|려고|해서|하는|한|된|될|의)$"
 )
+
+
+# 첫 줄은 둘째 줄로 이어질 수 있다(`포브스 선정 사업가의` / `AI 직원 프롬프트 5가지`).
+# 그래서 첫 줄에서는 접속어만 막고, 말이 끝나는 자리인 둘째 줄에서 조사 끊김을 본다.
+HEAD_COPY_CONJUNCTION_RE = re.compile(r"(?:그리고|그래서|그런데|하지만|그러면|또는|및)$")
+
+
+def _head_copy_is_whole(first: str, second: str) -> bool:
+    """두 줄을 한 문구로 보고 중간에서 끊겼는지 본다."""
+    head = first.strip().rstrip("!?.")
+    tail = second.strip().rstrip("!?.")
+    if not head or not tail:
+        return False
+    if HEAD_COPY_CONJUNCTION_RE.search(head):
+        return False
+    return not HEAD_COPY_DANGLING_RE.search(tail)
+
+
 HEAD_COPY_STOP_WORDS = {
     "이거", "그냥", "진짜", "오늘", "지금", "방법", "하는법", "전략", "충분",
 }
@@ -93,6 +115,7 @@ COMMENT_KEYWORD_STOP_WORDS = HEAD_COPY_STOP_WORDS | {
     "이것", "저것", "그것", "이런", "저런", "그런", "어떤", "무슨", "여기", "거기", "저기",
     "우리", "여러", "모두", "모든", "전부", "정말", "바로", "아주", "매우", "너무", "완전",
     "이제", "이미", "아직", "항상", "계속", "결국", "물론", "먼저", "이후", "이전", "다음",
+    "만에", "전에", "후에", "동안",
     "다시", "만약", "그래", "그럼", "근데", "그냥", "역시", "제일", "가장", "거의", "조금",
     "하나", "둘째", "셋째", "넷째", "다섯", "여섯", "일곱", "첫째", "마지막", "번째",
     "때문", "경우", "정도", "이유", "통해", "위해", "대해", "관해", "사실", "대신",
@@ -302,13 +325,17 @@ def head_copy_lines(value: str) -> tuple[str, str]:
     return parts[0], parts[1]
 
 
-def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
+def validate_head_copy(
+    value: str, *, measure_pixels: bool = True, style_version: str | None = None
+) -> str:
     """Require the owner's spoken two-line first-screen copy shape.
 
     ``measure_pixels`` is the render constraint rather than the copy contract:
     only the adopted candidate is burned into the video, so only it has to fit
     the 90px safe width.  An alternative that is never rendered is still held to
-    every structural rule.
+    every structural rule.  ``style_version`` is None for the legacy v1 width
+    (90px, 920px); a new build passes its style so the v2 width (112px at 92%,
+    1000px) is measured instead.  v2 passes imply v1 passes.
     """
     first, second = head_copy_lines(value)
     if any(len(line) > 18 for line in (first, second)):
@@ -317,13 +344,13 @@ def validate_head_copy(value: str, *, measure_pixels: bool = True) -> str:
         raise RuntimeError("쇼츠 헤드카피가 너무 짧습니다.")
     if "#" in first or "#" in second:
         raise RuntimeError("쇼츠 헤드카피에는 해시태그를 넣지 않습니다.")
-    if not HEAD_COPY_SPOKEN_RE.search(first):
+    if not _head_copy_is_whole(first, second):
         raise RuntimeError(
-            "쇼츠 헤드카피 첫 줄은 질문·놀람·손해감·강한 단정의 구어체여야 합니다."
+            "쇼츠 헤드카피가 조사나 연결어미로 끊겨 있습니다."
         )
     if measure_pixels:
         try:
-            validate_headline_pixel_width((first, second))
+            validate_headline_pixel_width((first, second), style_version)
         except Exception as exc:
             raise RuntimeError(str(exc)) from exc
     return f"{first}\n{second}"
@@ -595,6 +622,26 @@ def require_strong_hook(script: str) -> str:
     return first_sentence
 
 
+# 분석 단계에서 쓰는 호칭이 본문까지 새어 나왔다. 사람이 말할 때 "화자는"이라고 하지 않는다.
+REPORT_VOICE_RE = re.compile(r"(?:^|[\s,.])(화자|발표자|영상 제작자|원본 영상)(?:는|가|의|은|을|를|에서)")
+# 알파벳이 붙은 숫자를 한국어 수사로 읽으면 음성이 "사케이"라고 발음한다.
+MISREAD_UNITS = {"사케이": "포케이(4K)", "팔케이": "에이트케이(8K)", "오지": "파이브지(5G)",
+                 "삼디": "쓰리디(3D)", "이디": "투디(2D)"}
+
+
+def validate_spoken_wording(script: str) -> None:
+    """음성이 읽을 본문에서 보고서 말투와 잘못 읽힐 표기를 막는다."""
+    found = REPORT_VOICE_RE.search(script)
+    if found:
+        raise RuntimeError(
+            f"대본 본문에 분석용 호칭이 있습니다: {found.group(1)}. 이름을 쓰거나 주어를 뺀다."
+        )
+    for wrong, right in MISREAD_UNITS.items():
+        # Do not match a syllable sequence inside another Korean word (아이디어).
+        if re.search(r"(?<![가-힣A-Za-z0-9])" + re.escape(wrong), script):
+            raise RuntimeError(f"대본에 잘못 읽히는 표기가 있습니다: {wrong} → {right}")
+
+
 def validate_intro_promise(script: str) -> None:
     require_strong_hook(script)
     intro = re.split(r"(?m)^\s*첫째", script, maxsplit=1)[0].strip()
@@ -736,7 +783,15 @@ def fetch(
     attempt_ledger_path: str | Path | None = None,
     preserve_authorized_wording: bool = False,
     comment_keyword: str | None = None,
+    provided_answer: str | None = None,
 ) -> tuple[str, str, int, str, dict, list[str]]:
+    """`provided_answer`가 있으면 공급자를 부르지 않고 그 원고를 그대로 쓴다.
+
+    자막을 근거로 구독 에이전트가 쓴 원고를 넣는 경로다. 형식 검사, CTA 변환, 댓글
+    키워드, 다섯 번째 항목까지 자르기는 모두 같은 코드를 지난다 - 바뀌는 것은 원고를
+    누가 쓰느냐뿐이다. 후보당 한 번인 시도 장부도 쓰지 않는다. 자막은 몇 번을 받아도
+    같은 값이 나오므로 기회를 소모한다는 개념이 없다.
+    """
     source_key = _video_id(url)
     cfg, _unused_api_key = load_shorts_config()
     if evidence_dir:
@@ -747,32 +802,35 @@ def fetch(
         if attempt_ledger_path is not None
         else default_ledger
     )
-    prior_attempts = load_shorts_attempt_evidence(source_key, ledger_path, source_root)
-    attempt_id = (
-        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + f"-{os.getpid()}"
-    )
-    reserve_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        discovered_attempts=prior_attempts,
-    )
-    try:
-        provider_answer = nlm.fetch_manuscript(url, cfg, log=log)
-    except Exception:
+    if provided_answer is not None:
+        provider_answer = provided_answer
+    else:
+        prior_attempts = load_shorts_attempt_evidence(source_key, ledger_path, source_root)
+        attempt_id = (
+            datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + f"-{os.getpid()}"
+        )
+        reserve_shorts_attempt(
+            ledger_path,
+            source_key,
+            attempt_id=attempt_id,
+            discovered_attempts=prior_attempts,
+        )
+        try:
+            provider_answer = nlm.fetch_manuscript(url, cfg, log=log)
+        except Exception:
+            record_shorts_attempt(
+                ledger_path,
+                source_key,
+                attempt_id=attempt_id,
+                status="unknown_after_provider_start",
+            )
+            raise
         record_shorts_attempt(
             ledger_path,
             source_key,
             attempt_id=attempt_id,
-            status="unknown_after_provider_start",
+            status="provider_response_received",
         )
-        raise
-    record_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        status="provider_response_received",
-    )
     try:
         provider_script_body = _raw_script_body(provider_answer)
         validate_notebooklm_script_layout(provider_script_body)
@@ -786,6 +844,7 @@ def fetch(
             preserve_authorized_wording=preserve_authorized_wording,
             fact_verifications=load_fact_verifications(evidence_dir),
         )
+        validate_spoken_wording(adopted_body)
         minutes = duration_minutes(get_video_duration(url))
         keyword = derive_comment_keyword(adopted_body, head_copies[0], override=comment_keyword)
         final = f"{adopted_body}\n\n{fixed_cta(minutes, keyword)}"
@@ -800,20 +859,22 @@ def fetch(
         validate_intro_promise(final)
         validate_head_copy_connection(head_copies[0], final)
     except Exception:
+        if provided_answer is None:
+            record_shorts_attempt(
+                ledger_path,
+                source_key,
+                attempt_id=attempt_id,
+                status="substantive_failed",
+                substantive_failure=True,
+            )
+        raise
+    if provided_answer is None:
         record_shorts_attempt(
             ledger_path,
             source_key,
             attempt_id=attempt_id,
-            status="substantive_failed",
-            substantive_failure=True,
+            status="passed",
         )
-        raise
-    record_shorts_attempt(
-        ledger_path,
-        source_key,
-        attempt_id=attempt_id,
-        status="passed",
-    )
     return final, chosen, minutes, provider_answer, transform, head_copies
 
 
@@ -899,6 +960,10 @@ def main(argv=None) -> int:
     parser.add_argument("--headline-out")
     parser.add_argument("--evidence-dir")
     parser.add_argument(
+        "--answer-file",
+        help="자막을 근거로 미리 쓴 원고. 주면 NotebookLM을 부르지 않는다",
+    )
+    parser.add_argument(
         "--comment-keyword",
         help="댓글 유도 키워드(한글 2글자). 생략하면 대본과 헤드카피에서 자동 추출",
     )
@@ -944,11 +1009,14 @@ def main(argv=None) -> int:
             comment_keyword=args.comment_keyword,
         )
     else:
+        provided = (Path(args.answer_file).expanduser().resolve().read_text(encoding="utf-8")
+                    if args.answer_file else None)
         script, chosen, minutes, raw, transform, head_copies = fetch(
             args.url,
             evidence_dir=args.evidence_dir,
             preserve_authorized_wording=args.preserve_authorized_wording,
             comment_keyword=args.comment_keyword,
+            provided_answer=provided,
         )
     out_path = Path(args.out).expanduser().resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)

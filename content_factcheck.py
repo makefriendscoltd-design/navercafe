@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import date
 
 
@@ -38,12 +37,11 @@ def apply_corrections(text: str, corrections: list[dict]) -> str:
     return result
 
 
-def factcheck_manuscript(text: str, api_key: str, *, model: str | None = None) -> tuple[str, dict]:
-    if not api_key:
-        raise FactCheckError("사실확인에 필요한 Gemini API 키가 없습니다.")
-    from google import genai
-    from google.genai import types
+def factcheck_manuscript(text: str, api_key: str = "", *, model: str | None = None) -> tuple[str, dict]:
+    """발행 전 사실확인. 구독 에이전트가 웹검색으로 수행한다(API 과금 경로를 쓰지 않는다).
 
+    `api_key`는 옛 호출부와의 호환을 위해 남겨두고 쓰지 않는다.
+    """
     prompt = f"""오늘 날짜는 {date.today().isoformat()}이다.
 아래 원고는 외부 YouTube 영상을 NotebookLM이 옮긴 초안이다. 발행 전 사실확인만 수행하라.
 
@@ -68,20 +66,14 @@ JSON 하나만 출력한다:
 원고:
 {text}
 """
-    try:
-        with genai.Client(api_key=api_key) as client:
-            response = client.models.generate_content(
-                model=model or os.environ.get("FACTCHECK_MODEL", "gemini-2.5-flash"),
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    tools=[types.Tool(google_search=types.GoogleSearch())],
-                    temperature=0,
-                ),
-            )
-    except Exception as exc:
-        raise FactCheckError("웹검색 기반 사실확인 요청이 실패했습니다.") from exc
+    import subscription_agent
 
-    report = _extract_json(response.text or "")
+    try:
+        # 웹검색을 해야 하므로 검색 도구를 허용한다. 파일 수정 도구는 주지 않는다.
+        report = subscription_agent.run_json(
+            prompt, timeout=600, tools="WebSearch,WebFetch")
+    except subscription_agent.SubscriptionAgentError as exc:
+        raise FactCheckError(f"웹검색 기반 사실확인 요청이 실패했습니다: {exc}") from None
     status = str(report.get("status") or "").lower()
     corrections = report.get("corrections") or []
     if status == "blocked":

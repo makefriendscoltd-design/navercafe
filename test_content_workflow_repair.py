@@ -573,3 +573,25 @@ def test_a_video_id_starting_with_a_dash_reaches_the_community_step():
     produce = inspect.getsource(daily.produce)
     assert '"shorts_new_prepare.py", "--"' in produce
     assert '"cafe_new_prepare.py", "--"' in produce
+
+
+def test_a_cafe_body_with_markdown_left_in_it_does_not_publish():
+    """Four reels write-ups published with their ``` showing as text.
+
+    The Cafe editor keeps a code fence as literal characters, and once the
+    article is live the edit screen cannot be driven, so the backticks stay.
+    The check belongs before publication, not after.
+    """
+    import pytest
+
+    from content_production_policy import ProductionPolicyError, validate_cafe_body_markup
+
+    validate_cafe_body_markup("설치 명령어는 아래 문단에 적어두었습니다.\n\ncurl -fsSL https://example.com")
+
+    with pytest.raises(ProductionPolicyError, match="코드 펜스"):
+        validate_cafe_body_markup("설치하세요.\n\n```\ncurl -fsSL https://example.com\n```\n")
+    with pytest.raises(ProductionPolicyError, match="머리말 기호"):
+        validate_cafe_body_markup("# 제목\n\n본문입니다.")
+
+    # A hash inside a sentence is not a heading, and must not block a post.
+    validate_cafe_body_markup("해시태그 #AI자동화 는 그대로 써도 됩니다.")

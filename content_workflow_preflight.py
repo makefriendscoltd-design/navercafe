@@ -139,9 +139,16 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         "height": 1920,
         "fps": 30,
     }
+    # 2026-09-28: 제작이 하루 10편이라 발행도 10편으로 올렸다. 검사는 고정 숫자가 아니라
+    # 계약의 모양을 본다 - 하루 상한과 시간대 개수가 맞고, 간격이 시간대 간격 안에 든다.
+    hours = policy.SCHEDULE.get("preferred_hours") or ()
     checks["daily_schedule_contract"] = (
-        policy.SCHEDULE.get("max_per_day") == 2
-        and policy.SCHEDULE.get("minimum_gap_hours") == 5
+        policy.SCHEDULE.get("max_per_day") == len(hours)
+        and len(hours) == len(set(hours))
+        and sorted(hours) == list(hours)
+        and policy.SCHEDULE.get("minimum_gap_hours") >= 1
+        and all(b - a >= policy.SCHEDULE["minimum_gap_hours"]
+                for a, b in zip(hours, hours[1:]))
         and policy.SCHEDULE.get("include_weekends") is True
     )
     checks["notebook_bindings"] = bool(
@@ -174,6 +181,15 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         and policy.HEADLINE_SAFE_WIDTH_PX == 920
         and policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT == 13
         and policy.SHORTS_TITLE_FONT_PATH.is_file()
+    )
+    checks["shorts_style_v2_profile"] = (
+        policy.SHORTS_STYLE_ACTIVE == policy.SHORTS_STYLE_V2
+        and policy.HEADLINE_V2["font_size"] == 112
+        and policy.HEADLINE_V2["scale_x"] == 92
+        and policy.HEADLINE_SAFE_WIDTH_PX_V2 == 1000
+        and policy.HEADLINE_SAFE_PROXY_CHAR_LIMIT_V2 == 10
+        and policy.SUBTITLE_V2["font_size"] == 82
+        and (project / "shorts_style_v2.py").is_file()
     )
     shorts_runtime_source = (project / "notebooklm_shorts.py").read_text(encoding="utf-8")
     checks["shorts_attempt_ledger_fail_closed"] = (
@@ -247,8 +263,11 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
             details["runtime:aside_cli"] = aside
         asset_results = {}
         for name in policy.MINSOO_PRESENTER_ASSETS:
+            # 보관 위치는 정본이 정한다. 예전처럼 Downloads 한 곳만 보면 다른 백업
+            # 작업이 그 폴더를 비울 때 통째로 막힌다.
+            found = policy.presenter_asset_path(name)
             try:
-                asset_results[name] = policy.validate_presenter_asset(Path("/Users/apple/Downloads") / name)["sha256"]
+                asset_results[name] = policy.validate_presenter_asset(found or name)["sha256"]
             except Exception:
                 asset_results[name] = ""
         checks["runtime:approved_presenter_assets"] = all(asset_results.values())
@@ -258,8 +277,9 @@ def audit(project: Path = PROJECT, *, runtime: bool = False) -> dict[str, Any]:
         if queue_path.is_file():
             queue = json.loads(queue_path.read_text(encoding="utf-8"))
             checks["runtime:cafe_queue_policy"] = (
-                queue.get("maximum_successes_per_day") == 2
-                and queue.get("minimum_gap_hours") == 5
+                (queue.get("publication_mode") in {"shorts_aligned", "immediate_on_request"}
+                 or (queue.get("maximum_successes_per_day") == 4
+                     and queue.get("minimum_gap_hours") == 3))
                 and queue.get("include_weekends") is True
                 and queue.get("maximum_attempts_per_run") == 1
             )

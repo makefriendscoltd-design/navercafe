@@ -49,3 +49,5 @@ outputs/
 uploads/
 _workspace/
 .content-research/
+.venv-qwentts/
+.venv-aligner/

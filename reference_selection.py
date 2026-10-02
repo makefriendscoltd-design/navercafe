@@ -81,6 +81,16 @@ def rejection_reason(candidate: dict) -> str | None:
     title = str(candidate.get("title") or "")
     seconds = candidate.get("duration_seconds")
     minutes = candidate.get("minutes")
+    if candidate.get("shorts_done"):
+        return "쇼츠는 이미 발행 완료"
+    if candidate.get("delivered_before"):
+        return "이전 쇼츠 납품에 포함"
+    if candidate.get("local_shorts_done"):
+        return "검증된 쇼츠 산출물 있음"
+    if candidate.get("attempt_locked"):
+        return "이전 NotebookLM 시도가 잠김"
+    if candidate.get("still_source"):
+        return "원본 화면이 거의 정지"
     if channel in VENDOR_CHANNELS:
         return "벤더·컨퍼런스 발표"
     if channel in COURSE_MILL_CHANNELS:
@@ -126,6 +136,50 @@ def already_produced(source_key: str) -> bool:
     return not source_state(PROJECT, source_key)["needs_production"]
 
 
+def shorts_done(source_key: str) -> bool:
+    """쇼츠가 이미 발행까지 끝난 원본.
+
+    카페가 안 끝난 원본은 needs_production 이 계속 참이라, 쇼츠만 만드는 이 경로에서는
+    같은 원본이 매일 다시 뽑힌다. 2026-09-27 실행은 열 자리 중 다섯을 이미 예약까지
+    끝낸 원본에 썼다. 쇼츠가 끝난 원본은 이 경로의 후보가 아니다.
+    """
+    from content_run_state import source_state
+    shorts = source_state(PROJECT, source_key)["channels"].get("shorts") or {}
+    if isinstance(shorts, str):  # 옛 형식
+        return shorts == "complete"
+    return shorts.get("status") == "complete"
+
+
+def local_shorts_done(source_key: str, project: Path | None = None) -> bool:
+    """True when any canonical or review candidate already passes delivery gates."""
+    from shorts_daily_production import validated_shorts_root
+
+    project = project or PROJECT
+    for root in project.glob(f"outputs/{source_key}-20??????"):
+        for final in root.glob("shorts*/final.mp4"):
+            name = final.parent.name
+            if name != "shorts" and not name.startswith("shorts-review-"):
+                continue
+            if validated_shorts_root(root, candidate_name=name):
+                return True
+    return False
+
+
+def delivered_source_keys(project: Path = PROJECT) -> set[str]:
+    """Source IDs frozen into an earlier delivery manifest must never be rebuilt."""
+    keys: set[str] = set()
+    for path in project.glob("outputs/shorts-delivery-*/delivery.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for item in payload.get("items") or []:
+            key = str(item.get("source_key") or "") if isinstance(item, dict) else ""
+            if key:
+                keys.add(key)
+    return keys
+
+
 def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
     attempts: dict[str, str] = {}
     lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
@@ -148,12 +202,60 @@ def _last_attempts(path: Path = RUNS_PATH) -> dict[str, str]:
     return attempts
 
 
+def attempt_locked_keys(project: Path = PROJECT) -> set[str]:
+    """NotebookLM 시도 ledger에 막혀 재시도가 안 되는 원본들.
+
+    후보당 NotebookLM 기회는 한 번이고, 실패한 시도도 기록돼 재시도를 막는다. 그런
+    후보를 그날의 몫으로 뽑으면 준비 단계에서 바로 죽어서 하루치를 버린다. 잠금은
+    notebooklm_absence_probe 로 "답변이 생기지 않았음"을 증명해야 풀린다.
+    """
+    blocking = {"started", "provider_response_received", "substantive_failed",
+                "unknown_after_provider_start"}
+    locked: set[str] = set()
+    for path in project.glob("outputs/*/shorts/notebooklm-attempt-ledger.json"):
+        if (path.parent / "final.mp4").is_file():
+            continue
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        key = str(ledger.get("sourceKey") or "")
+        if not key:
+            continue
+        for attempt in ledger.get("attempts") or []:
+            status = str(attempt.get("attempt_status") or "")
+            if status in blocking and attempt.get("provider_response_absent") is not True:
+                locked.add(key)
+                break
+    return locked
+
+
+def still_source_keys(project: Path = PROJECT) -> set[str]:
+    """렌더에서 원본 화면이 거의 멈춰 있다고 거부된 원본들.
+
+    다시 뽑아도 같은 화면이라 또 거부된다. 재시도 목록 맨 앞에 계속 남아 그날의 자리를
+    먹지 않도록 후보에서 빼고, 빈 자리는 다음 따라잡기 실행이 다른 레퍼런스로 채운다.
+    """
+    keys: set[str] = set()
+    for path in project.glob("outputs/*/shorts/visual_validation.json"):
+        try:
+            status = json.loads(path.read_text(encoding="utf-8")).get("status")
+        except (OSError, ValueError):
+            continue
+        if status == "rejected_still_source":
+            keys.add(path.parent.parent.name.rsplit("-", 1)[0])
+    return keys
+
+
 def load_candidates(seen_path: Path | None = None) -> list[dict]:
     """Every discovered reference that has no production yet."""
     path = seen_path or SEEN_PATH
     seen = json.loads(path.read_text(encoding="utf-8"))
     out = []
     attempts = _last_attempts()
+    locked = attempt_locked_keys()
+    still = still_source_keys()
+    delivered = delivered_source_keys(PROJECT)
     for vid, meta in (seen.get("videos") or {}).items():
         if already_produced(vid):
             continue
@@ -168,6 +270,11 @@ def load_candidates(seen_path: Path | None = None) -> list[dict]:
             "first_seen": str(meta.get("seen_at") or meta.get("first_seen") or ""),
             "has_output": bool(list((PROJECT / "outputs").glob(vid + "-20??????"))),
             "last_attempt": attempts.get(vid, ""),
+            "attempt_locked": vid in locked,
+            "still_source": vid in still,
+            "shorts_done": shorts_done(vid),
+            "local_shorts_done": local_shorts_done(vid, PROJECT),
+            "delivered_before": vid in delivered,
         })
     return out
 

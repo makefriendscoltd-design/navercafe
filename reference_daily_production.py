@@ -36,7 +36,12 @@ PROJECT = Path(__file__).resolve().parent
 PYTHON = PROJECT / ".venv312/bin/python"
 KST = ZoneInfo("Asia/Seoul")
 REPORT_DIR = PROJECT / "outputs/reference-daily-production"
-DAILY_LIMIT = 2
+DAILY_LIMIT = 20
+# Legacy queue modes retain their original production limit.
+CAFE_DAILY_LIMIT = 2
+# 동시에 만들 편수. 렌더가 ffmpeg 을 오래 물고 있어서 이 값이 하루치 소요를 정한다.
+# 이 맥에서 3개까지는 서로 느려지지 않았다.
+PRODUCE_WORKERS = 3
 from youtube_shorts_aside_adapter import CHANNEL_ID, CHANNEL_NAME
 
 EXPECTED_CHANNEL = CHANNEL_NAME
@@ -57,45 +62,22 @@ def _run(args: list[str], *, timeout: int = 3600) -> tuple[bool, str]:
     return completed.returncode == 0, (tail[0] if tail else "")[:300]
 
 
-# The notebooks fill up because each run adds a source and the removal
-# afterwards sometimes fails. At the 50-source cap NotebookLM refuses new ones
-# and every manuscript stops being written -- which is how Cafe production went
-# five days without anyone noticing.
-NOTEBOOK_SOURCE_CEILING = 40
+def produce(source_key: str, today: str, *, shorts_only: bool = False,
+            publish_now: bool = True) -> dict:
+    """Shorts render, Cafe candidate and card deck for one source.
 
+    `shorts_only`면 카페·카드뉴스 단계를 건너뛴다. 쇼츠는 하루 10개를 만들지만
+    카페 발행 큐는 그만큼 소화하지 못해서, 다 만들면 후보만 쌓인다.
 
-def notebook_headroom() -> dict:
-    """How close each pinned notebook is to the cap, read before producing."""
-    from aside_browser import JS_COMMON, _payload_expression, run_repl
-    from content_production_policy import CAFE_NOTEBOOK, SHORTS_NOTEBOOK
-
-    script = """
-const p=await openTab(`https://notebooklm.google.com/notebook/${payload.notebookId}?authuser=1&h=${Date.now()}`);
-try{
- await sleep(10000);
- const n=await p.evaluate(()=>document.querySelectorAll('.single-source-container').length);
- emit({status:'ok',sources:n});
-}catch(e){emit({status:'error',message:String(e?.message||e)});}
-finally{try{await p.close();}catch(_){}}
-"""
-    out = {}
-    for label, notebook in (("cafe", CAFE_NOTEBOOK), ("shorts", SHORTS_NOTEBOOK)):
-        try:
-            result = run_repl(JS_COMMON + "\nconst payload="
-                              + _payload_expression({"notebookId": notebook["id"]}) + ";\n" + script,
-                              account="u0", timeout=240)
-            out[label] = int(result.get("sources") or 0)
-        except Exception as exc:
-            out[label] = f"확인 실패: {str(exc)[:80]}"
-    return out
-
-
-def produce(source_key: str, today: str) -> dict:
-    """Shorts render, Cafe candidate and card deck for one source."""
+    `publish_now`가 거짓이면 만들기만 하고 발행은 부르는 쪽에 맡긴다. 제작은 여러 편을
+    동시에 돌릴 수 있지만 발행은 Studio 브라우저 하나를 쓰므로 한 줄로 해야 한다.
+    """
     steps: dict[str, str] = {}
     import content_run_state
     root = content_run_state.resumable_root(PROJECT, source_key, today)
     root.mkdir(parents=True, exist_ok=True)
+
+    import content_acceptance
 
     if ((root / "shorts/final.mp4").is_file()
             or ((root / "shorts/07_script_final.txt").is_file()
@@ -108,16 +90,20 @@ def produce(source_key: str, today: str) -> dict:
         ok, note = _run(["shorts_v7_builder.py", "--root", str(root / "shorts"), "--render"])
         steps["shorts_render"] = "ok" if ok else f"fail: {note}"
 
-    if (root / "cafe/notebooklm/notebooklm-answer.md").is_file():
-        ok, note = True, "기존 NotebookLM 응답 재사용"
+    if shorts_only:
+        steps["cafe_answer"] = "skip: shorts-only"
+        verdict = content_acceptance.audit(root)
+        published = publish(root, verdict) if publish_now else {}
+        provider = content_run_state.source_state(PROJECT, source_key)
+        return {"source_key": source_key, "root": str(root), "steps": steps,
+                "published": published, "provider": provider["channels"],
+                "acceptance": verdict["status"], "problems": {},
+                "handed_off": provider["handed_off"], "complete": provider["complete"]}
+
+    if (root / "cafe/06_cafe_manifest.json").is_file():
+        ok, note = True, "기존 카페 매니페스트 재사용"
     else:
-        ok, note = _run(["-c", (
-        "import sys; sys.path.insert(0, '.');"
-        "import youtube_cafe_auto as auto, notebooklm_source as nlm;"
-        f"cfg = nlm.load_config(auto.load_or_create_config());"
-        f"cfg['evidence_dir'] = r'{root / 'cafe' / 'notebooklm'}';"
-        "import pathlib; pathlib.Path(cfg['evidence_dir']).mkdir(parents=True, exist_ok=True);"
-            f"nlm.fetch_manuscript('https://youtu.be/{source_key}', cfg)")])
+        ok, note = _run(["cafe_caption_source.py", "--root", str(root), "--", source_key])
     steps["cafe_answer"] = "ok" if ok else f"fail: {note}"
     if (root / "cafe/06_cafe_manifest.json").is_file():
         steps["cafe_candidate"] = "ok"
@@ -134,10 +120,8 @@ def produce(source_key: str, today: str) -> dict:
 
     # Exit codes said every one of these runs succeeded while the community body
     # was missing, decks carried no anchor and titles were still sentinels.
-    import content_acceptance
-
     verdict = content_acceptance.audit(root)
-    published = publish(root, verdict)
+    published = publish(root, verdict) if publish_now else {}
     provider = content_run_state.source_state(PROJECT, source_key)
     return {"source_key": source_key, "root": str(root), "steps": steps,
             "published": published, "provider": provider["channels"],
@@ -157,7 +141,8 @@ def _link_related_video(root: Path) -> str:
         provider_id = json.loads(receipt.read_text(encoding="utf-8"))["provider_id"]
     except (OSError, KeyError, json.JSONDecodeError):
         return "fail: schedule_receipt 에 provider_id 없음"
-    ok, note = _run(["shorts_related_video.py", provider_id], timeout=900)
+    # YouTube 영상 id는 "-"로 시작할 수 있다(-zeMccjVb0M). "--" 없이 넘기면 옵션으로 읽힌다.
+    ok, note = _run(["shorts_related_video.py", "--", provider_id], timeout=900)
     return "ok" if ok else f"fail: {note}"
 
 def publish(root: Path, verdict: dict) -> dict:
@@ -176,13 +161,18 @@ def publish(root: Path, verdict: dict) -> dict:
         return {"source": "fail: " + "; ".join(problems)}
 
     if verdict["channels"]["cafe"]["status"] == "pass":
-        cafe = content_run_state.cafe_state(PROJECT, source_key)
-        if cafe.get("enrolled"):
-            ok, note = True, f"기존 큐 상태 {cafe['status']}"
+        ok, note = _run(["cafe_publish_request.py", "--manifest",
+                         str(root / "cafe/06_cafe_manifest.json")], timeout=2400)
+        try:
+            cafe_result = json.loads(note)
+        except (ValueError, TypeError):
+            cafe_result = {}
+        if cafe_result.get("published") is True:
+            steps["cafe_publish"] = "published"
+        elif cafe_result.get("status") in {"queued", "deferred"}:
+            steps["cafe_publish"] = cafe_result["status"]
         else:
-            ok, note = _run(["cafe_queue_enroll.py", "--manifest",
-                             str(root / "cafe/06_cafe_manifest.json")], timeout=900)
-        steps["cafe_enroll"] = "enrolled" if ok else f"fail: {note}"
+            steps["cafe_publish"] = f"fail: {note}"
 
     if verdict["channels"]["cardnews"]["status"] == "pass":
         community = content_run_state.community_state(root, source_key)
@@ -252,13 +242,28 @@ def publish(root: Path, verdict: dict) -> dict:
     return steps
 
 
+def cafe_production_limit(queue: dict, total: int, explicit: int | None) -> int:
+    if explicit is not None:
+        return explicit
+    from cafe_publication_policy import is_immediate
+    return total if is_immediate(queue) else CAFE_DAILY_LIMIT
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--limit", type=int, default=DAILY_LIMIT)
+    parser.add_argument("--workers", type=int, default=PRODUCE_WORKERS,
+                        help="동시에 만들 편수. 발행은 항상 한 줄로 한다")
+    parser.add_argument("--cafe-limit", type=int, default=None,
+                        help="명시한 개수까지만 카페·카드뉴스도 만든다. 즉시 발행 모드 기본값은 제한 없음.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.limit < 1:
         parser.error("--limit은 1 이상이어야 합니다")
+
+    import content_run_state
+    policy = content_run_state.read_json(selection.QUEUE_PATH)
+    args.cafe_limit = cafe_production_limit(policy, args.limit, args.cafe_limit)
 
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     lock_handle = (REPORT_DIR / "run.lock").open("a+")
@@ -273,29 +278,8 @@ def main(argv=None) -> int:
         print(json.dumps({"status": "abort", "reason": "aside_daemon_down"},
                          ensure_ascii=False), flush=True)
         return 3
-    headroom = notebook_headroom()
-    full = {name: count for name, count in headroom.items()
-            if isinstance(count, int) and count >= NOTEBOOK_SOURCE_CEILING}
-    if full:
-        import notebook_source_trim
-
-        for name in full:
-            try:
-                trimmed = notebook_source_trim.trim(name, keep=10, apply=True)
-            except Exception as exc:
-                trimmed = {"notebook": name, "error": str(exc)[:160]}
-            print(json.dumps({"status": "trimmed_notebook", **trimmed},
-                             ensure_ascii=False), flush=True)
-        headroom = notebook_headroom()
-        still_full = {name: count for name, count in headroom.items()
-                      if isinstance(count, int) and count >= NOTEBOOK_SOURCE_CEILING}
-        if still_full:
-            # Producing into a full notebook writes no manuscript at all, so
-            # stop and say so rather than spend a day failing quietly.
-            print(json.dumps({"status": "abort", "reason": "notebook_sources_near_cap",
-                              "notebooks": headroom, "ceiling": NOTEBOOK_SOURCE_CEILING},
-                             ensure_ascii=False), flush=True)
-            return 4
+    # 2026-09-30: 원고를 자막으로 쓰므로 NotebookLM 노트북 소스 수는 더 보지 않는다.
+    # 노트북 화면이 막혀도 그날 제작 전체가 멈추지 않게 한다.
     now = datetime.now(KST)
     today = now.strftime("%Y%m%d")
     selected, rejected = selection.select(selection.load_candidates(), limit=args.limit)
@@ -307,13 +291,40 @@ def main(argv=None) -> int:
     if args.dry_run:
         return 0
 
-    for candidate in selected:
+    # 제작은 동시에, 발행은 한 줄로. 렌더는 ffmpeg 이 도는 동안 아무것도 안 하고 기다려서
+    # 하루치의 시간 대부분을 먹는다(9/29 실측: 편당 16분인데 편 사이 간격이 30~45분).
+    # 반면 발행은 Studio 브라우저 하나를 쓰므로 겹치면 서로를 끊는다.
+    from concurrent.futures import ThreadPoolExecutor
+
+    def made(order_and_candidate):
+        order, candidate = order_and_candidate
         try:
-            report["results"].append(produce(candidate["id"], today))
+            return produce(candidate["id"], today,
+                           shorts_only=order >= args.cafe_limit, publish_now=False)
         except Exception:
-            report["results"].append({"source_key": candidate["id"], "steps": {},
-                                      "complete": False, "error": traceback.format_exc()[-400:]})
-        print(json.dumps(report["results"][-1], ensure_ascii=False), flush=True)
+            return {"source_key": candidate["id"], "steps": {}, "complete": False,
+                    "error": traceback.format_exc()[-400:]}
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        made_results = list(pool.map(made, enumerate(selected)))
+    for result in made_results:
+        print(json.dumps(result, ensure_ascii=False), flush=True)
+
+    import content_acceptance
+    for result in made_results:
+        root = Path(result.get("root") or "")
+        if not result.get("steps") or not root.is_dir():
+            report["results"].append(result)
+            continue
+        try:
+            verdict = content_acceptance.audit(root)
+            result["published"] = publish(root, verdict)
+            result["acceptance"] = verdict["status"]
+        except Exception:
+            result["published"] = {"error": traceback.format_exc()[-300:]}
+        report["results"].append(result)
+        print(json.dumps({"source_key": result.get("source_key"),
+                          "published": result.get("published")}, ensure_ascii=False), flush=True)
 
     import content_run_state
     seen = content_run_state.read_json(selection.SEEN_PATH).get("videos", {})

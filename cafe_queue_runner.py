@@ -23,6 +23,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from cafe_shorts_alignment import aligned_entries, is_shorts_aligned, verified_shorts
+from cafe_publication_policy import is_immediate, eligible_entries
 
 KST = timezone(timedelta(hours=9))
 DEFAULT_PROJECT = Path("/Users/apple/orca/navercafe")
@@ -44,12 +46,16 @@ def is_done(entry: dict) -> bool:
     return bool(entry.get("published_url")) or entry.get("status") == "published"
 
 
-def due_entries(queue: dict, now: datetime) -> list[dict]:
+def due_entries(queue: dict, now: datetime, project: Path = DEFAULT_PROJECT) -> list[dict]:
     """정책상 지금 시도할 수 있는 항목을 오래된 예약 순으로 돌려준다.
 
     failure_policy: due pending 과 재시도 가능한 failed 를 합치고,
     not_before 가 가장 오래된 것부터 발행한다.
     """
+    if is_immediate(queue):
+        return eligible_entries(project, queue, now)
+    if is_shorts_aligned(queue):
+        return aligned_entries(project, queue, now)
     out = []
     for entry in queue.get("entries", []):
         if is_done(entry) or entry.get("do_not_retry"):
@@ -60,12 +66,110 @@ def due_entries(queue: dict, now: datetime) -> list[dict]:
         not_before = parse_time(entry.get("not_before"))
         if not_before is None or not_before > now:
             continue
+        planned = parse_time(entry.get("planned_publish_at"))
+        if planned and planned > now:
+            continue
         next_eligible = parse_time(entry.get("next_eligible_at"))
         if next_eligible and next_eligible > now:
             continue
         out.append(entry)
-    out.sort(key=lambda e: str(e.get("not_before")))
+    out.sort(key=lambda e: str(e.get("planned_publish_at") or e.get("not_before")))
     return out
+
+
+def draft_candidates(project: Path, queue: dict, now: datetime) -> list[dict]:
+    """Keep only the next few unpublished articles ready, not an unbounded draft pile."""
+    entries = [e for e in queue.get("entries", []) if not is_done(e)
+               and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
+    entries.sort(key=lambda e: str(e.get("planned_publish_at") or e.get("not_before")))
+    if is_shorts_aligned(queue):
+        entries = aligned_entries(project, queue, now)
+    candidates = []
+    for entry in entries[:int(queue.get("draft_lookahead", 2))]:
+        manifest = project / str(entry.get("manifest") or "")
+        receipt = manifest.parent / "provider/11_verified_draft.json"
+        retry_at = parse_time(entry.get("draft_retry_after"))
+        if manifest.is_file() and not receipt.exists() and (not retry_at or retry_at <= now):
+            candidates.append(entry)
+    return candidates
+
+
+def plan_remaining(queue: dict, now: datetime, run_windows: list[tuple[int, int]], project: Path = DEFAULT_PROJECT) -> dict[str, str]:
+    """Reserve remaining articles against the installed timer and current daily policy."""
+    if is_shorts_aligned(queue):
+        return {entry['source_key']: verified_shorts(project, entry)['scheduled_at']
+                for entry in aligned_entries(project, queue, now)}
+    entries = [e for e in queue.get("entries", []) if not is_done(e)
+               and e.get("status") in {"pending", "failed"} and not e.get("do_not_retry")]
+    entries.sort(key=lambda e: str(e.get("not_before")))
+    reserved = [parse_time(e.get("last_attempt_at")) for e in queue.get("entries", []) if is_done(e)]
+    reserved = [stamp for stamp in reserved if stamp]
+    maximum = int(queue["maximum_successes_per_day"])
+    gap = timedelta(hours=float(queue["minimum_gap_hours"]))
+    buffer = timedelta(minutes=int(queue.get("planning_buffer_minutes", 30)))
+    planned_stamps: list[datetime] = []
+    plan = {}
+    for entry in entries:
+        earliest = max(now, parse_time(entry.get("not_before")) or now)
+        if planned_stamps:
+            earliest = max(earliest, planned_stamps[-1] + gap + buffer)
+        day = earliest.replace(hour=0, minute=0, second=0, microsecond=0)
+        chosen = None
+        for _ in range(730):
+            for hour, minute in sorted(run_windows):
+                candidate = day.replace(hour=hour, minute=minute)
+                if candidate < earliest:
+                    continue
+                if sum(t.date() == candidate.date() for t in reserved) >= maximum:
+                    continue
+                if any(abs(candidate - stamp) < gap for stamp in reserved):
+                    continue
+                chosen = candidate
+                break
+            if chosen:
+                break
+            day += timedelta(days=1)
+        if chosen is None:
+            raise RuntimeError("No Cafe reservation slot within two years")
+        plan[entry["source_key"]] = chosen.isoformat()
+        reserved.append(chosen)
+        planned_stamps.append(chosen)
+    return plan
+
+
+def prepare_ahead(project: Path, queue_path: Path, queue: dict, now: datetime, timeout: int) -> dict:
+    candidates = draft_candidates(project, queue, now)
+    if not candidates:
+        return {"action": "drafts_ready_or_deferred"}
+    entry = candidates[0]
+    command = [sys.executable, str(project / "cafe_manifest_publisher.py"),
+               "--manifest", entry["manifest"], "--prepare-only"]
+    try:
+        proc = subprocess.run(command, cwd=project, capture_output=True, text=True, timeout=timeout)
+        ok = proc.returncode == 0
+        note = (proc.stderr or proc.stdout or "")[-1200:]
+    except subprocess.TimeoutExpired:
+        ok, note = False, f"draft preparation timed out after {timeout}s"
+    receipt = project / entry["manifest"]
+    receipt = receipt.parent / "provider/11_verified_draft.json"
+    if ok:
+        try:
+            ok = json.loads(receipt.read_text())["draft"]["status"] == "draft_saved"
+        except (OSError, ValueError, KeyError):
+            ok, note = False, "draft command returned no verified saved-draft receipt"
+    latest = load_queue(queue_path)
+    for current in latest["entries"]:
+        if current["source_key"] != entry["source_key"]:
+            continue
+        current["draft_last_attempt_at"] = now.isoformat()
+        current["draft_last_error"] = None if ok else note
+        current["draft_retry_after"] = None if ok else (now + timedelta(hours=1)).isoformat()
+        if ok:
+            current["draft_prepared_at"] = datetime.now(KST).isoformat()
+        break
+    save_queue(queue_path, latest)
+    return {"action": "prepare_draft", "source_key": entry["source_key"], "ok": ok,
+            "detail": "verified saved draft" if ok else note}
 
 
 def successes_today(queue: dict, now: datetime) -> list[datetime]:
@@ -91,6 +195,11 @@ def last_success(queue: dict) -> datetime | None:
 
 def rate_block(queue: dict, now: datetime) -> str | None:
     """정책상 지금 발행하면 안 되는 이유. 없으면 None."""
+    if is_immediate(queue):
+        return None
+    if is_shorts_aligned(queue):
+        windows = {int(v.split(':', 1)[0]) for v in queue['windows']}
+        return None if now.hour in windows else f'현재 {now.hour}시는 발행 윈도우가 아님'
     daily_max = int(queue["maximum_successes_per_day"])
     today = successes_today(queue, now)
     if len(today) >= daily_max:
@@ -121,9 +230,10 @@ def missing_gates(project: Path, entry: dict) -> list[str]:
 
 
 def run_command(project: Path, command: str, timeout: int) -> subprocess.CompletedProcess:
+    import shlex
     return subprocess.run(
-        command,
-        shell=True,
+        shlex.split(command),
+        shell=False,
         cwd=project,
         capture_output=True,
         text=True,
@@ -144,17 +254,20 @@ def read_provider_url(project: Path, entry: dict) -> str | None:
     except (ValueError, OSError):
         return None
 
+    from cafe_manifest_publisher import canonical_cafe_article_url
+
     stack = [data]
     while stack:
         node = stack.pop()
         if isinstance(node, dict):
             for key, value in node.items():
-                if (
-                    isinstance(value, str)
-                    and "cafe.naver.com" in value
-                    and ("articles/" in value or "articleid=" in value)
-                ):
-                    return value
+                if isinstance(value, str) and "cafe.naver.com" in value:
+                    try:
+                        canonical, _ = canonical_cafe_article_url(value)
+                    except (ValueError, RuntimeError):
+                        pass
+                    else:
+                        return canonical
                 stack.append(value)
         elif isinstance(node, list):
             stack.extend(node)
@@ -218,11 +331,44 @@ def record(
             continue
         entry["attempts"] = int(entry.get("attempts") or 0) + 1
         entry["last_attempt_at"] = now.isoformat()
+        if is_shorts_aligned(queue) or is_immediate(queue):
+            evidence_path = project / str(entry.get('provider_evidence') or '__missing__')
+            receipt = {}
+            if evidence_path.is_file():
+                try:
+                    receipt = json.loads(evidence_path.read_text())
+                except (ValueError, OSError):
+                    pass
+            verification = receipt.get('publicVerification') or {}
+            verified = (receipt.get('status') == 'published_verified'
+                        and verification.get('status') == 'verified'
+                        and int(verification.get('oglinks') or 0) >= 1
+                        and int(verification.get('embeds') or 0) >= 1
+                        and bool(receipt.get('providerUrl'))
+                        and bool(read_provider_url(project, entry)))
+            uncertain = any((evidence_path.parent / name).is_file() for name in (
+                'provider_uncertain_do_not_retry.json',
+                'published_but_verification_failed_do_not_retry.json',
+                '12_provider_success_reservation.json'))
+            if not verified and (uncertain or receipt.get('status') in {'published', 'published_verified'}):
+                entry.update(status='reconcile_required', next_eligible_at=None,
+                             do_not_retry=True, last_error='provider_result_requires_readonly_reconciliation')
+                save_queue(queue_path, queue)
+                return
+            ok = bool(verified)
+            if not ok and not note:
+                note = 'publisher_finished_without_verified_article'
         if ok:
             url = read_provider_url(project, entry)
+            if not url:
+                raise RuntimeError("Cafe success has no verified provider article URL")
             entry["status"] = "published"
             entry["published_url"] = url
             entry["next_eligible_at"] = None
+            entry["last_error"] = None
+            entry["failure_cause"] = None
+            entry["same_cause_failures"] = 0
+            entry["do_not_retry"] = True
             entry["result"] = {"ok": True, "note": note, "url": url}
         else:
             retry = float(queue.get("retry_interval_hours") or 1)
@@ -232,6 +378,7 @@ def record(
             entry["failure_cause"] = cause
             entry["same_cause_failures"] = repeats
             entry["result"] = {"ok": False, "note": note[:2000]}
+            entry["last_error"] = cause
             if repeats >= SAME_CAUSE_LIMIT and not environmental(note):
                 entry["status"] = "blocked"
                 entry["next_eligible_at"] = None
@@ -239,7 +386,9 @@ def record(
                 entry["last_error"] = f"same_cause_failures={repeats}: {cause}"
             else:
                 entry["status"] = "failed"
-                entry["next_eligible_at"] = (now + timedelta(hours=retry)).isoformat()
+                next_time = (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                             if is_shorts_aligned(queue) else now + timedelta(hours=retry))
+                entry["next_eligible_at"] = next_time.isoformat()
         break
     save_queue(queue_path, queue)
 
@@ -258,6 +407,7 @@ def main(argv=None) -> int:
         help="발행 직전까지 자격 검증만 실행한다 (카페에 글이 올라가지 않는다)",
     )
     parser.add_argument("--timeout", type=int, default=1800)
+    parser.add_argument("--source-key", help="Process only this requested source in immediate mode")
     args = parser.parse_args(argv)
 
     project = args.project.resolve()
@@ -268,7 +418,12 @@ def main(argv=None) -> int:
 
     now = datetime.now(KST)
     queue = load_queue(queue_path)
-    due = due_entries(queue, now)
+    if args.source_key and not is_immediate(queue):
+        print(json.dumps({'action': 'blocked', 'reason': 'targeted_request_requires_immediate_mode'}))
+        return 1
+    due = due_entries(queue, now, project)
+    if args.source_key:
+        due = [e for e in due if e.get('source_key') == args.source_key]
     blocked = rate_block(queue, now)
 
     summary = {
@@ -297,15 +452,42 @@ def main(argv=None) -> int:
         print(json.dumps(summary, ensure_ascii=False))
         return 0
 
+    if is_shorts_aligned(queue) or is_immediate(queue):
+        # Both entry points obey the same live guard; never silently pick a
+        # different item or prepare provider drafts behind a blocked guard.
+        guard_command = [sys.executable, str(project / 'content_queue_guard.py'), '--live']
+        if args.source_key:
+            guard_command.append(f'--source-key={args.source_key}')
+        proc = subprocess.run(guard_command,
+                              cwd=project, capture_output=True, text=True, timeout=240)
+        try:
+            guard = json.loads(proc.stdout)
+        except (ValueError, TypeError):
+            guard = {'status': 'blocked', 'reason': 'unreadable_live_guard'}
+        now = datetime.now(KST)
+        due = due_entries(load_queue(queue_path), now, project)
+        if args.source_key:
+            due = [e for e in due if e.get('source_key') == args.source_key]
+        if (proc.returncode != 0 or guard.get('status') != 'pass' or not due
+                or guard.get('source_key') != due[0]['source_key']):
+            print(json.dumps({'action': 'skip', 'guard': guard, 'provider_mutation': False}, ensure_ascii=False))
+            return 0
+        due = due[:1]
+
     if blocked:
-        print(json.dumps({**summary, "action": "skip"}, ensure_ascii=False))
+        preparation = {"action": "skip"} if args.validate_only else prepare_ahead(
+            project, queue_path, queue, now, args.timeout)
+        print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
     if not due:
-        print(json.dumps({**summary, "action": "nothing_due"}, ensure_ascii=False))
+        preparation = {"action": "nothing_due"} if args.validate_only else prepare_ahead(
+            project, queue_path, queue, now, args.timeout)
+        print(json.dumps({**summary, **preparation}, ensure_ascii=False))
         return 0
 
-    attempts_per_run = int(queue.get("maximum_attempts_per_run") or 1)
+    attempts_per_run = 1 if is_shorts_aligned(queue) or is_immediate(queue) else int(queue.get("maximum_attempts_per_run") or 1)
     done = 0
+    publish_failed = False
     for entry in due:
         if done >= attempts_per_run:
             break
@@ -355,6 +537,22 @@ def main(argv=None) -> int:
             )
             continue
 
+        if is_shorts_aligned(queue) or is_immediate(queue):
+            eligibility_command = entry.get('eligibility_command')
+            if not eligibility_command:
+                print(json.dumps({'source_key': source_key, 'action': 'blocked',
+                                  'reason': 'missing_eligibility_command'}))
+                return 1
+            validation = run_command(project, eligibility_command, args.timeout)
+            try:
+                result = json.loads(validation.stdout)
+            except (ValueError, TypeError):
+                result = {}
+            if validation.returncode != 0 or result.get('status') != 'pass' or result.get('scope') != 'cafe_only':
+                print(json.dumps({'source_key': source_key, 'action': 'blocked',
+                                  'reason': 'eligibility_failed', 'exit': validation.returncode}))
+                return 1
+
         started = datetime.now(KST)
         try:
             proc = run_command(project, command, args.timeout)
@@ -366,6 +564,7 @@ def main(argv=None) -> int:
             ok, note = False, f"timeout after {args.timeout}s"
 
         if not ok and daemon_died(note):
+            publish_failed = True
             print(json.dumps({
                 "source_key": source_key, "action": "abort",
                 "reason": "aside_daemon_down",
@@ -376,6 +575,10 @@ def main(argv=None) -> int:
             break
 
         record(project, queue_path, source_key, started, ok, note)
+        if is_shorts_aligned(queue) or is_immediate(queue):
+            updated = next(e for e in load_queue(queue_path)['entries'] if e['source_key'] == source_key)
+            ok = updated.get('status') == 'published'
+        publish_failed = publish_failed or not ok
         print(
             json.dumps(
                 {
@@ -390,7 +593,7 @@ def main(argv=None) -> int:
         done += 1
 
     print(json.dumps({**summary, "attempted": done}, ensure_ascii=False))
-    return 0
+    return 1 if publish_failed else 0
 
 
 if __name__ == "__main__":

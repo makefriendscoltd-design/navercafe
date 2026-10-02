@@ -104,11 +104,13 @@ def check_cardnews(root: Path) -> list[str]:
     return problems
 
 
-def check_shorts(root: Path) -> list[str]:
+def check_shorts(root: Path, *, candidate_name: str = "shorts") -> list[str]:
     from content_lineage import validate_shorts_origin
 
     problems = []
-    shorts = root / "shorts"
+    if Path(candidate_name).name != candidate_name or not candidate_name.startswith("shorts"):
+        return ["유효하지 않은 쇼츠 후보 폴더"]
+    shorts = root / candidate_name
     script = shorts / "07_script_final.txt"
     if not script.is_file():
         return ["07_script_final.txt 없음"]

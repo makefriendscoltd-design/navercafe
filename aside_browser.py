@@ -1,4 +1,4 @@
-"""Aside CLI based browser automation for Naver Cafe and YouTube.
+"""Aside browser automation, with MCP for Cafe and CLI for other workflows.
 
 The module deliberately never sends account passwords to Aside.  It reuses the
 browser profile selected in the Aside app and returns ``login_required`` when
@@ -25,6 +25,8 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from aside_mcp import AsideMCP, AsideMCPError
 
 
 RESULT_MARKER = "__ASIDE_RESULT__"
@@ -112,6 +114,13 @@ def _parse_result(output: str) -> dict[str, Any]:
     return data
 
 
+def _mcp_failure(exc: Exception) -> AsideError:
+    message = str(exc)
+    if "daemon is not reachable" in message or "REPL context is disposed" in message:
+        return AsideDaemonDown("Aside 데몬이 죽어 브라우저 연결이 끊겼습니다. 동일 작업을 자동 재실행하지 않습니다.")
+    return AsideError(f"Aside MCP 작업 실패 (자동 재실행 없음): {message}")
+
+
 def run_repl(
     code: str,
     *,
@@ -156,6 +165,78 @@ def run_repl(
                 f"Aside 데몬이 죽어 브라우저 작업을 시작하지 못했습니다.\n{tail}")
         raise AsideError(f"Aside CLI가 종료 코드 {proc.returncode}로 실패했습니다.\n{tail}")
     return _parse_result(output)
+
+
+
+def run_mcp_repl(
+    code: str,
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    account: str | None = ASIDE_ACCOUNT,
+) -> dict[str, Any]:
+    """Execute once through the u0 MCP server; never fall back and replay."""
+    selected_account = (account or ASIDE_ACCOUNT).strip()
+    if selected_account != ASIDE_ACCOUNT:
+        raise AsideError(f"이 프로젝트의 Aside 계정은 {ASIDE_ACCOUNT}만 허용됩니다.")
+    executable = resolve_aside_cli()
+    if not executable:
+        raise AsideError("Aside MCP 실행 파일을 찾을 수 없습니다.")
+    try:
+        with AsideMCP(executable, account=selected_account, cwd=cwd) as client:
+            output = client.repl(
+                f"await (async()=>{{\n{code}\n}})()",
+                title="자동화 브라우저 작업", timeout=timeout,
+            )
+    except (AsideMCPError, OSError) as exc:
+        raise _mcp_failure(exc) from exc
+    return _parse_result(output)
+
+
+def run_repl_steps(code: str, *, cwd=None, timeout: int = 900,
+                   account: str | None = ASIDE_ACCOUNT) -> dict[str, Any]:
+    """Advance the editor in one persistent MCP session, once per step."""
+    if (account or ASIDE_ACCOUNT) != ASIDE_ACCOUNT:
+        raise AsideError("이 프로젝트의 Aside 계정은 u0만 허용됩니다.")
+    executable = resolve_aside_cli()
+    if not executable:
+        raise AsideError("Aside MCP 실행 파일을 찾을 수 없습니다.")
+    deadline = time.monotonic() + timeout
+    name = "__cafeSteps_" + uuid.uuid4().hex
+    command = f"globalThis.{name}=(async function*(){{\n{code}\n}})();"
+    step = "initialization"
+    try:
+        with AsideMCP(executable, account=ASIDE_ACCOUNT, cwd=cwd) as client:
+            while True:
+                remaining = min(110, deadline - time.monotonic())
+                if remaining <= 0:
+                    raise AsideError(f"Aside Cafe step timed out: {step}; do not blindly retry")
+                expression = command + (
+                    f"const s=await globalThis.{name}.next();"
+                    f"console.log('{RESULT_MARKER}'+JSON.stringify({{status:'step',done:s.done,step:s.value}}));"
+                )
+                output = client.repl(
+                    "await (async()=>{" + expression + "})()",
+                    title=f"카페 편집 단계: {step}", timeout=remaining,
+                )
+                # The final provider receipt precedes the generator's done marker
+                # in one MCP reply. Preserve it instead of selecting the last line.
+                markers = re.findall(rf"{re.escape(RESULT_MARKER)}([^\r\n]+)", output)
+                if not markers:
+                    raise AsideError(f"Aside MCP Cafe step has no result: {step}")
+                advance = None
+                for marker in markers:
+                    result = _parse_result(RESULT_MARKER + marker)
+                    if result.get("status") != "step":
+                        return result
+                    advance = result
+                if advance.get("done"):
+                    raise AsideError("Cafe workflow ended without provider evidence")
+                step = str(advance.get("step"))
+                print(f"Aside Cafe step: {step}", flush=True)
+                command = ""
+    except (AsideMCPError, OSError) as exc:
+        raise _mcp_failure(exc) from exc
 
 
 def daemon_is_up(*, account: str | None = ASIDE_ACCOUNT, timeout: int = 60) -> bool:
@@ -494,12 +575,19 @@ async function pageLooksLoggedOut(p, site) {
     return await p.evaluate(siteName => {
       const text = document.body?.innerText || '';
       if (siteName === 'naver') {
-        const loginLink = document.querySelector('a[href*="nidlogin"],a[class*="link_login"]');
-        const logoutControl = document.querySelector(
+        const shown = el => {
+          const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
+          return rect.width > 0 && rect.height > 0 &&
+            style.display !== 'none' && style.visibility !== 'hidden';
+        };
+        const loginLink = [...document.querySelectorAll(
+          'a[href*="nidlogin"],a[class*="link_login"]'
+        )].some(shown);
+        const logoutControl = [...document.querySelectorAll(
           '[href*="logout"],button[class*="btn_logout"],[class*="logout"]'
-        );
-        // Naver keeps a hidden login link in the homepage DOM even after login.
-        // A visible account logout control/text is therefore the stronger signal.
+        )].some(shown);
+        // Both anonymous and signed-in pages retain hidden auth controls.
+        // Only rendered controls can establish the current session state.
         if (logoutControl || /로그아웃/.test(text)) return false;
         if (loginLink) return true;
         return /네이버 로그인|NAVER\s*로그인/.test(text) && !/로그아웃/.test(text);
@@ -540,7 +628,8 @@ if (loggedOut && payload.keep) {
   emit(result);
 }
 """
-    return run_repl(code, timeout=45, account=account)
+    runner = run_mcp_repl if site == "naver" else run_repl
+    return runner(code, timeout=45, account=account)
 
 
 def capture_youtube_frames(
@@ -673,7 +762,7 @@ def _naver_structure_expectation(body: str) -> tuple[list[str], list[str]]:
         quote = re.fullmatch(r"\[BLOCKQUOTE\]([\s\S]*?)\[/BLOCKQUOTE\]", token)
         if quote:
             sequence.append("quote")
-            quote_texts.append(quote.group(1).splitlines()[0].strip()[:30])
+            quote_texts.append(quote.group(1).splitlines()[0].strip())
         elif token == "[IMAGE_HERE]":
             sequence.append("image")
         elif re.sub(r"\[/?(?:BOLD|HIGHLIGHT)\]", "", token).strip():
@@ -707,6 +796,11 @@ def post_to_naver_cafe(
     register_evaluate_click: bool = False,
 ) -> dict[str, Any]:
     """Fill, persist as a Naver draft, or publish through the signed-in profile."""
+    from content_production_policy import validate_cafe_body_markup
+
+    # Every Cafe publication funnels through here, so this is where a body
+    # still carrying unrendered markdown has to stop.
+    validate_cafe_body_markup(body)
     if publish and save_draft:
         raise ValueError("네이버 카페 글은 임시등록과 발행을 동시에 요청할 수 없습니다.")
     final_body = _compose_naver_body(
@@ -887,14 +981,17 @@ if (await pageLooksLoggedOut(p, 'naver')) {
             return [...document.querySelectorAll('.temp_item_title')]
               .filter(el=>(el.textContent||'').replace(/\s+/g,'').trim()===wanted).length;
           },payload.title);
-          await countButton.first().click();
-          try{await p.keyboard.press('Escape');}catch(_){}
-          // Let the temporary-draft popover finish closing before the editor
-          // receives its first real keyboard/clipboard action.
-          await sleep(650);
+          // Naver can hide every close button while the draft modal is open.
+          // No content has been entered yet: reload this blank editor without
+          // touching saved drafts, then reacquire its context before writing.
+          await p.goto(p.url());
+          editor=await waitForContext(p,'.textarea_input',12000);
+          if(!editor)throw new Error('temporary draft editor reload failed');
+          if(await findContext(p,'.layer_temporary_content'))
+            throw new Error('temporary draft modal stayed open after reload');
           if(duplicates)workflowError=`동일 제목의 네이버 임시글이 ${duplicates}개 있어 새 임시글을 만들지 않았습니다.`;
         }
-      }catch(_){workflowError='네이버 임시글 중복 여부를 확인하지 못했습니다.';}
+      }catch(error){workflowError=`네이버 임시글 중복 여부를 확인하지 못했습니다: ${String(error?.message||error)}`;}
     }
     let existingTitle='';
     try{existingTitle=(await editor.loc.evaluate(el=>el.value||'')).trim();}catch(_){}
@@ -1006,7 +1103,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         // native caret in the bare P. Clicking that P again drops the caret.
         if(targetIsParagraph)return true;
         try{
-          await inputNode.click({force:true});
+          await inputNode.click();
         }catch(_){
           return false;
         }
@@ -1191,15 +1288,38 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       // and images are complete.
       const pendingQuoteHeadings=[];
       const insertPlainQuoteHeading = async rawHeading => {
-        const heading=(rawHeading||'').split('\n')[0].trim().slice(0,30);
+        const heading=(rawHeading||'').split('\n')[0].trim();
         if(!heading)return true;
         if(!activeParagraph||!(await isOutsideQuote(activeParagraph))){
           if(!(await focusEnd()))return false;
         }
         const existing=await activeParagraph.evaluate(el=>(el.innerText||el.textContent||'')
           .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
-        if(existing&&!(await focusEnd()))return false;
+        if(existing){
+          // The body writer leaves SmartEditor's live caret at the final
+          // paragraph. Its bottom-edge button does not create a new component
+          // after normal text, so focusEnd() cannot separate this heading.
+          // Enter creates a provider-owned paragraph in the same component;
+          // quotation conversion will split that exact paragraph afterwards.
+          quoteFailureStage='heading-new-paragraph';
+          const componentId=await activeParagraph.evaluate(el=>el.closest('.se-component')?.id||'');
+          if(!componentId)return false;
+          await p.keyboard.press('Enter');await sleep(180);
+          const paragraphs=bodyFound.ctx.locator(`[id="${componentId}"] .se-text-paragraph`);
+          const count=await paragraphs.count();
+          if(!count)return false;
+          activeParagraph=paragraphs.nth(count-1);
+          const empty=await activeParagraph.evaluate(el=>!(el.textContent||'')
+            .replace(/내용을 입력하세요\.?/g,'').replace(/[\u200B-\u200D\u2060\uFEFF]/g,'').trim());
+          if(!empty||!(await isOutsideQuote(activeParagraph)))return false;
+        }
         if(!(await insertFormattedText(heading)))return false;
+        const entered=await activeParagraph.evaluate(el=>(el.innerText||el.textContent||'')
+          .replace(/내용을 입력하세요\.?/g,'').replace(/\u200b/g,'').trim());
+        if(norm(entered)!==norm(heading)){
+          quoteFailureStage='heading-input-not-retained';
+          return false;
+        }
         pendingQuoteHeadings.push(heading);
         // Keep the provider caret and create the following body paragraph
         // natively.  The later quotation conversion splits only the selected
@@ -1218,7 +1338,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       };
 
       const insertQuote = async heading => {
-        heading=(heading||'').split('\n')[0].trim().slice(0,30);
+        heading=(heading||'').split('\n')[0].trim();
         if (!heading) return true;
         quoteFailureStage='focus-before';
         // Type in a normal top-level paragraph first, then use SmartEditor's
@@ -1262,10 +1382,8 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         if(existing)return false;
         let oldQuoteClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldQuoteClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           await p.evaluate(async value=>await navigator.clipboard.writeText(value),heading);
         }catch(_){return false;}
@@ -1444,6 +1562,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       let insertedImages=0;
       if(!workflowError)await focusEnd();
       for (let i=0; i<chunks.length; i++) {
+        yield `body-image-${i+1}`;
         if(workflowError)break;
         const parts=chunks[i].split(/(\[BLOCKQUOTE\][\s\S]*?\[\/BLOCKQUOTE\])/g);
         for(const rawPart of parts){
@@ -1577,13 +1696,12 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       // Re-finding the CTA later by pointer coordinates was unsafe on long
       // articles because the final Korean sentence can wrap differently.
       let linksInsertedEarly=false;
+      yield 'link-cards';
       if(!workflowError&&(payload.ctaLinkUrl||payload.sourceUrl)){
         let oldEarlyClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldEarlyClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           const earlyCardSelector=url=>/youtu(?:\.be|be\.com)/i.test(url||'')
             ? '.se-oembed,.se-video' : '.se-oglink';
@@ -1662,12 +1780,11 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       if(!workflowError&&pendingQuoteHeadings.length){
         let oldQuoteClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldQuoteClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
           for(const heading of pendingQuoteHeadings){
+            yield `quote-${pendingQuoteHeadings.indexOf(heading)+1}`;
             let component=null;
             let paragraph=null;
             const texts=bodyFound.ctx.locator('.se-components-wrap > .se-component.se-text');
@@ -1875,10 +1992,8 @@ if (await pageLooksLoggedOut(p, 'naver')) {
       if(!workflowError&&!linksInsertedEarly&&(payload.ctaLinkUrl||payload.sourceUrl)){
         let oldClipboard='';
         try{
-          await p.cdp.send('Browser.grantPermissions',{
-            origin:'https://cafe.naver.com',
-            permissions:['clipboardReadWrite','clipboardSanitizedWrite']
-          });
+          // Aside's REPL Page does not expose a CDP client. Its headless
+          // clipboard is already available through navigator.clipboard.
           try{oldClipboard=await p.evaluate(async()=>await navigator.clipboard.readText());}catch(_){}
 
           const cardSelectorFor=url=>/youtu(?:\.be|be\.com)/i.test(url||'')
@@ -2001,6 +2116,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
         if(!workflowError)await sleep(1200);
       }
 
+      yield 'verify-editor';
       const formatState=await bodyFound.ctx.evaluate(({sourceUrl,sourceLongUrl,ctaLinkUrl})=>{
         const components=[...document.querySelectorAll(
           '.se-components-wrap > .se-component'
@@ -2122,6 +2238,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
           sequence:formatState.sequence, quote_texts:formatState.quoteTexts,
           _preview_png:preview, _preview_cards_png:cardsPreview});
       } else {
+        yield 'publish-verified-editor';
         const beforeUrl = p.url();
         const registerSelector = 'a.BaseButton--skinGreen,button.btn_register,button[class*="register"],button[class*="publish"]';
         const button = await findContext(p, registerSelector);
@@ -2200,7 +2317,7 @@ if (await pageLooksLoggedOut(p, 'naver')) {
 }
 }
 """
-        result = run_repl(code, cwd=upload_dir, timeout=300, account=account)
+        result = run_repl_steps(code, cwd=upload_dir, timeout=900, account=account)
         return _save_preview(result, preview_path)
 
 
@@ -2302,7 +2419,7 @@ if(await pageLooksLoggedOut(p,'naver')){
               quotes:components.filter(el=>el.classList.contains('se-quotation')).length,
               sequence:meaningful.map(item=>item.kind),
               quoteTexts:meaningful.filter(item=>item.kind==='quote')
-                .map(item=>item.text.split('\n')[0].replace(/\u00a0/g,' ').trim().slice(0,30)),
+                .map(item=>item.text.split('\n')[0].replace(/\u00a0/g,' ').trim()),
               ctaRaw:!ctaLinkUrl||paragraphs.includes(ctaLinkUrl),
               sourceRaw:!sourceUrl||paragraphs.includes(sourceUrl),
               oglinks:document.querySelectorAll('.se-oglink').length,
@@ -2365,7 +2482,7 @@ if(await pageLooksLoggedOut(p,'naver')){
   }
 }
 """
-    result = run_repl(code, timeout=180, account=account)
+    result = run_mcp_repl(code, timeout=180, account=account)
     return _save_preview(result, preview_path)
 
 

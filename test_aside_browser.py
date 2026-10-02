@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,6 +24,65 @@ def _payload_from(code: str) -> dict:
 
 
 class AsideBrowserUnitTests(unittest.TestCase):
+    @mock.patch("aside_browser.run_repl_steps", return_value={"status": "filled"})
+    def test_quote_after_intro_uses_provider_paragraph_without_bottom_edge(self, run_repl):
+        heading = '새로운 도구를 실제 업무에 도입하기 전에 사업자가 반드시 정해야 할 운영 기준'
+        aside_browser.post_to_naver_cafe(
+            "제목", f"도입 문단\n\n[BLOCKQUOTE]{heading}[/BLOCKQUOTE]\n본문", [],
+            cafe_url="https://cafe.naver.com/ca-fe/cafes/1/menus/2/articles/write",
+            publish=False,
+        )
+        generated = run_repl.call_args.args[0]
+        self.assertGreater(len(heading), 30)
+        self.assertEqual(_payload_from(generated)['expectedQuoteTexts'], [heading])
+        function = generated[generated.index("const insertPlainQuoteHeading ="):generated.index("const insertQuote =")]
+        # Provider fixture: Enter adds a paragraph in the existing component;
+        # the bottom-edge action cannot create another text component.
+        fixture = r"""
+const norm=s=>s.replace(/\s+/g,'');
+const sleep=async()=>{};
+const pendingQuoteHeadings=[];
+let quoteFailureStage='',reuseCurrentParagraph=false;
+const wrap=text=>{const el={textContent:text,innerText:text,closest:()=>({id:'body'})};
+return {el,evaluate:async fn=>fn(el)};};
+const paragraphs=[wrap('도입 문단')];
+let activeParagraph=paragraphs[0];
+const isOutsideQuote=async()=>true;
+const focusEnd=async()=>{throw Error('bottom edge is unavailable for ordinary text');};
+const focusBodyParagraph=async p=>{activeParagraph=p;return true;};
+const bodyFound={ctx:{locator:()=>({count:async()=>paragraphs.length,nth:i=>paragraphs[i]})}};
+const p={keyboard:{press:async key=>{if(key==='Enter')paragraphs.push(wrap(''));}}};
+const insertFormattedText=async text=>{activeParagraph.el.textContent=text;activeParagraph.el.innerText=text;return true;};
+"""
+        run = subprocess.run(["node", "-e", fixture + function + 'const expectedHeading=' + json.dumps(heading) + ';' + r"""
+(async()=>{const ok=await insertPlainQuoteHeading(expectedHeading);
+console.log(JSON.stringify({ok,texts:paragraphs.map(p=>p.el.textContent),pendingQuoteHeadings,reuseCurrentParagraph}));})();
+"""], capture_output=True, text=True, check=True)
+        result = json.loads(run.stdout)
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['texts'], ['도입 문단', heading, ''])
+        self.assertEqual(result['pendingQuoteHeadings'], [heading])
+        self.assertTrue(result['reuseCurrentParagraph'])
+
+    def test_login_ignores_hidden_controls_on_both_auth_states(self):
+        # Naver's anonymous page has a visible login and a hidden logout link.
+        # Signed-in pages can retain the inverse, so test actual JS behavior.
+        code = aside_browser.JS_COMMON + r"""
+globalThis.getComputedStyle = el => ({display:el.shown?'block':'none',visibility:'visible'});
+const control = shown => ({shown,getBoundingClientRect:()=>({width:shown?20:0,height:shown?20:0})});
+(async()=>{
+  const results=[];
+  for(const loggedIn of [false,true]){
+    globalThis.document={body:{innerText:loggedIn?'내정보 보기':'로그인'},
+      querySelectorAll:selector=>selector.includes('nidlogin')?[control(!loggedIn)]:[control(loggedIn)]};
+    results.push(await pageLooksLoggedOut({url:()=> 'https://cafe.naver.com',evaluate:fn=>fn('naver')},'naver'));
+  }
+  console.log(JSON.stringify(results));
+})();
+"""
+        result = subprocess.run(["node", "-e", code], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [True, False])
+
     def test_parse_result_preserves_native_error_payload(self):
         native = {"status": "error", "message": "cleanup failed", "answer": "kept"}
         with self.assertRaises(aside_browser.AsideError) as raised:
@@ -45,7 +105,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
         with self.assertRaises(aside_browser.AsideLoginRequired):
             aside_browser._parse_result(output)
 
-    @mock.patch("aside_browser.run_repl", return_value={"status": "ok"})
+    @mock.patch("aside_browser.run_mcp_repl", return_value={"status": "ok"})
     def test_login_check_is_pinned_to_u0(self, run_repl):
         aside_browser.check_login("naver")
         self.assertEqual(run_repl.call_args.kwargs["account"], "u0")
@@ -73,7 +133,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             "▶ 원본 영상\nhttps://youtu.be/example",
         )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_urls_are_reserved_for_rich_card_paste(self, run_repl):
         run_repl.return_value = {"status": "filled"}
         with tempfile.TemporaryDirectory() as temp:
@@ -100,7 +160,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
             ["quote", "text", "image", "text", "text"],
         )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_keeps_long_source_url_as_raw_text_and_short_url_for_card(self, run_repl):
         run_repl.return_value = {"status": "filled"}
         with tempfile.TemporaryDirectory() as temp:
@@ -121,7 +181,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
         self.assertEqual(payload["sourceLongUrl"], "https://www.youtube.com/watch?v=example")
         self.assertIn("sourceLongRaw", code)
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_repl_steps")
     def test_cafe_draft_clicks_real_temporary_registration(self, run_repl):
         run_repl.return_value = {"status": "draft_saved", "saved_time": "방금"}
         aside_browser.post_to_naver_cafe(
@@ -147,7 +207,7 @@ class AsideBrowserUnitTests(unittest.TestCase):
                 publish=True, save_draft=True,
             )
 
-    @mock.patch("aside_browser.run_repl")
+    @mock.patch("aside_browser.run_mcp_repl")
     def test_saved_draft_publish_requires_exact_title_and_structure(self, run_repl):
         run_repl.return_value = {"status": "published", "url": "https://cafe.naver.com/x/1"}
         result = aside_browser.publish_saved_naver_cafe_draft(
@@ -176,6 +236,52 @@ class AsideBrowserUnitTests(unittest.TestCase):
                 self.assertEqual(names, ["upload-01.png"])
                 self.assertEqual((root / names[0]).read_bytes(), b"png")
             self.assertFalse(root.exists())
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_run_repl_uses_mcp_u0(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.return_value = aside_browser.RESULT_MARKER + '{"status":"ok"}\n'
+        result = aside_browser.run_mcp_repl("emit({status:'ok'})", account="u0")
+        self.assertEqual(result["status"], "ok")
+        client_type.assert_called_once_with("/tmp/aside", account="u0", cwd=None)
+        self.assertEqual(client.repl.call_count, 1)
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_defaults_to_u0_and_rejects_other_accounts(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.return_value = aside_browser.RESULT_MARKER + '{"status":"ok"}\n'
+        aside_browser.run_mcp_repl("emit({status:'ok'})")
+        with self.assertRaises(aside_browser.AsideError):
+            aside_browser.run_mcp_repl("emit({status:'ok'})", account="u1")
+        client_type.assert_called_once_with("/tmp/aside", account="u0", cwd=None)
+
+    @mock.patch("aside_browser.subprocess.run")
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_failure_is_not_replayed_through_cli(self, _resolve, client_type, cli):
+        client = client_type.return_value.__enter__.return_value
+        client.repl.side_effect = aside_browser.AsideMCPError("timeout; publication state uncertain")
+        with self.assertRaises(aside_browser.AsideError):
+            aside_browser.run_mcp_repl("publish()")
+        self.assertEqual(client.repl.call_count, 1)
+        cli.assert_not_called()
+
+    @mock.patch("aside_browser.AsideMCP")
+    @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")
+    def test_mcp_steps_keep_final_receipt_before_done(self, _resolve, client_type):
+        client = client_type.return_value.__enter__.return_value
+        marker = aside_browser.RESULT_MARKER
+        client.repl.side_effect = [
+            marker + '{"status":"step","done":false,"step":"editor"}',
+            marker + '{"status":"draft_saved","images":5}\n' + marker + '{"status":"step","done":true}',
+        ]
+        result = aside_browser.run_repl_steps("yield 'editor'; emit({status:'draft_saved',images:5});")
+        self.assertEqual(result, {"status": "draft_saved", "images": 5})
+        self.assertEqual(client_type.call_count, 1)
+        self.assertEqual(client.repl.call_count, 2)
+        self.assertNotIn("async function*", client.repl.call_args.args[0])
 
     @mock.patch("aside_browser.subprocess.run")
     @mock.patch("aside_browser.resolve_aside_cli", return_value="/tmp/aside")

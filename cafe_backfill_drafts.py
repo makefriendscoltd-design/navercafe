@@ -142,7 +142,7 @@ def process(source_key: str, timeout: int) -> dict:
             return {"source_key": source_key, "root": root.name, "ok": False, "steps": steps}
 
     manifest = root / "cafe/06_cafe_manifest.json"
-    ok, note = run(["cafe_queue_enroll.py", "--manifest", str(manifest)], timeout)
+    ok, note = run(["cafe_queue_enroll.py", "--manifest", str(manifest), "--enqueue-only"], timeout)
     steps["cafe_enroll"] = "ok" if ok else f"fail: {note}"
     return {"source_key": source_key, "root": root.name, "ok": ok, "steps": steps}
 
@@ -187,6 +187,11 @@ def main(argv=None) -> int:
         try:
             with aside_lock():
                 result = process(key, args.timeout)
+            if result.get("ok"):
+                from cafe_publish_request import publish_enrolled
+                publication = publish_enrolled(key)
+                result["publication"] = publication
+                result["ok"] = publication["status"] in {"published", "queued"}
         except subprocess.TimeoutExpired:
             result = {"source_key": key, "ok": False, "steps": {"timeout": f"{args.timeout}s"}}
         except TimeoutError as error:

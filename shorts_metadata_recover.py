@@ -16,6 +16,7 @@ from pathlib import Path
 
 import youtube_shorts_publisher as publisher
 from youtube_shorts_aside_adapter import (
+    CHANNEL_ID,
     SAVE_ATTACHED_METADATA_JS,
     AsideHeadlessU0Provider,
     _default_aside_runner,
@@ -52,6 +53,7 @@ def recover(root: str | Path, *, manifest_name: str = "07_provider_manifest.json
         {
             "id": receipt["provider_id"],
             "channel": manifest.expected_channel,
+            "channel_id": CHANNEL_ID,
             "title": manifest.title,
             "description": manifest.description,
             "sentinel": sentinel,

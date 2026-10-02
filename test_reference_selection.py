@@ -152,3 +152,88 @@ def test_all_four_failed_outputs_remain_retry_candidates():
     selected, rejected = sel.select(rows)
     assert {row["id"] for row in selected} == {row["id"] for row in rows}
     assert rejected == []
+
+
+def test_ledger_locked_candidate_is_not_offered(tmp_path, monkeypatch):
+    """재시도가 막힌 후보를 그날 몫으로 뽑으면 준비 단계에서 죽어 하루치를 버린다."""
+    root = tmp_path / "outputs/abcdefghijk-20260101/shorts"
+    root.mkdir(parents=True)
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started"}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == {"abcdefghijk"}
+    assert sel.rejection_reason({"attempt_locked": True, "minutes": 20}) == "이전 NotebookLM 시도가 잠김"
+
+    # 부재가 증명되면 다시 후보가 된다.
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started", "provider_response_absent": True}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == set()
+
+
+def test_rendered_candidate_is_not_treated_as_locked(tmp_path):
+    """렌더까지 끝난 폴더는 잠금 대상이 아니다. 발행만 남은 상태다."""
+    root = tmp_path / "outputs/abcdefghijk-20260101/shorts"
+    root.mkdir(parents=True)
+    (root / "final.mp4").write_bytes(b"0")
+    (root / "notebooklm-attempt-ledger.json").write_text(json.dumps({
+        "schemaVersion": "shorts-notebook-attempt-ledger/v1",
+        "sourceKey": "abcdefghijk",
+        "attempts": [{"attempt_status": "started"}],
+    }), encoding="utf-8")
+    assert sel.attempt_locked_keys(tmp_path) == set()
+
+
+def test_source_whose_shorts_already_published_is_not_offered(monkeypatch):
+    """카페가 남아 있으면 needs_production 이 계속 참이라 같은 원본이 매일 다시 뽑힌다."""
+    state = {"channels": {"shorts": {"status": "complete"}, "cafe": {"status": "missing"}},
+             "needs_production": True}
+    monkeypatch.setattr("content_run_state.source_state", lambda project, key: state)
+    assert sel.shorts_done("abcdefghijk") is True
+    assert sel.rejection_reason({"shorts_done": True, "minutes": 20}) == "쇼츠는 이미 발행 완료"
+
+    state["channels"]["shorts"] = {"status": "missing"}
+    assert sel.shorts_done("abcdefghijk") is False
+
+
+def test_validated_review_candidate_is_not_offered_again(tmp_path, monkeypatch):
+    root = tmp_path / "outputs/abcdefghijk-20260930"
+    canonical = root / "shorts/final.mp4"
+    review = root / "shorts-review-20260930/final.mp4"
+    canonical.parent.mkdir(parents=True)
+    review.parent.mkdir(parents=True)
+    canonical.write_bytes(b"bad")
+    review.write_bytes(b"good")
+    monkeypatch.setattr("shorts_daily_production.validated_shorts_root",
+                        lambda candidate, candidate_name="shorts":
+                        candidate_name == "shorts-review-20260930")
+    assert sel.local_shorts_done("abcdefghijk", tmp_path) is True
+    assert sel.rejection_reason({"local_shorts_done": True, "minutes": 20}) == \
+        "검증된 쇼츠 산출물 있음"
+
+
+def test_previous_delivery_manifest_excludes_every_source(tmp_path):
+    delivery = tmp_path / "outputs/shorts-delivery-20260930/delivery.json"
+    delivery.parent.mkdir(parents=True)
+    delivery.write_text(json.dumps({"items": [
+        {"source_key": "abcdefghijk"}, {"source_key": "zyxwvutsrqp"}]}))
+    assert sel.delivered_source_keys(tmp_path) == {"abcdefghijk", "zyxwvutsrqp"}
+    assert sel.rejection_reason({"delivered_before": True, "minutes": 20}) == \
+        "이전 쇼츠 납품에 포함"
+
+
+def test_still_source_is_rejected_and_detected(tmp_path):
+    import json
+    import reference_selection as sel
+    assert sel.rejection_reason({"still_source": True}) == "원본 화면이 거의 정지"
+    shorts = tmp_path / "outputs" / "6NApXtLJcfc-20260926" / "shorts"
+    shorts.mkdir(parents=True)
+    (shorts / "visual_validation.json").write_text(json.dumps({"status": "rejected_still_source"}))
+    other = tmp_path / "outputs" / "abcdefghijk-20260926" / "shorts"
+    other.mkdir(parents=True)
+    (other / "visual_validation.json").write_text(json.dumps({"status": "pass"}))
+    assert sel.still_source_keys(tmp_path) == {"6NApXtLJcfc"}

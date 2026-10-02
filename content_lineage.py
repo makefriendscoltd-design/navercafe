@@ -48,14 +48,15 @@ def canonical_prose(text: str) -> str:
     return re.sub(r'\s+', '', text.replace('**', ''))
 
 
-def cafe_body_lineage(answer: Path, body: Path) -> dict:
+def cafe_body_lineage(answer: Path, body: Path, *, content_origin: str = 'notebooklm_cafe') -> dict:
     if not answer.is_file() or not body.is_file():
         raise LineageError('NotebookLM answer or actual Cafe body is missing')
     original = canonical_prose(clean_cafe_answer(answer.read_text(encoding='utf-8')))
     actual = canonical_prose(body.read_text(encoding='utf-8'))
     if not original or original != actual:
         raise LineageError('Cafe body differs from NotebookLM answer beyond permitted formatting')
-    return {'content_origin': 'notebooklm_cafe', 'notebook_answer_sha256': sha256(answer),
+    return {'content_origin': content_origin, 'answer_sha256': sha256(answer),
+            **({'notebook_answer_sha256': sha256(answer)} if content_origin == 'notebooklm_cafe' else {}),
             'body_sha256': sha256(body), 'body_preserved': True}
 
 
@@ -107,8 +108,8 @@ def validate_interrupted_response_adoption(root, source, origin, answer, policy)
     matches = [x for x in ledger.get('attempts', []) if x.get('source_key') == source
                and x.get('updated_at') == adoption.get('newest_attempt_at')
                and x.get('attempt_status') == 'unknown_after_provider_start'
-               and x.get('instruction_version') == policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION
-               and x.get('instruction_sha256') == policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256]
+               and policy.shorts_instruction_pin_registered(
+                   x.get('instruction_version'), x.get('instruction_sha256'))]
     if ledger.get('sourceKey') != source or len(matches) != 1:
         raise LineageError('Interrupted adoption has no exact unknown attempt')
     recovered_at = str(adoption.get('recovered_at') or '')
@@ -144,22 +145,43 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
     import content_production_policy as policy
     manifest = read_json(root / 'production_manifest.json')
     origin = manifest.get('content_lineage', {})
-    if origin.get('mode') != 'notebooklm_verbatim' or manifest.get('content_rewrite_applied'):
-        raise LineageError('Shorts requires notebooklm_verbatim; rewritten recovery is not uploadable')
+    mode = origin.get('mode')
+    if mode not in ('notebooklm_verbatim', 'caption_written') or manifest.get('content_rewrite_applied'):
+        raise LineageError('Shorts requires notebooklm_verbatim or caption_written origin')
     source = manifest.get('source_id')
     answer = bound_file(root, origin.get('answer'), 'answer')
     script = bound_file(root, origin.get('script'), 'script')
     interrupted = bool(origin.get('interrupted_response_adoption'))
     recovery = {}
-    if interrupted:
+    if mode == 'caption_written':
+        # NotebookLM 응답 증거가 있던 자리를 자막 원문·지침·생성본의 묶음이 대신한다.
+        # 게이트를 끄는 것이 아니라 무엇에 묶느냐를 바꾼다.
+        transcript = bound_file(root, origin.get('transcript'), 'transcript')
+        writer_path = bound_file(root, origin.get('writer_evidence'), 'writer_evidence')
+        writer = read_json(writer_path)
+        # 등록된 (버전, 해시) 쌍이면 v24.0으로 만든 기존 쇼츠도 계속 검증된다.
+        if not policy.shorts_instruction_pin_registered(
+                writer.get('instruction_version'), writer.get('instruction_sha256')):
+            raise LineageError('Shorts caption_written requires a registered instruction')
+        if writer.get('transcript_sha256') != sha256(transcript):
+            raise LineageError('Writer evidence does not match the saved transcript')
+        if writer.get('answer_sha256') != sha256(answer):
+            raise LineageError('Writer evidence does not match the saved answer')
+        caption_path = bound_file(root, origin.get('caption_evidence'), 'caption_evidence')
+        captions = read_json(caption_path)
+        if captions.get('source_key') != source or captions.get('transcript_sha256') != sha256(transcript):
+            raise LineageError('Caption evidence is not bound to this source')
+    elif interrupted:
         recovery = validate_interrupted_response_adoption(root, source, origin, answer, policy)
     else:
         evidence_path = bound_file(root, origin.get('provider_evidence'), 'provider_evidence')
         provider = read_json(evidence_path)
         instruction = provider.get('instructionEvidence') or {}
+        # 2026-09-30 사용자 결정: 예전 지침 버전으로 이미 검증된 대본도 쓴다.
+        # 지침 기록이 있는지만 보고, 현재 버전과 같은지는 따지지 않는다.
         if (provider.get('notebookId') != policy.SHORTS_NOTEBOOK['id']
-                or instruction.get('sha256') != policy.SHORTS_NOTEBOOK_INSTRUCTION_SHA256
-                or instruction.get('version') != policy.SHORTS_NOTEBOOK_INSTRUCTION_VERSION
+                or not re.fullmatch(r'[0-9a-f]{64}', str(instruction.get('sha256') or ''))
+                or not str(instruction.get('version') or '').strip()
                 or provider.get('targetOnlyBefore') is not True or provider.get('targetOnlyAfter') is not True):
             raise LineageError('Shorts requires current instruction and exact selected-source evidence')
         recovery_entry = origin.get('answer_recovery')
@@ -233,22 +255,31 @@ def validate_shorts_origin(root: Path, *, video: Path | None = None) -> dict:
 def validate_cardnews_origin(deck: dict) -> dict:
     """Bind generation input and every content card's quoted anchor to the Cafe answer."""
     origin = deck.get('content_lineage', {})
-    if origin.get('mode') != 'notebooklm_cafe_summary':
-        raise LineageError('Cardnews input must be the Cafe NotebookLM answer')
+    mode = origin.get('mode')
+    if mode not in {'notebooklm_cafe_summary', 'captions_cafe_summary'}:
+        raise LineageError('Cardnews input must be the source-bound Cafe manuscript')
     answer = bound_file(Path('.'), origin.get('answer'), 'cardnews answer')
     provider_path = bound_file(Path('.'), origin.get('provider_evidence'), 'cardnews provider')
-    provider = read_json(provider_path)
-    import content_production_policy as policy
     source = origin.get('source_key')
-    if (provider.get('account') != policy.ASIDE_ACCOUNT
-            or provider.get('notebookTitle') != policy.CAFE_NOTEBOOK['title']
-            or provider.get('sourceUrl', provider.get('source_url')) not in
-            {f'https://youtu.be/{source}', f'https://www.youtube.com/watch?v={source}'}):
-        raise LineageError('Cardnews NotebookLM provider/source binding is invalid')
+    if mode == 'captions_cafe_summary':
+        from cafe_caption_source import validate_provenance
+        if not all(validate_provenance(answer.parent / '06_cafe_manifest.json', {
+                'source_key': source, 'manuscript_source': 'captions',
+                'manuscript_answer': str(answer.resolve()),
+                'manuscript_evidence': str(provider_path.resolve())}).values()):
+            raise LineageError('Cardnews caption manuscript/source binding is invalid')
+    else:
+        provider = read_json(provider_path)
+        import content_production_policy as policy
+        if (provider.get('account') != policy.ASIDE_ACCOUNT
+                or provider.get('notebookTitle') != policy.CAFE_NOTEBOOK['title']
+                or provider.get('sourceUrl', provider.get('source_url')) not in
+                {f'https://youtu.be/{source}', f'https://www.youtube.com/watch?v={source}'}):
+            raise LineageError('Cardnews NotebookLM provider/source binding is invalid')
     original = canonical_prose(clean_cafe_answer(answer.read_text(encoding='utf-8')))
     slides = deck.get('slides', [])
     for slide in slides[1:-1]:
         anchor = canonical_prose(slide.get('source_anchor', ''))
         if len(anchor) < 15 or anchor not in original:
             raise LineageError('Cardnews content slide has no literal NotebookLM evidence anchor')
-    return {'content_origin': 'notebooklm_cafe', 'answer_sha256': sha256(answer)}
+    return {'content_origin': 'captions_cafe' if mode == 'captions_cafe_summary' else 'notebooklm_cafe', 'answer_sha256': sha256(answer)}

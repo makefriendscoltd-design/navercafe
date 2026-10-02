@@ -2,7 +2,7 @@
 
 ``content_workflow.py prepare-cafe`` rebuilds an existing entry from its own
 manifest, so a link submitted for the first time has nothing to rebuild from.
-This assembles that first manifest: the preserved NotebookLM answer becomes the
+This assembles that first manifest: the caption-based Cafe manuscript becomes the
 body through the same formatter, five frames come from the source video, and the
 fixed tail is the one the board requires. It publishes nothing -- the queue
 automation stays the only thing that posts.
@@ -34,13 +34,17 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _mark_headings(cleaned: str) -> tuple[str, list[str]]:
+def _mark_headings(cleaned: str, *, column_layout: bool = False) -> tuple[str, list[str]]:
     """Mark the answer's own section titles so the formatter can see them.
 
     NotebookLM returns the Cafe answer as bare lines, so the section titles carry
     no marker of their own. Recover them exactly as the repair path does, keeping
     their words untouched -- a generated heading would no longer be the answer.
     """
+    if column_layout:
+        from cafe_caption_source import validate_answer
+        validate_answer(cleaned, 'cafe-business-column/v2')
+        return cleaned, re.findall(r'^## (.+)$', cleaned, re.M)
     if count_sections(cleaned) == IMAGE_COUNT:
         return cleaned, []
     lines = cleaned.splitlines()
@@ -93,20 +97,27 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
 
     source_shape = validate_longform_source(measure_source_video(source_key))
 
-    answer_path = cafe / "notebooklm/notebooklm-answer.md"
-    provider_path = cafe / "notebooklm/notebooklm-provider-evidence.json"
-    for path in (answer_path, provider_path):
-        if not path.is_file():
-            raise RuntimeError(f"카페 NotebookLM 증거가 없습니다: {path}")
+    from cafe_caption_source import prepare as prepare_manuscript, validate_provenance
+    prepare_manuscript(source_key, root)
+    answer_path = cafe / "writer/answer.md"
+    provider_path = cafe / "writer/evidence.json"
+    manuscript_fields = {"manuscript_source": "captions",
+                         "manuscript_answer": str(answer_path.resolve()),
+                         "manuscript_evidence": str(provider_path.resolve())}
+    if not all(validate_provenance(manifest_path, {"source_key": source_key, **manuscript_fields}).values()):
+        raise RuntimeError("카페 전사문/원고 연결 검증 실패")
 
+    from cafe_caption_source import evidence_version
+    version = evidence_version(json.loads(provider_path.read_text(encoding='utf-8')))
+    column_layout = version == 'cafe-business-column/v2'
     cleaned = clean_cafe_answer(answer_path.read_text(encoding="utf-8"))
-    marked, headings = _mark_headings(cleaned)
-    body = build_body(marked, IMAGE_COUNT, {}, use_ai_keywords=False)
-    if body.count("[BLOCKQUOTE]") != IMAGE_COUNT or body.count("[IMAGE_HERE]") != IMAGE_COUNT:
-        raise RuntimeError("원문 소제목/이미지 구조가 다섯 구간을 만들지 못했습니다.")
+    marked, headings = _mark_headings(cleaned, column_layout=column_layout)
+    body = build_body(marked, IMAGE_COUNT, {'column_layout': column_layout}, use_ai_keywords=False)
+    if body.count("[BLOCKQUOTE]") != count_sections(marked) or body.count("[IMAGE_HERE]") != IMAGE_COUNT:
+        raise RuntimeError("원문 소제목과 승인 이미지 다섯 장의 구조를 보존하지 못했습니다.")
     body_path = cafe / "03_cafe_body.txt"
     body_path.write_text(body, encoding="utf-8")
-    lineage = cafe_body_lineage(answer_path, body_path)
+    lineage = cafe_body_lineage(answer_path, body_path, content_origin="captions_cafe")
 
     shorts_root = root / "shorts"
     video = shorts_root / "source_original.mp4"
@@ -119,7 +130,8 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
     manifest = {
         "schema_version": "1.0",
         "source_key": source_key,
-        "title": title or headings[0] if headings else download["title"],
+        "title": title or (cleaned.splitlines()[0][2:] if column_layout else
+                           (headings[0] if headings else download["title"])),
         "category": CATEGORY,
         "status": "candidate_requires_editor_and_approval_validation",
         "provider_mutation": False,
@@ -128,17 +140,17 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
         "source_long_url": f"https://www.youtube.com/watch?v={source_key}",
         "source_video": source_shape,
         "body_file": body_path.name,
-        "notebooklm_answer": str(answer_path.resolve()),
-        "notebooklm_provider_evidence": str(provider_path.resolve()),
+        **manuscript_fields,
         "source_dependencies": [
             {"path": "../shorts/source_download_evidence.json",
              "sha256": _sha256(shorts_root / "source_download_evidence.json")},
         ],
-        "expected_quotes": IMAGE_COUNT,
+        "expected_quotes": len(quotes),
         "expected_images": IMAGE_COUNT,
         "expected_quote_texts": quotes,
         "images": [str(frame.relative_to(cafe)) for frame in frames],
-        "image_labels": headings or quotes,
+        "image_labels": [f"원본 영상 장면 {i + 1}" for i in range(IMAGE_COUNT)] if column_layout else (headings or quotes),
+        "instruction_version": version,
         "content_lineage": lineage,
         "tail": {
             "cta_text": CTA_TEXT,
@@ -155,7 +167,8 @@ def prepare(source_key: str, *, title: str | None = None) -> dict:
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     (cafe / "11_local_validation.json").write_text(json.dumps({
         "status": "pass", "scope": "content_and_structure_only", "source_key": source_key,
-        "checks": {"original_body_preserved": True, "five_quotes": True, "five_image_markers": True},
+        "checks": {"original_body_preserved": True, "original_headings_preserved": True,
+                   **({"five_quotes": True} if len(quotes) == 5 else {}), "five_image_markers": True},
         "asset_status": "present",
         "evidence": lineage, "provider_mutation": False,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
