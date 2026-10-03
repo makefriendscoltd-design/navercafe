@@ -1986,3 +1986,14 @@ def test_retry_gate_pins_each_instruction_version_separately():
         policy.validate_shorts_notebook_retry(
             "iOwKylW8c5Q", [v24], instruction_version="v24.0",
             instruction_sha256=policy.SHORTS_NOTEBOOK_INSTRUCTION_V24_SHA256)
+
+
+def test_ordinary_profile_request_sentence_is_not_a_cta():
+    sentence = "고객 프로필로 저장한 뒤 샘플을 요청하게 하세요."
+    assert "cta_boundary_missing" not in policy.find_forbidden_shorts_claims(sentence)
+
+
+def test_comment_keyword_skips_imperative_stem():
+    import notebooklm_shorts as shorts
+
+    assert "하세" not in shorts._comment_keyword_candidates("이렇게 하세 연결하세 바로")
